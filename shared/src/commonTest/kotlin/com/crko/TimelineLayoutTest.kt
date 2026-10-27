@@ -1,0 +1,50 @@
+package com.crko
+
+import com.crko.domain.Event
+import com.crko.ui.schedule.layoutEvents
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+private fun event(id: String, start: Int, end: Int) = Event(id, id, "2026-10-27", start, end)
+
+class TimelineLayoutTest {
+
+    @Test
+    fun nonOverlappingEventsKeepFullWidth() {
+        val placed = layoutEvents(listOf(event("a", 60, 120), event("b", 120, 180)))
+        assertEquals(listOf(1, 1), placed.map { it.totalColumns })
+        assertEquals(listOf(0, 0), placed.map { it.column })
+    }
+
+    @Test
+    fun overlappingEventsShareColumns() {
+        val placed = layoutEvents(listOf(event("a", 60, 180), event("b", 90, 150)))
+        assertEquals(2, placed.first().totalColumns)
+        assertEquals(setOf(0, 1), placed.map { it.column }.toSet())
+    }
+
+    @Test
+    fun backToBackEventReusesAFreedColumn() {
+        // a and c overlap b's window but not each other, so c can reuse a's column.
+        val placed = layoutEvents(listOf(event("a", 60, 120), event("b", 60, 240), event("c", 120, 180)))
+        assertEquals(2, placed.first().totalColumns)
+        assertEquals(0, placed.first { it.event.title == "a" }.column)
+        assertEquals(1, placed.first { it.event.title == "b" }.column)
+        assertEquals(0, placed.first { it.event.title == "c" }.column)
+    }
+
+    @Test
+    fun separateClustersAreSizedIndependently() {
+        val placed = layoutEvents(
+            listOf(event("a", 60, 180), event("b", 90, 120), event("c", 300, 360), event("d", 320, 360)),
+        )
+        assertEquals(2, placed.first { it.event.title == "a" }.totalColumns)
+        assertEquals(2, placed.first { it.event.title == "c" }.totalColumns)
+    }
+
+    @Test
+    fun eventsAreOrderedByStartTime() {
+        val placed = layoutEvents(listOf(event("late", 300, 360), event("early", 60, 120)))
+        assertEquals(listOf("early", "late"), placed.map { it.event.title })
+    }
+}

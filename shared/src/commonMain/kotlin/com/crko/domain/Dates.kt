@@ -1,0 +1,78 @@
+package com.crko.domain
+
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalTime
+import kotlin.time.Clock
+import kotlin.time.Instant
+import kotlinx.datetime.DateTimeUnit
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.atStartOfDayIn
+import kotlinx.datetime.isoDayNumber
+import kotlinx.datetime.number
+import kotlinx.datetime.plus
+import kotlinx.datetime.toLocalDateTime
+import kotlinx.datetime.todayIn
+
+/** A single day at a point in time, refreshed by the host every minute. */
+data class LocalClock(val instant: Instant, val date: LocalDate, val time: LocalTime)
+
+fun LocalDate.startOfMonth(): LocalDate = LocalDate(year, month.number, 1)
+
+fun LocalDate.plusDays(days: Int): LocalDate = plus(days, DateTimeUnit.DAY)
+
+/** Monday-first index (0..6). */
+val LocalDate.mondayIndex: Int get() = dayOfWeek.isoDayNumber - 1
+
+/** The Monday that starts the week containing this date. */
+fun LocalDate.startOfWeek(): LocalDate = plusDays(-mondayIndex)
+
+fun LocalDate.weekDates(): List<LocalDate> = (0 until 7).map { plusDays(it) }
+
+fun LocalDate.nextMonthStart(): LocalDate =
+    if (month.number == 12) LocalDate(year + 1, 1, 1) else LocalDate(year, month.number + 1, 1)
+
+fun LocalDate.previousMonthStart(): LocalDate =
+    if (month.number == 1) LocalDate(year - 1, 12, 1) else LocalDate(year, month.number - 1, 1)
+
+/**
+ * Every date shown in the month grid, from the Monday on or before the 1st through the Sunday on
+ * or after the last day, so the length is always a multiple of seven.
+ */
+fun LocalDate.monthGrid(): List<LocalDate> {
+    val first = startOfMonth()
+    val last = nextMonthStart().plusDays(-1)
+    val gridStart = first.startOfWeek()
+    val gridEnd = last.plusDays(6 - last.mondayIndex)
+    return generateSequence(gridStart) { it.plusDays(1) }
+        .takeWhile { it <= gridEnd }
+        .toList()
+}
+
+fun daysInMonth(year: Int, month: Int): Int = LocalDate(year, month, 1).nextMonthStart().plusDays(-1).day
+
+/** Month arithmetic that clamps the day, e.g. Jan 31 + 1 month = Feb 28. */
+fun LocalDate.plusMonths(months: Int): LocalDate {
+    val total = year * 12 + (month.number - 1) + months
+    val newYear = total.floorDiv(12)
+    val newMonth = total.mod(12) + 1
+    return LocalDate(newYear, newMonth, day.coerceAtMost(daysInMonth(newYear, newMonth)))
+}
+
+fun today(clock: Clock = Clock.System, zone: TimeZone = TimeZone.currentSystemDefault()): LocalDate =
+    clock.todayIn(zone)
+
+fun dateOf(instant: Instant, zone: TimeZone = TimeZone.currentSystemDefault()): LocalDate =
+    instant.toLocalDateTime(zone).date
+
+fun timeOf(instant: Instant, zone: TimeZone = TimeZone.currentSystemDefault()): LocalTime =
+    instant.toLocalDateTime(zone).time
+
+fun LocalDate.startInstant(zone: TimeZone = TimeZone.currentSystemDefault()): Instant = atStartOfDayIn(zone)
+
+/** Whole days from this date to [other]; negative when [other] is earlier. */
+fun LocalDate.daysTo(other: LocalDate): Int = (other.toEpochDays() - toEpochDays()).toInt()
+
+fun LocalTime.minutesOfDay(): Int = hour * 60 + minute
+
+/** Rounds up to the next [step]-minute boundary and clamps to the end of the day. */
+fun Int.roundUpTo(step: Int): Int = ((this + step - 1) / step) * step
