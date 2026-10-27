@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Event
+import com.crko.domain.MaxEndMinutes
 import com.crko.domain.plusDays
 import com.crko.domain.startOfWeek
 import com.crko.i18n.Strings
@@ -102,7 +103,7 @@ private fun EventEditorContent(
                     start = picked
                     // Keep a positive duration when the start moves past the end.
                     if (picked.hour * 60 + picked.minute >= endMinutes) {
-                        end = minutesToTime((picked.hour * 60 + picked.minute + 60).coerceAtMost(23 * 60 + 30))
+                        end = minutesToTime((picked.hour * 60 + picked.minute + 60).coerceAtMost(MaxEndMinutes))
                     }
                 } else {
                     end = picked

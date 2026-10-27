@@ -16,6 +16,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.crko.domain.Event
 import com.crko.domain.LocalClock
+import com.crko.domain.MaxEndMinutes
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
 import com.crko.state.WriteResult
@@ -165,12 +166,13 @@ fun CrkoApp(state: AppStateHolder) {
 
 private fun newEvent(state: AppStateHolder, now: LocalClock): Event {
     val start = ((now.time.hour * 60 + now.time.minute) / 30 + 1) * 30
+    val startMinutes = start.coerceAtMost(23 * 60 + 30)
     return Event(
         id = null,
         title = "",
         date = state.today.toString(),
-        startMinutes = start.coerceAtMost(23 * 60 + 30),
-        endMinutes = (start + 60).coerceAtMost(24 * 60),
+        startMinutes = startMinutes,
+        endMinutes = (startMinutes + 60).coerceAtMost(MaxEndMinutes),
     )
 }
 

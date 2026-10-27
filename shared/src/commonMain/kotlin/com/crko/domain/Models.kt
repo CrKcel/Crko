@@ -19,6 +19,12 @@ data class Event(
     val note: String = "",
 )
 
+/**
+ * Latest minute of day an event may end at (23:59). The editor renders times as [LocalTime],
+ * which cannot represent 24:00, so an end at 1440 would crash on recompose.
+ */
+const val MaxEndMinutes = 23 * 60 + 59
+
 enum class TodoPriority { High, Normal, Low }
 
 @Serializable

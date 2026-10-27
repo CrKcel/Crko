@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.crko.domain.AppState
 import com.crko.domain.Event
+import com.crko.domain.MaxEndMinutes
 import com.crko.domain.PersistedSettings
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
@@ -116,7 +117,7 @@ class AppStateHolder(
     fun saveEvent(event: Event): WriteResult {
         if (event.title.isBlank()) return WriteResult.EmptyTitle
         if (event.endMinutes <= event.startMinutes) return WriteResult.InvalidTimeRange
-        val normalized = event.copy(title = event.title.trim(), endMinutes = event.endMinutes.coerceAtMost(24 * 60))
+        val normalized = event.copy(title = event.title.trim(), endMinutes = event.endMinutes.coerceAtMost(MaxEndMinutes))
         val events = appState.events
         val exists = events.any { it.id == normalized.id }
         val updated = if (exists) events.map { if (it.id == normalized.id) normalized else it } else events + normalized

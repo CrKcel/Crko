@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Event
 import com.crko.domain.LocalClock
+import com.crko.domain.MaxEndMinutes
 import com.crko.domain.minutesOfDay
 import com.crko.domain.startOfMonth
 import com.crko.domain.startOfWeek
@@ -89,7 +90,7 @@ fun ScheduleTab(
                 title = "",
                 date = date.toString(),
                 startMinutes = startMinutes,
-                endMinutes = (startMinutes + 60).coerceAtMost(24 * 60),
+                endMinutes = (startMinutes + 60).coerceAtMost(MaxEndMinutes),
             ),
         )
     }

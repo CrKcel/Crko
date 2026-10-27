@@ -2,6 +2,7 @@ package com.crko
 
 import com.crko.domain.AppState
 import com.crko.domain.Event
+import com.crko.domain.MaxEndMinutes
 import com.crko.domain.plusDays
 import com.crko.domain.PersistedSettings
 import com.crko.domain.TodoPriority
@@ -92,10 +93,11 @@ class StateHolderTest {
     }
 
     @Test
-    fun endTimeIsClampedToEndOfDay() {
+    fun endTimeIsClampedBeforeMidnight() {
         val f = Fixture()
         f.holder.saveEvent(Event("e1", "Late", "2026-10-27", 1400, 2000))
-        assertEquals(24 * 60, f.holder.appState.events.single().endMinutes)
+        // 24:00 is not representable as LocalTime; the editor would crash recomposing it.
+        assertEquals(MaxEndMinutes, f.holder.appState.events.single().endMinutes)
     }
 
     @Test
