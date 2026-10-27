@@ -2,9 +2,7 @@ package com.crko.ui.common
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -64,11 +62,9 @@ fun CrkoApp(state: AppStateHolder) {
     }
 
     Scaffold(
-        // WindowInsets resolution differs between Android and iOS (statusBars is empty there), so
-        // the whole scaffold is inset against the safe drawing area and the body receives no
-        // further content inset.
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        modifier = Modifier.safeDrawingPadding(),
+        // The scaffold fills the whole window: content receives status-bar and display-cutout
+        // insets as PaddingValues, and the NavigationBar is docked at the true window bottom so
+        // its background extends behind the gesture indicator while its items stay clear of it.
         bottomBar = {
             NavigationBar {
                 NavigationBarItem(
