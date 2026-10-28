@@ -22,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.crko.domain.Event
 import com.crko.domain.LocalClock
 import com.crko.domain.MaxEndMinutes
@@ -107,24 +106,15 @@ fun ScheduleTab(
                 .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(modifier = Modifier.weight(1f, fill = false)) {
-                // While the calendar is unfolded the pager may show another month; follow it.
-                val heading = if (expanded) monthAnchor else weekAnchor
-                Text(
-                    text = strings.monthTitle(heading.year, heading.month),
-                    style = if (strings === ZhStrings) MiuixTheme.textStyles.title3 else MiuixTheme.textStyles.title1,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                )
-                if (!expanded) {
-                    Text(
-                        text = strings.weekOfMonth(weekOfMonthIndex(weekAnchor)),
-                        style = MiuixTheme.textStyles.footnote1,
-                        fontSize = 12.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    )
-                }
-            }
+            // While the calendar is unfolded the pager may show another month; follow it.
+            val heading = if (expanded) monthAnchor else weekAnchor
+            Text(
+                text = strings.monthTitle(heading.year, heading.month),
+                modifier = Modifier.weight(1f, fill = false),
+                style = if (strings === ZhStrings) MiuixTheme.textStyles.title3 else MiuixTheme.textStyles.title1,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+            )
             Spacer(Modifier.weight(1f))
             Box {
                 IconButton(onClick = { showViewMenu = true }) {

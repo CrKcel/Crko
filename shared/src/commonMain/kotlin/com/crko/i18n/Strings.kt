@@ -66,7 +66,6 @@ interface Strings {
     val expandCalendar: String
     val collapseCalendar: String
     val scheduleHint: String
-    fun weekOfMonth(index: Int): String
     fun eventsCount(count: Int): String
     val viewTimeline: String
     val viewList: String
@@ -160,7 +159,6 @@ object ZhStrings : Strings {
     override val expandCalendar = "展开月视图"
     override val collapseCalendar = "收起月视图"
     override val scheduleHint = "点击空白时段快速新建"
-    override fun weekOfMonth(index: Int) = "第${index + 1}周"
     override fun eventsCount(count: Int) = if (count == 0) "" else "$count 项"
     override val viewTimeline = "时间轴"
     override val viewList = "列表"
@@ -257,7 +255,6 @@ object EnStrings : Strings {
     override val expandCalendar = "Show month"
     override val collapseCalendar = "Hide month"
     override val scheduleHint = "Tap an empty slot to add"
-    override fun weekOfMonth(index: Int) = if (index == 0) "Week 1" else "Wk ${index + 1}"
     override fun eventsCount(count: Int) = if (count == 0) "" else if (count == 1) "1 event" else "$count events"
     override val viewTimeline = "Timeline"
     override val viewList = "List"
