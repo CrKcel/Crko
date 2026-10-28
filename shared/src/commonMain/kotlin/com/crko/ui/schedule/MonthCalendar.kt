@@ -3,6 +3,7 @@ package com.crko.ui.schedule
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
@@ -23,6 +24,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -366,32 +368,34 @@ private fun MonthCell(
     modifier: Modifier = Modifier,
 ) {
     val scheme = MiuixTheme.colorScheme
+    val shape = RoundedCornerShape(12.dp)
     Column(
-        modifier = modifier.clickable(onClick = onClick),
+        modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Box(
             modifier = Modifier
-                .size(30.dp)
-                .clip(CircleShape)
-                .background(
+                .size(38.dp)
+                .clip(shape)
+                .then(
                     when {
-                        selected -> scheme.primary
-                        isToday -> scheme.primaryContainer
-                        else -> Color.Transparent
+                        isToday -> Modifier.background(scheme.primary)
+                        selected -> Modifier.border(2.dp, scheme.primary, shape)
+                        else -> Modifier
                     },
-                ),
+                )
+                .clickable(onClick = onClick),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = date.day.toString(),
                 style = MiuixTheme.textStyles.body1,
-                fontSize = 14.sp,
-                fontWeight = if (selected || isToday) FontWeight.Bold else FontWeight.Normal,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
                 color = when {
-                    selected -> scheme.onPrimary
-                    isToday -> scheme.onPrimaryContainer
+                    isToday -> scheme.onPrimary
+                    selected -> scheme.primary
                     inMonth -> scheme.onSurface
                     else -> scheme.onSurfaceVariantSummary.copy(alpha = 0.45f)
                 },
@@ -404,7 +408,7 @@ private fun MonthCell(
                 .clip(CircleShape)
                 .background(
                     when {
-                        !hasEvents || !inMonth -> Color.Transparent
+                        isToday || !hasEvents || !inMonth -> Color.Transparent
                         selected -> scheme.primary
                         else -> scheme.onSurfaceVariantSummary.copy(alpha = 0.6f)
                     },
