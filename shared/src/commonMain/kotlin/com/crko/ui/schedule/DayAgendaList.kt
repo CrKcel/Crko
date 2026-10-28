@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -126,8 +127,10 @@ internal fun DayAgendaList(
     onOpen: (Event) -> Unit,
 ) {
     val tones = eventTones()
+    // Fills the page height: a pager centres a shorter page on the cross axis, which would leave a
+    // band of empty screen above the first row.
     LazyColumn(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxSize(),
     ) {
         items(events, key = { "event-${it.id}" }) { event ->
             AgendaEventRow(event = event, tones = tones, strings = strings, onOpen = onOpen)

@@ -110,6 +110,7 @@ fun ScheduleTab(
 
     val dayEvents = remember(selected, state.appState.events) { state.eventsOn(selected) }
     val dayPager = rememberDayPager(selected = selected, today = today, onSelect = ::select)
+    val overviewPager = rememberWeekPager(selected = selected, onSelect = ::select)
 
     Column(
         modifier = Modifier
@@ -224,7 +225,7 @@ fun ScheduleTab(
 
         // The overview and the day pager share this area; the upper calendar stays untouched.
         // A two-finger spread opens the week overview and a pinch closes it, while one-finger
-        // swipes still page the day view.
+        // swipes page the days — or, in the overview, the weeks.
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -246,28 +247,36 @@ fun ScheduleTab(
                 label = "schedule-content",
             ) { inWeekView ->
                 if (inWeekView) {
-                    val weekDays = remember(weekAnchor) { weekAnchor.weekDates() }
-                    val weekEvents = remember(weekDays, events) {
-                        weekDays.associateWith { date -> state.eventsOn(date) }
-                    }
-                    if (listMode) {
-                        WeekAgendaList(
-                            strings = strings,
-                            today = today,
-                            weekStart = weekAnchor,
-                            eventsByDate = weekEvents,
-                            onOpen = onOpenEvent,
-                        )
-                    } else {
-                        WeekTimeline(
-                            strings = strings,
-                            today = today,
-                            now = now,
-                            weekStart = weekAnchor,
-                            eventsByDate = weekEvents,
-                            defaultScrollHour = state.settings.agendaScrollHour,
-                            onOpen = onOpenEvent,
-                        )
+                    // One page per week: a horizontal swipe walks the overview to the adjacent week,
+                    // and the pager reports the week it lands on so the calendar follows.
+                    HorizontalPager(
+                        state = overviewPager.state,
+                        modifier = Modifier.fillMaxSize(),
+                    ) { page ->
+                        val weekStart = overviewPager.weekAt(page)
+                        val weekDays = remember(weekStart) { weekStart.weekDates() }
+                        val weekEvents = remember(weekDays, events) {
+                            weekDays.associateWith { date -> state.eventsOn(date) }
+                        }
+                        if (listMode) {
+                            WeekAgendaList(
+                                strings = strings,
+                                today = today,
+                                weekStart = weekStart,
+                                eventsByDate = weekEvents,
+                                onOpen = onOpenEvent,
+                            )
+                        } else {
+                            WeekTimeline(
+                                strings = strings,
+                                today = today,
+                                now = now,
+                                weekStart = weekStart,
+                                eventsByDate = weekEvents,
+                                defaultScrollHour = state.settings.agendaScrollHour,
+                                onOpen = onOpenEvent,
+                            )
+                        }
                     }
                 } else {
                     // No offscreen pages: the calendar above animates its height, so every frame

@@ -53,12 +53,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.crko.domain.mondayIndex
 import com.crko.domain.monthGrid
-import com.crko.domain.plusDays
 import com.crko.domain.plusMonths
 import com.crko.domain.startOfMonth
-import com.crko.domain.startOfWeek
 import com.crko.domain.weekDates
 import com.crko.i18n.Strings
 import kotlinx.coroutines.CoroutineScope
@@ -74,8 +71,6 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val PageCount = 2400
 private const val HomePage = PageCount / 2
-private const val WeekPageCount = 2400
-private const val WeekHomePage = WeekPageCount / 2
 private const val MaxMonthRows = 6
 private val FoldFlingVelocity = 400.dp
 
@@ -245,7 +240,7 @@ internal fun WeekMonthCalendar(
     val weekPage: @Composable PagerScope.(Int) -> Unit = remember(weekPager) {
         { page ->
             WeekRow(
-                weekStart = weekPager.weekStartAt(page),
+                weekStart = weekPager.weekAt(page),
                 month = currentSelected.startOfMonth(),
                 selected = currentSelected,
                 today = currentToday,
@@ -377,51 +372,6 @@ private class MonthPager(val state: PagerState, private val baseMonth: LocalDate
             (month.year - baseMonth.year) * 12 + (month.month.number - baseMonth.month.number)
         return (HomePage + months).coerceIn(0, PageCount - 1)
     }
-}
-
-/** Same pinned mapping as [MonthPager], one page per week instead of per month. */
-private class WeekPager(val state: PagerState, private val baseWeek: LocalDate) {
-    fun weekStartAt(page: Int): LocalDate = baseWeek.plusDays((page - WeekHomePage) * 7)
-
-    fun pageOf(date: LocalDate): Int {
-        val weeks = ((date.startOfWeek().toEpochDays() - baseWeek.toEpochDays()) / 7).toInt()
-        return (WeekHomePage + weeks).coerceIn(0, WeekPageCount - 1)
-    }
-}
-
-/**
- * Week pager for the collapsed calendar. Picking another week keeps the same weekday, which is the
- * day the rest of the screen follows.
- */
-@Composable
-private fun rememberWeekPager(
-    selected: LocalDate,
-    onSelect: (LocalDate) -> Unit,
-): WeekPager {
-    val pagerState = rememberPagerState(initialPage = WeekHomePage) { WeekPageCount }
-    // Saved with the pager so a restored page index still maps to the week it was showing.
-    val savedBaseWeek = rememberSaveable { selected.startOfWeek().toString() }
-    val pager = remember(pagerState, savedBaseWeek) {
-        WeekPager(pagerState, LocalDate.parse(savedBaseWeek))
-    }
-
-    val currentSelected by rememberUpdatedState(selected)
-    val currentOnSelect by rememberUpdatedState(onSelect)
-
-    // A week picked outside the pager (a cell tap, the day pager) moves it there; weeks that come
-    // from paging already sit under the settled page, so nothing moves.
-    LaunchedEffect(selected) {
-        val page = pager.pageOf(selected)
-        if (page != pagerState.currentPage) pagerState.scrollToPage(page)
-    }
-
-    LaunchedEffect(pagerState) {
-        snapshotFlow { pagerState.settledPage }.collect { page ->
-            val target = pager.weekStartAt(page).plusDays(currentSelected.mondayIndex)
-            if (target != currentSelected) currentOnSelect(target)
-        }
-    }
-    return pager
 }
 
 /** A single Monday-first week, drawn with the same cells as the month grid. */

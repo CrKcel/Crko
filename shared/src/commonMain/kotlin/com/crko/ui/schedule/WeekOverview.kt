@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -26,6 +28,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,6 +50,8 @@ import com.crko.domain.Event
 import com.crko.domain.LocalClock
 import com.crko.domain.minutesOfDay
 import com.crko.domain.mondayIndex
+import com.crko.domain.plusDays
+import com.crko.domain.startOfWeek
 import com.crko.domain.weekDates
 import com.crko.i18n.Strings
 import kotlinx.datetime.LocalDate
@@ -58,6 +64,9 @@ private val WeekDayHeaderHeight = 38.dp
 // Finger span change that switches between the day pager and the week overview.
 private const val ExpandTriggerRatio = 1.3f
 private const val CollapseTriggerRatio = 0.72f
+
+private const val WeekPageCount = 2400
+private const val WeekHomePage = WeekPageCount / 2
 
 /**
  * Two-finger pinch that opens the week overview (spread) and closes it (pinch). Single-pointer
@@ -109,6 +118,59 @@ internal fun Modifier.weekOverviewGesture(
     }
 }
 
+/**
+ * Week pager with a pinned page-to-week mapping, the same arrangement as [DayPager]: page
+ * [WeekHomePage] always shows the week the screen opened on and every other page a fixed offset
+ * from it. Paging never remaps content, so a fling is never rewritten while it is in flight.
+ */
+internal class WeekPager(val state: PagerState, private val baseWeek: LocalDate) {
+    fun weekAt(page: Int): LocalDate = baseWeek.plusDays((page - WeekHomePage) * 7)
+
+    fun pageOf(date: LocalDate): Int {
+        val weeks = ((date.startOfWeek().toEpochDays() - baseWeek.toEpochDays()) / 7).toInt()
+        return (WeekHomePage + weeks).coerceIn(0, WeekPageCount - 1)
+    }
+}
+
+/**
+ * Pager over whole weeks, used by the collapsed calendar row and by the week overview. Settling on
+ * another week keeps the same weekday, which is the day the rest of the screen follows.
+ */
+@Composable
+internal fun rememberWeekPager(
+    selected: LocalDate,
+    onSelect: (LocalDate) -> Unit,
+): WeekPager {
+    val pagerState = rememberPagerState(initialPage = WeekHomePage) { WeekPageCount }
+    // Saved with the pager so a restored page index still maps to the week it was showing.
+    val savedBaseWeek = rememberSaveable { selected.startOfWeek().toString() }
+    val pager = remember(pagerState, savedBaseWeek) {
+        WeekPager(pagerState, LocalDate.parse(savedBaseWeek))
+    }
+
+    // The collectors below outlive recompositions, so read the parameters through the latest value
+    // rather than the one captured when they started.
+    val currentSelected by rememberUpdatedState(selected)
+    val currentOnSelect by rememberUpdatedState(onSelect)
+
+    // A week picked outside the pager (a cell tap, the day pager, the other week pager) moves it
+    // there; weeks that come from paging already sit under the settled page, so nothing moves.
+    LaunchedEffect(selected) {
+        val page = pager.pageOf(selected)
+        if (page != pagerState.currentPage) pagerState.scrollToPage(page)
+    }
+
+    // Report the week once the pager has come to rest. A page reported mid-gesture would retarget
+    // the selection above and interrupt the fling that is still in flight.
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.settledPage }.collect { page ->
+            val target = pager.weekAt(page).plusDays(currentSelected.mondayIndex)
+            if (target != currentSelected) currentOnSelect(target)
+        }
+    }
+    return pager
+}
+
 /** Whole-week overview drawn as seven day columns on a shared 24-hour grid. */
 @Composable
 internal fun WeekTimeline(
@@ -121,9 +183,11 @@ internal fun WeekTimeline(
     onOpen: (Event) -> Unit,
 ) {
     val days = remember(weekStart) { weekStart.weekDates() }
-    val scrollState = rememberScrollState()
     val startHour = if (today in days) now.time.hour else defaultScrollHour
     val targetOffsetPx = with(LocalDensity.current) { (HourHeight * startHour).roundToPx() }
+    // Seeded on first composition: a page swiped in is drawn as soon as it is partly visible, and
+    // starting at midnight would show for the frame before the effect below gets to run.
+    val scrollState = rememberScrollState(targetOffsetPx)
 
     LaunchedEffect(weekStart, targetOffsetPx) {
         val maxOffset = scrollState.maxValue
