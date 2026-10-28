@@ -2,7 +2,6 @@ package com.crko.ui.schedule
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -27,7 +26,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -37,7 +35,6 @@ import androidx.compose.ui.zIndex
 import com.crko.domain.Event
 import com.crko.domain.LocalClock
 import com.crko.domain.minutesOfDay
-import com.crko.domain.plusDays
 import com.crko.i18n.Strings
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
@@ -55,7 +52,6 @@ internal fun DayTimeline(
     date: LocalDate,
     events: List<Event>,
     defaultScrollHour: Int,
-    onSelectDay: (LocalDate) -> Unit,
     onAdd: (LocalDate, Int?) -> Unit,
     onOpen: (Event) -> Unit,
 ) {
@@ -77,8 +73,7 @@ internal fun DayTimeline(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(scrollState)
-            .swipeDayPager(date, onSelectDay),
+            .verticalScroll(scrollState),
     ) {
         TimelineGrid(
             strings = strings,
@@ -90,29 +85,6 @@ internal fun DayTimeline(
             onOpen = onOpen,
         )
     }
-}
-
-/**
- * Turns a decisive horizontal swipe into a day change. Small movements never consume the
- * gesture, so slot taps and vertical scrolling keep working inside the grid.
- */
-private fun Modifier.swipeDayPager(
-    date: LocalDate,
-    onSelectDay: (LocalDate) -> Unit,
-): Modifier = pointerInput(date) {
-    var total = 0f
-    detectHorizontalDragGestures(
-        onHorizontalDrag = { _, amount -> total += amount },
-        onDragEnd = {
-            val threshold = size.width * 0.2f
-            when {
-                total > threshold -> onSelectDay(date.plusDays(-1))
-                total < -threshold -> onSelectDay(date.plusDays(1))
-            }
-            total = 0f
-        },
-        onDragCancel = { total = 0f },
-    )
 }
 
 @Composable

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -91,6 +92,7 @@ fun ScheduleTab(
     }
 
     val dayEvents = remember(selected, state.appState.events) { state.eventsOn(selected) }
+    val dayPager = rememberDayPager(selected = selected, today = today, onSelect = ::select)
 
     Column(
         modifier = Modifier
@@ -185,10 +187,20 @@ fun ScheduleTab(
             )
         }
 
-        Box(modifier = Modifier.weight(1f)) {
+        // Both views live on the same day pager, so swiping left or right always moves one day and
+        // the transition follows the finger instead of jumping.
+        HorizontalPager(
+            state = dayPager.state,
+            beyondViewportPageCount = 1,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+        ) { page ->
+            val date = dayPager.dateAt(page)
+            val events = remember(date, state.appState.events) { state.eventsOn(date) }
             if (listMode) {
                 DayAgendaList(
-                    events = dayEvents,
+                    events = events,
                     strings = strings,
                     onOpen = onOpenEvent,
                 )
@@ -197,10 +209,9 @@ fun ScheduleTab(
                     strings = strings,
                     today = today,
                     now = now,
-                    date = selected,
-                    events = dayEvents,
+                    date = date,
+                    events = events,
                     defaultScrollHour = state.settings.agendaScrollHour,
-                    onSelectDay = ::select,
                     onAdd = ::createAt,
                     onOpen = onOpenEvent,
                 )
