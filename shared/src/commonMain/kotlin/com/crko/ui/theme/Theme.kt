@@ -50,9 +50,8 @@ private fun createThemeController(
 ): ThemeController = when (effective) {
     EffectivePalette.Monet -> ThemeController(ColorSchemeMode.MonetSystem, keyColor = null, isDark = isDark)
     EffectivePalette.Monochrome -> ThemeController(
-        colorSchemeMode = ColorSchemeMode.MonetSystem,
-        keyColor = Color(0xFF808080),
-        paletteStyle = ThemePaletteStyle.Monochrome,
+        // No dynamic palette: miuix falls back to its own lightColorScheme()/darkColorScheme() defaults.
+        colorSchemeMode = ColorSchemeMode.System,
         isDark = isDark,
     )
     EffectivePalette.Custom -> ThemeController(

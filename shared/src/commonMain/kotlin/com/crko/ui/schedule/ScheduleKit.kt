@@ -89,7 +89,9 @@ internal fun eventTones(): List<Pair<Color, Color>> {
         // block background to the exact colour of its text; surface tiers stay paired in every palette.
         scheme.surfaceContainerHighest to scheme.onSurfaceContainerHighest,
         scheme.primaryContainer to scheme.onPrimaryContainer,
-        scheme.secondaryContainer to scheme.onSecondaryContainer,
+        // miuix's static scheme paints onSecondaryContainer as a muted label, not as text on its
+        // own container; onSurfaceContainer is a foreground in both the static and Monet mappings.
+        scheme.secondaryContainer to scheme.onSurfaceContainer,
         scheme.tertiaryContainer to scheme.onTertiaryContainer,
     )
 }
