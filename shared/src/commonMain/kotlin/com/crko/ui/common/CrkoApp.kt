@@ -2,7 +2,15 @@ package com.crko.ui.common
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.tappableElement
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -13,6 +21,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.crko.domain.Event
 import com.crko.domain.LocalClock
 import com.crko.domain.MaxEndMinutes
@@ -36,6 +46,9 @@ import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.Platform
+import top.yukonga.miuix.kmp.utils.platform
 import kotlin.time.Clock
 import com.crko.ui.icons.AppIcons
 
@@ -71,25 +84,37 @@ fun CrkoApp(state: AppStateHolder) {
         // insets as PaddingValues, and the NavigationBar is docked at the true window bottom so
         // its background extends behind the gesture indicator while its items stay clear of it.
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = tab == 0,
-                    onClick = { tab = 0 },
-                    icon = AppIcons.Task,
-                    label = strings.tabTodo,
-                )
-                NavigationBarItem(
-                    selected = tab == 1,
-                    onClick = { tab = 1 },
-                    icon = AppIcons.Timeline,
-                    label = strings.tabSchedule,
-                )
-                NavigationBarItem(
-                    selected = tab == 2,
-                    onClick = { tab = 2 },
-                    icon = AppIcons.Tune,
-                    label = strings.tabMore,
-                )
+            // The bar is docked at the window bottom, so only a navigation area with real system
+            // buttons (3-button/desktop nav) must be cleared. A gesture indicator (iOS home
+            // indicator, Android gesture pill) is already cleared by the bar's own item padding;
+            // miuix's defaults reserve a fixed 20.dp on iOS and the full gesture inset on Android,
+            // which lifts the bar off the bottom edge for no reason.
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MiuixTheme.colorScheme.surface),
+            ) {
+                NavigationBar(defaultWindowInsetsPadding = false) {
+                    NavigationBarItem(
+                        selected = tab == 0,
+                        onClick = { tab = 0 },
+                        icon = AppIcons.Task,
+                        label = strings.tabTodo,
+                    )
+                    NavigationBarItem(
+                        selected = tab == 1,
+                        onClick = { tab = 1 },
+                        icon = AppIcons.Timeline,
+                        label = strings.tabSchedule,
+                    )
+                    NavigationBarItem(
+                        selected = tab == 2,
+                        onClick = { tab = 2 },
+                        icon = AppIcons.Tune,
+                        label = strings.tabMore,
+                    )
+                }
+                Spacer(Modifier.height(bottomBarInset()))
             }
         },
         floatingActionButton = {
@@ -163,6 +188,20 @@ fun CrkoApp(state: AppStateHolder) {
         onDismiss = { showSettings = false },
     )
 }
+
+/**
+ * Space the bottom bar must leave for the system navigation area. Tappable navigation buttons
+ * (3-button and desktop navigation) cover it on Android and need to stay clear; iOS and Android
+ * gesture navigation only draw a small gesture indicator there, which the bar's item padding
+ * already avoids, so no extra space is reserved.
+ */
+@Composable
+private fun bottomBarInset(): Dp =
+    if (platform() == Platform.IOS) {
+        0.dp
+    } else {
+        WindowInsets.tappableElement.asPaddingValues().calculateBottomPadding()
+    }
 
 private fun newEvent(state: AppStateHolder, now: LocalClock): Event {
     val start = ((now.time.hour * 60 + now.time.minute) / 30 + 1) * 30
