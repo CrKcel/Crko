@@ -48,8 +48,10 @@ import com.crko.domain.plusMonths
 import com.crko.domain.startOfMonth
 import com.crko.i18n.Strings
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.number
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Text
@@ -107,13 +109,16 @@ internal fun WeekMonthCalendar(
     LaunchedEffect(expanded) { settle(if (expanded) 1f else 0f) }
 
     val anchorMonth = monthAnchor.startOfMonth()
-    val pagerState = rememberMonthPagerState(anchorMonth, onMonthChange)
+    val pager = rememberMonthPager(anchorMonth, onMonthChange)
 
     // Folding back always returns to the selected week; paging may have left another month shown.
     LaunchedEffect(expanded, selected) {
-        if (!expanded && anchorMonth.plusMonths(pagerState.currentPage - HomePage) != selected.startOfMonth()) {
-            pagerState.scrollToPage(HomePage)
-            onMonthChange(selected.startOfMonth())
+        if (!expanded) {
+            val selectedMonth = selected.startOfMonth()
+            if (pager.monthAt(pager.state.currentPage) != selectedMonth) {
+                pager.state.scrollToPage(pager.pageOf(selectedMonth))
+                onMonthChange(selectedMonth)
+            }
         }
     }
 
@@ -155,16 +160,17 @@ internal fun WeekMonthCalendar(
                     .wrapContentHeight(align = Alignment.Top, unbounded = true),
             ) {
                 HorizontalPager(
-                    state = pagerState,
+                    state = pager.state,
                     userScrollEnabled = progress > 0.99f,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(MonthRowHeight * MaxMonthRows.toFloat())
                         .offset { IntOffset(0, (-(1f - progress) * selectedRow * rowHeightPx).roundToInt()) },
                 ) { page ->
+                    val month = pager.monthAt(page)
                     MonthPage(
-                        month = anchorMonth.plusMonths(page - HomePage),
-                        days = anchorMonth.plusMonths(page - HomePage).monthGrid(),
+                        month = month,
+                        days = month.monthGrid(),
                         selected = selected,
                         today = today,
                         eventDates = eventDates,
@@ -189,26 +195,27 @@ internal fun MonthCalendar(
     modifier: Modifier = Modifier,
 ) {
     val anchorMonth = monthAnchor.startOfMonth()
-    val pagerState = rememberMonthPagerState(anchorMonth, onMonthChange)
+    val pager = rememberMonthPager(anchorMonth, onMonthChange)
 
     Column(modifier = modifier.fillMaxWidth()) {
         WeekdayHeader(strings)
         Spacer(Modifier.height(2.dp))
         MonthCaption(
             strings = strings,
-            month = anchorMonth.plusMonths(pagerState.currentPage - HomePage),
-            fraction = pagerState.currentPageOffsetFraction,
+            month = pager.monthAt(pager.state.currentPage),
+            fraction = pager.state.currentPageOffsetFraction,
             modifier = Modifier.padding(bottom = 2.dp),
         )
         HorizontalPager(
-            state = pagerState,
+            state = pager.state,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(MonthRowHeight * MaxMonthRows.toFloat()),
         ) { page ->
+            val month = pager.monthAt(page)
             MonthPage(
-                month = anchorMonth.plusMonths(page - HomePage),
-                days = anchorMonth.plusMonths(page - HomePage).monthGrid(),
+                month = month,
+                days = month.monthGrid(),
                 selected = selected,
                 today = today,
                 eventDates = eventDates,
@@ -218,31 +225,61 @@ internal fun MonthCalendar(
     }
 }
 
+/**
+ * Month pager with a pinned page-to-month mapping: page [HomePage] always shows [baseMonth] and
+ * every other page a fixed offset from it. Paging therefore never remaps content — a month chosen
+ * elsewhere moves the pager instead — so a fling is never rewritten while it is in flight.
+ */
+private class MonthPager(val state: PagerState, private val baseMonth: LocalDate) {
+    fun monthAt(page: Int): LocalDate = baseMonth.plusMonths(page - HomePage)
+
+    fun pageOf(month: LocalDate): Int {
+        val months =
+            (month.year - baseMonth.year) * 12 + (month.month.number - baseMonth.month.number)
+        return (HomePage + months).coerceIn(0, PageCount - 1)
+    }
+}
+
+/** Snapped to a page with nothing animating: not dragging, not settling, not between pages. */
+private val PagerState.isAtRest: Boolean
+    get() = !isScrollInProgress && currentPageOffsetFraction == 0f
+
 @Composable
-private fun rememberMonthPagerState(
+private fun rememberMonthPager(
     anchorMonth: LocalDate,
     onMonthChange: (LocalDate) -> Unit,
-): PagerState {
+): MonthPager {
     val pagerState = rememberPagerState(initialPage = HomePage) { PageCount }
+    // Saved with the pager so a restored page index still maps to the month it was showing.
+    val savedBaseMonth = rememberSaveable { anchorMonth.startOfMonth().toString() }
+    val pager = remember(pagerState) { MonthPager(pagerState, LocalDate.parse(savedBaseMonth)) }
 
-    // The collector below is keyed on the pager alone, so reading the parameters directly would
-    // keep the anchor from the first composition. After every settled page the pager recenters on
-    // HomePage while the anchor moves, so the relative offset must be applied to the current
-    // anchor — otherwise a swipe is measured against a month that is no longer displayed.
+    // The collectors below outlive recompositions, so read the parameters through the latest value
+    // rather than the one captured when they started.
     val currentAnchor by rememberUpdatedState(anchorMonth)
     val currentOnMonthChange by rememberUpdatedState(onMonthChange)
 
-    // Selection outside the pager (week row, today) recenters the pager on the anchor month.
+    // A month picked outside the pager (a week row, today) moves it there. Months that come from
+    // paging already sit under the settled page, so nothing moves.
     LaunchedEffect(anchorMonth) {
-        val pageMonth = anchorMonth.plusMonths(pagerState.currentPage - HomePage)
-        if (pageMonth != anchorMonth) pagerState.scrollToPage(HomePage)
+        if (pager.monthAt(pagerState.currentPage) == anchorMonth) return@LaunchedEffect
+        // Never cut a running settle short: only jump once the pager has come to rest.
+        snapshotFlow { pagerState.isAtRest }.first { it }
+        val page = pager.pageOf(anchorMonth)
+        if (page != pagerState.currentPage) pagerState.scrollToPage(page)
     }
+
+    // Report the month once the pager has come to rest. A page reported mid-gesture would retarget
+    // the anchor above and interrupt the fling that is still in flight.
     LaunchedEffect(pagerState) {
-        snapshotFlow { pagerState.settledPage }.collect { page ->
-            if (page != HomePage) currentOnMonthChange(currentAnchor.plusMonths(page - HomePage))
-        }
+        snapshotFlow { pagerState.currentPage.takeIf { pagerState.isAtRest } }
+            .collect { page ->
+                if (page == null) return@collect
+                val month = pager.monthAt(page)
+                if (month != currentAnchor) currentOnMonthChange(month)
+            }
     }
-    return pagerState
+    return pager
 }
 
 @Composable
