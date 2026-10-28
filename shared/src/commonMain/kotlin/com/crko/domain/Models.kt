@@ -1,8 +1,6 @@
 package com.crko.domain
 
 import kotlinx.datetime.LocalDate
-import kotlinx.datetime.LocalDateTime
-import kotlinx.datetime.LocalTime
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -20,7 +18,7 @@ data class Event(
 )
 
 /**
- * Latest minute of day an event may end at (23:59). The editor renders times as [LocalTime],
+ * Latest minute of day an event may end at (23:59). The editor renders times as LocalTime,
  * which cannot represent 24:00, so an end at 1440 would crash on recompose.
  */
 const val MaxEndMinutes = 23 * 60 + 59
@@ -58,12 +56,6 @@ data class PersistedSettings(
     val agendaView: String = "",
     val agendaScrollHour: Int = -1,
 )
-
-val Event.startsAt: LocalDateTime
-    get() = LocalDateTime(LocalDate.parse(date), LocalTime(startMinutes / 60, startMinutes % 60))
-
-val Event.endsAt: LocalDateTime
-    get() = LocalDateTime(LocalDate.parse(date), LocalTime(endMinutes / 60, endMinutes % 60))
 
 val Event.day: LocalDate
     get() = LocalDate.parse(date)

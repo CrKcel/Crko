@@ -16,7 +16,6 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Instant
@@ -41,7 +40,7 @@ private class MemoryStorage(
 }
 
 private class Fixture(
-    storage: MemoryStorage = MemoryStorage(),
+    val storage: MemoryStorage = MemoryStorage(),
     locale: String = "en-US",
 ) {
     var ids = 0
@@ -54,7 +53,6 @@ private class Fixture(
         idProvider = { "id-${ids++}" },
         storage = storage,
     )
-    val storage = storage
 }
 
 class StateHolderTest {

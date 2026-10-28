@@ -24,7 +24,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -37,15 +36,16 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.crko.domain.LocalClock
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
 import com.crko.i18n.Strings
+import com.crko.i18n.todoPriorityLabel
 import com.crko.ui.schedule.isOverdue
 import com.crko.ui.schedule.priorityColor
 import com.crko.state.AppStateHolder
 import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.crko.ui.icons.AppIcons
@@ -53,10 +53,8 @@ import com.crko.ui.icons.AppIcons
 @Composable
 fun TodoTab(
     state: AppStateHolder,
-    now: LocalClock,
     strings: Strings,
     contentPadding: PaddingValues,
-    onAddTodo: () -> Unit,
 ) {
     val today = state.today
     val active = state.activeTodos()
@@ -110,7 +108,6 @@ fun TodoTab(
                     strings = strings,
                     onToggle = { state.setTodoDone(todo.id, true) },
                     onDelete = { state.deleteTodo(todo.id) },
-                    onOpen = onAddTodo,
                 )
             }
             if (completed.isNotEmpty()) {
@@ -144,7 +141,6 @@ fun TodoTab(
                             strings = strings,
                             onToggle = { state.setTodoDone(todo.id, false) },
                             onDelete = { state.deleteTodo(todo.id) },
-                            onOpen = null,
                         )
                     }
                 }
@@ -160,7 +156,6 @@ private fun TodoCard(
     strings: Strings,
     onToggle: () -> Unit,
     onDelete: () -> Unit,
-    onOpen: (() -> Unit)?,
 ) {
     Row(
         modifier = Modifier
@@ -201,6 +196,15 @@ private fun TodoCard(
         }
         Spacer(Modifier.width(8.dp))
         PriorityTag(todo.priority, strings)
+        Spacer(Modifier.width(4.dp))
+        IconButton(onClick = onDelete, backgroundColor = Color.Transparent) {
+            Icon(
+                imageVector = AppIcons.Delete,
+                contentDescription = strings.delete,
+                tint = MiuixTheme.colorScheme.error,
+                modifier = Modifier.size(18.dp),
+            )
+        }
     }
 }
 
@@ -240,11 +244,7 @@ private fun CheckCircle(checked: Boolean, priority: TodoPriority, onClick: () ->
 @Composable
 private fun PriorityTag(priority: TodoPriority, strings: Strings) {
     Text(
-        text = when (priority) {
-            TodoPriority.High -> strings.priorityHigh
-            TodoPriority.Normal -> strings.priorityNormal
-            TodoPriority.Low -> strings.priorityLow
-        },
+        text = todoPriorityLabel(strings, priority),
         style = MiuixTheme.textStyles.footnote2,
         fontSize = 11.sp,
         color = priorityColor(priority),

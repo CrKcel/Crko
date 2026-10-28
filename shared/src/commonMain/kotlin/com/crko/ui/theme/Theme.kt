@@ -37,10 +37,10 @@ val SeedPalette: List<Color> = listOf(
  * Resolves the palette setting against platform capabilities: wallpaper-based Monet colors are
  * only available on Android; every other platform uses a seed-generated palette.
  */
-fun resolvePalette(setting: PaletteSetting, monetAvailable: Boolean): EffectivePalette = when {
-    setting == PaletteSetting.Monet && monetAvailable -> EffectivePalette.Monet
-    setting == PaletteSetting.Monochrome -> EffectivePalette.Monochrome
-    else -> EffectivePalette.Custom
+fun resolvePalette(setting: PaletteSetting, monetAvailable: Boolean): EffectivePalette = when (setting) {
+    PaletteSetting.Monet -> if (monetAvailable) EffectivePalette.Monet else EffectivePalette.Custom
+    PaletteSetting.Monochrome -> EffectivePalette.Monochrome
+    PaletteSetting.Custom -> EffectivePalette.Custom
 }
 
 private fun createThemeController(

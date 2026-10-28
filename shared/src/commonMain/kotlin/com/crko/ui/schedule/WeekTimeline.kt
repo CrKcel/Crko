@@ -6,7 +6,6 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,7 +15,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.rememberScrollState
@@ -35,7 +33,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -198,7 +195,6 @@ private fun TimelineGrid(
     onAdd: (LocalDate, Int?) -> Unit,
     onOpen: (Event) -> Unit,
 ) {
-    val lineColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.14f)
     val hourHeight = HourHeight
     val eventsByDate = remember(events, weekDates) {
         weekDates.associateWith { date -> events.filter { it.date == date.toString() }.sortedBy { it.startMinutes } }
@@ -263,14 +259,13 @@ private fun TimelineGrid(
                         drawContent()
                         if (date == today) {
                             val y = hourHeight.toPx() * (nowMinutes / 60f)
-                            val barColor = alarmColor
                             drawLine(
-                                color = barColor,
+                                color = alarmColor,
                                 start = Offset(0f, y),
                                 end = Offset(size.width, y),
                                 strokeWidth = 1.5.dp.toPx(),
                             )
-                            drawCircle(color = barColor, radius = 2.5.dp.toPx(), center = Offset(0f, y))
+                            drawCircle(color = alarmColor, radius = 2.5.dp.toPx(), center = Offset(0f, y))
                         }
                     },
             ) {
@@ -302,7 +297,7 @@ private fun TimelineGrid(
 
 /** Lays out event blocks in absolute positions; overlapping events share the column width. */
 @Composable
-private fun BoxScope.EventBlocks(
+private fun EventBlocks(
     events: List<Event>,
     onOpen: (Event) -> Unit,
 ) {

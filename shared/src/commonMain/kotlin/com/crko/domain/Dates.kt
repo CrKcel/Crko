@@ -6,11 +6,9 @@ import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.TimeZone
-import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.isoDayNumber
 import kotlinx.datetime.number
 import kotlinx.datetime.plus
-import kotlinx.datetime.toLocalDateTime
 import kotlinx.datetime.todayIn
 
 /** A single day at a point in time, refreshed by the host every minute. */
@@ -30,9 +28,6 @@ fun LocalDate.weekDates(): List<LocalDate> = (0 until 7).map { plusDays(it) }
 
 fun LocalDate.nextMonthStart(): LocalDate =
     if (month.number == 12) LocalDate(year + 1, 1, 1) else LocalDate(year, month.number + 1, 1)
-
-fun LocalDate.previousMonthStart(): LocalDate =
-    if (month.number == 1) LocalDate(year - 1, 12, 1) else LocalDate(year, month.number - 1, 1)
 
 /**
  * Every date shown in the month grid, from the Monday on or before the 1st through the Sunday on
@@ -61,18 +56,7 @@ fun LocalDate.plusMonths(months: Int): LocalDate {
 fun today(clock: Clock = Clock.System, zone: TimeZone = TimeZone.currentSystemDefault()): LocalDate =
     clock.todayIn(zone)
 
-fun dateOf(instant: Instant, zone: TimeZone = TimeZone.currentSystemDefault()): LocalDate =
-    instant.toLocalDateTime(zone).date
-
-fun timeOf(instant: Instant, zone: TimeZone = TimeZone.currentSystemDefault()): LocalTime =
-    instant.toLocalDateTime(zone).time
-
-fun LocalDate.startInstant(zone: TimeZone = TimeZone.currentSystemDefault()): Instant = atStartOfDayIn(zone)
-
 /** Whole days from this date to [other]; negative when [other] is earlier. */
 fun LocalDate.daysTo(other: LocalDate): Int = (other.toEpochDays() - toEpochDays()).toInt()
 
 fun LocalTime.minutesOfDay(): Int = hour * 60 + minute
-
-/** Rounds up to the next [step]-minute boundary and clamps to the end of the day. */
-fun Int.roundUpTo(step: Int): Int = ((this + step - 1) / step) * step

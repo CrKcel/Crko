@@ -39,7 +39,7 @@ sealed interface AppMessage {
 
 enum class PaletteSetting { Monet, Monochrome, Custom }
 
-/** Result of a mutation attempt; the UI maps [Failure] onto localized text. */
+/** Result of a mutation attempt; the UI maps [WriteResult] onto localized text. */
 sealed interface WriteResult {
     data object Success : WriteResult
     data object EmptyTitle : WriteResult
@@ -130,8 +130,6 @@ class AppStateHolder(
         persist(appState.copy(events = appState.events.filterNot { it.id == id }))
     }
 
-    fun newEventId(): String = idProvider()
-
     // ----- todos -----
 
     fun activeTodos(): List<Todo> = appState.todos
@@ -166,8 +164,6 @@ class AppStateHolder(
     // ----- statistics -----
 
     fun completedToday(): Int = appState.todos.count { it.done && it.due == today.toString() }
-
-    fun completedOn(date: LocalDate): Int = appState.todos.count { it.done && it.due == date.toString() }
 
     fun notify(message: AppMessage) {
         scope.launch { messageChannel.send(message) }

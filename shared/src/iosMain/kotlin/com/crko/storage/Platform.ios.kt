@@ -34,8 +34,8 @@ actual fun systemLocaleTag(): String = NSLocale.currentLocale.languageCode
 
 actual fun systemDarkMode(): Boolean {
     val style = UIApplication.sharedApplication.connectedScenes
-        .mapNotNull { (it as? UIWindowScene)?.keyWindow() }
-        .firstOrNull()
+        .filterIsInstance<UIWindowScene>()
+        .firstNotNullOfOrNull { it.keyWindow() }
         ?.traitCollection
         ?.userInterfaceStyle
     return style == UIUserInterfaceStyle.UIUserInterfaceStyleDark

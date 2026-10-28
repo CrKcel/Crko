@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
@@ -44,7 +43,7 @@ import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-/** Editor for a new or existing event. A null [id] marks a new event. */
+/** Editor for a new or existing event. A null [Event.id] marks a new event. */
 @Composable
 internal fun EventEditorDialog(
     event: Event?,
@@ -91,7 +90,6 @@ private fun EventEditorContent(
         TimePickerDialog(
             initial = if (picking == TimeField.START) start else end,
             title = if (picking == TimeField.START) strings.startTime else strings.endTime,
-            strings = strings,
             confirm = strings.done,
             cancel = strings.cancel,
             onDismiss = {
@@ -295,12 +293,10 @@ private fun DateRow(strings: Strings, date: LocalDate, onChange: (LocalDate) -> 
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun TimePickerDialog(
     initial: LocalTime,
     title: String,
-    strings: Strings,
     confirm: String,
     cancel: String,
     onDismiss: () -> Unit,

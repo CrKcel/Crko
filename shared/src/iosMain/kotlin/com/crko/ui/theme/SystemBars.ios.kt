@@ -14,7 +14,8 @@ object StatusBarAppearance {
     var isDark: Boolean = false
         private set
 
-    /** Registers [listener] and reports the current value immediately. */
+    /** Registers [listener] and reports the current value immediately. Called from Swift. */
+    @Suppress("unused")
     fun observe(listener: (Boolean) -> Unit) {
         this.listener = listener
         listener(isDark)

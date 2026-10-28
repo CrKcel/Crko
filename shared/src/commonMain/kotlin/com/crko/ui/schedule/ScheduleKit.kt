@@ -1,22 +1,13 @@
 package com.crko.ui.schedule
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.crko.domain.Event
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
 import com.crko.i18n.Strings
 import kotlinx.datetime.LocalDate
-import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal val HourHeight = 56.dp
@@ -58,21 +49,6 @@ internal fun priorityColor(priority: TodoPriority): Color = when (priority) {
     TodoPriority.High -> MiuixTheme.colorScheme.error
     TodoPriority.Normal -> MiuixTheme.colorScheme.primary
     TodoPriority.Low -> MiuixTheme.colorScheme.onSurfaceVariantSummary
-}
-
-@Composable
-internal fun CaptionText(
-    text: String,
-    modifier: Modifier = Modifier,
-    color: Color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-) {
-    Text(
-        text = text,
-        modifier = modifier,
-        style = MiuixTheme.textStyles.footnote2,
-        fontSize = 11.sp,
-        color = color,
-    )
 }
 
 /** "Today" / "Tomorrow" / weekday name for the day relative to [today]. */

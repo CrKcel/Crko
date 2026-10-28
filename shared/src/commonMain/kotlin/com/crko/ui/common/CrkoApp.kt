@@ -29,6 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Duration.Companion.seconds
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -104,10 +105,8 @@ fun CrkoApp(state: AppStateHolder) {
             when (current) {
                 0 -> TodoTab(
                     state = state,
-                    now = now,
                     strings = strings,
                     contentPadding = padding,
-                    onAddTodo = { showTodoEditor = true },
                 )
                 1 -> ScheduleTab(
                     state = state,
@@ -118,7 +117,6 @@ fun CrkoApp(state: AppStateHolder) {
                 )
                 else -> MoreTab(
                     state = state,
-                    now = now,
                     strings = strings,
                     contentPadding = padding,
                     onOpenSettings = { showSettings = true },
@@ -179,7 +177,7 @@ private fun rememberClock(state: AppStateHolder): LocalClock {
     LaunchedEffect(Unit) {
         while (true) {
             val instant = Clock.System.now()
-            delay(1000L * (60 - (instant.epochSeconds % 60)))
+            delay((60 - (instant.epochSeconds % 60)).seconds)
             clock = localClockNow()
             state.refreshToday()
         }

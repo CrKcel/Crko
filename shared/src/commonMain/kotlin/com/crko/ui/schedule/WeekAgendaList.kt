@@ -21,7 +21,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Event
-import com.crko.domain.LocalClock
 import com.crko.i18n.Strings
 import com.crko.state.AppStateHolder
 import kotlinx.datetime.LocalDate
@@ -77,11 +76,8 @@ internal fun WeekAgendaList(
     state: AppStateHolder,
     strings: Strings,
     today: LocalDate,
-    now: LocalClock,
     weekDates: List<LocalDate>,
-    selected: LocalDate,
     onSelect: (LocalDate) -> Unit,
-    onAdd: () -> Unit,
     onOpen: (Event) -> Unit,
     onDeleteDay: (LocalDate) -> Unit,
 ) {

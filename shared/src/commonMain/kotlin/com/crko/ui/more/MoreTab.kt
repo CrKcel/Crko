@@ -30,7 +30,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.crko.domain.LocalClock
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
 import com.crko.domain.plusDays
@@ -51,7 +50,6 @@ import com.crko.ui.icons.AppIcons
 @Composable
 fun MoreTab(
     state: AppStateHolder,
-    now: LocalClock,
     strings: Strings,
     contentPadding: PaddingValues,
     onOpenSettings: () -> Unit,
@@ -121,7 +119,6 @@ private fun EntryCard(
     iconTint: Color,
     title: String,
     onClick: () -> Unit,
-    showChevron: Boolean = true,
 ) {
     SurfaceCard {
         BasicComponent(onClick = onClick, insideMargin = PaddingValues(horizontal = 16.dp, vertical = 14.dp)) {
@@ -146,7 +143,7 @@ private fun StatisticsSection(state: AppStateHolder, strings: Strings, today: Lo
     val events = state.appState.events
     val todos = state.appState.todos
     val weekDates = today.startOfWeek().weekDates()
-    val completedToday = todos.count { it.done && it.due == today.toString() }
+    val completedToday = state.completedToday()
     val active = todos.count { !it.done }
     val upcoming = events.count {
         val date = LocalDate.parse(it.date)
@@ -185,11 +182,11 @@ private fun StatisticsSection(state: AppStateHolder, strings: Strings, today: Lo
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
             Spacer(Modifier.height(10.dp))
-            PriorityRow(TodoPriority.High, strings.priorityHigh, todos, strings)
+            PriorityRow(TodoPriority.High, strings.priorityHigh, todos)
             Spacer(Modifier.height(8.dp))
-            PriorityRow(TodoPriority.Normal, strings.priorityNormal, todos, strings)
+            PriorityRow(TodoPriority.Normal, strings.priorityNormal, todos)
             Spacer(Modifier.height(8.dp))
-            PriorityRow(TodoPriority.Low, strings.priorityLow, todos, strings)
+            PriorityRow(TodoPriority.Low, strings.priorityLow, todos)
             Spacer(Modifier.height(12.dp))
             CardRowDivider(Modifier.padding(horizontal = 0.dp))
             Spacer(Modifier.height(10.dp))
@@ -284,7 +281,7 @@ private fun WeekBars(todos: List<Todo>, today: LocalDate) {
 }
 
 @Composable
-private fun PriorityRow(priority: TodoPriority, label: String, todos: List<Todo>, strings: Strings) {
+private fun PriorityRow(priority: TodoPriority, label: String, todos: List<Todo>) {
     val total = todos.count { it.priority == priority }
     val done = todos.count { it.priority == priority && it.done }
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
