@@ -43,14 +43,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.crko.domain.mondayIndex
 import com.crko.domain.monthGrid
+import com.crko.domain.plusDays
 import com.crko.domain.plusMonths
 import com.crko.domain.startOfMonth
+import com.crko.domain.startOfWeek
+import com.crko.domain.weekDates
 import com.crko.i18n.Strings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -65,6 +70,8 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val PageCount = 2400
 private const val HomePage = PageCount / 2
+private const val WeekPageCount = 2400
+private const val WeekHomePage = WeekPageCount / 2
 private const val MaxMonthRows = 6
 private val FoldFlingVelocity = 400.dp
 
@@ -156,7 +163,8 @@ internal fun Modifier.calendarFoldDrag(
 /**
  * Weekday header pinned over a paged month grid that unfolds around the selected week. The header
  * is the only place weekday labels appear; every week — the selected one included — is drawn by the
- * same month cell, so collapsing simply reveals one row of the same grid.
+ * same month cell, so collapsing simply reveals one row of the same grid. Once collapsed a week
+ * pager takes over that row, so a horizontal swipe switches to the adjacent week.
  *
  * [expanded] is the settled state; while dragging, the revealed height follows the finger directly.
  */
@@ -184,6 +192,7 @@ internal fun WeekMonthCalendar(
 
     val anchorMonth = monthAnchor.startOfMonth()
     val pager = rememberMonthPager(anchorMonth, onMonthChange)
+    val weekPager = rememberWeekPager(selected, onSelect)
 
     // Folding back always returns to the selected week; paging may have left another month shown.
     LaunchedEffect(expanded, selected) {
@@ -205,12 +214,19 @@ internal fun WeekMonthCalendar(
                 .clipToBounds()
                 .height(with(density) { (rowHeightPx + progress * foldPx).toDp() }),
         ) {
+            // Collapsed, the week row is the only thing shown; the month grid is kept composed but
+            // transparent so it stays laid out (programmatic page jumps while hidden still work).
+            // Leaving it visible would show a second copy of the dates whenever a week swipe moves
+            // the row aside.
+            val showMonthGrid = progress > 0.001f
+
             // Measured unbounded and top-aligned: the grid keeps its full size while the folding
             // box clips it, otherwise the small container would centre and swallow the pager.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .wrapContentHeight(align = Alignment.Top, unbounded = true),
+                    .wrapContentHeight(align = Alignment.Top, unbounded = true)
+                    .graphicsLayer { alpha = if (showMonthGrid) 1f else 0f },
             ) {
                 HorizontalPager(
                     state = pager.state,
@@ -224,6 +240,27 @@ internal fun WeekMonthCalendar(
                     MonthPage(
                         month = month,
                         days = month.monthGrid(),
+                        selected = selected,
+                        today = today,
+                        hasEvents = hasEvents,
+                        onSelect = onSelect,
+                    )
+                }
+            }
+
+            // The week pager draws the same row the month grid would, so the switch as the
+            // calendar folds open is invisible.
+            if (!showMonthGrid) {
+                HorizontalPager(
+                    state = weekPager.state,
+                    beyondViewportPageCount = 1,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(MonthRowHeight),
+                ) { page ->
+                    WeekRow(
+                        weekStart = weekPager.weekStartAt(page),
+                        month = selected.startOfMonth(),
                         selected = selected,
                         today = today,
                         hasEvents = hasEvents,
@@ -290,6 +327,78 @@ private class MonthPager(val state: PagerState, private val baseMonth: LocalDate
         val months =
             (month.year - baseMonth.year) * 12 + (month.month.number - baseMonth.month.number)
         return (HomePage + months).coerceIn(0, PageCount - 1)
+    }
+}
+
+/** Same pinned mapping as [MonthPager], one page per week instead of per month. */
+private class WeekPager(val state: PagerState, private val baseWeek: LocalDate) {
+    fun weekStartAt(page: Int): LocalDate = baseWeek.plusDays((page - WeekHomePage) * 7)
+
+    fun pageOf(date: LocalDate): Int {
+        val weeks = ((date.startOfWeek().toEpochDays() - baseWeek.toEpochDays()) / 7).toInt()
+        return (WeekHomePage + weeks).coerceIn(0, WeekPageCount - 1)
+    }
+}
+
+/**
+ * Week pager for the collapsed calendar. Picking another week keeps the same weekday, which is the
+ * day the rest of the screen follows.
+ */
+@Composable
+private fun rememberWeekPager(
+    selected: LocalDate,
+    onSelect: (LocalDate) -> Unit,
+): WeekPager {
+    val pagerState = rememberPagerState(initialPage = WeekHomePage) { WeekPageCount }
+    // Saved with the pager so a restored page index still maps to the week it was showing.
+    val savedBaseWeek = rememberSaveable { selected.startOfWeek().toString() }
+    val pager = remember(pagerState, savedBaseWeek) {
+        WeekPager(pagerState, LocalDate.parse(savedBaseWeek))
+    }
+
+    val currentSelected by rememberUpdatedState(selected)
+    val currentOnSelect by rememberUpdatedState(onSelect)
+
+    // A week picked outside the pager (a cell tap, the day pager) moves it there; weeks that come
+    // from paging already sit under the settled page, so nothing moves.
+    LaunchedEffect(selected) {
+        val page = pager.pageOf(selected)
+        if (page != pagerState.currentPage) pagerState.scrollToPage(page)
+    }
+
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.settledPage }.collect { page ->
+            val target = pager.weekStartAt(page).plusDays(currentSelected.mondayIndex)
+            if (target != currentSelected) currentOnSelect(target)
+        }
+    }
+    return pager
+}
+
+/** A single Monday-first week, drawn with the same cells as the month grid. */
+@Composable
+private fun WeekRow(
+    weekStart: LocalDate,
+    month: LocalDate,
+    selected: LocalDate,
+    today: LocalDate,
+    hasEvents: (LocalDate) -> Boolean,
+    onSelect: (LocalDate) -> Unit,
+) {
+    Row(modifier = Modifier.fillMaxWidth().height(MonthRowHeight)) {
+        weekStart.weekDates().forEach { date ->
+            MonthCell(
+                date = date,
+                inMonth = date.month == month.month && date.year == month.year,
+                selected = date == selected,
+                isToday = date == today,
+                hasEvents = hasEvents(date),
+                onClick = { onSelect(date) },
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+            )
+        }
     }
 }
 
