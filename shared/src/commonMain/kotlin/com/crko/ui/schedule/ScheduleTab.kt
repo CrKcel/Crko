@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
@@ -110,12 +109,19 @@ fun ScheduleTab(
             val heading = if (expanded) monthAnchor else weekAnchor
             Text(
                 text = strings.monthTitle(heading.year, heading.month),
-                modifier = Modifier.weight(1f, fill = false),
+                modifier = Modifier.weight(1f),
                 style = if (strings === ZhStrings) MiuixTheme.textStyles.title3 else MiuixTheme.textStyles.title1,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
             )
-            Spacer(Modifier.weight(1f))
+            IconButton(onClick = { expanded = !expanded }) {
+                Icon(
+                    imageVector = if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
+                    contentDescription = if (expanded) strings.collapseCalendar else strings.expandCalendar,
+                    tint = MiuixTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
             Box {
                 IconButton(onClick = { showViewMenu = true }) {
                     Icon(
@@ -140,14 +146,6 @@ fun ScheduleTab(
                         }
                     }
                 }
-            }
-            IconButton(onClick = { expanded = !expanded }) {
-                Icon(
-                    imageVector = if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
-                    contentDescription = if (expanded) strings.collapseCalendar else strings.expandCalendar,
-                    tint = MiuixTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp),
-                )
             }
         }
 
