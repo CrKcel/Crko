@@ -33,14 +33,6 @@ object AppIcons {
         icon("Check", "M9.55 17.6 4.4 12.45l1.4-1.4 3.75 3.75 8.65-8.65 1.4 1.4z")
     }
 
-    val ExpandMore: ImageVector by lazy {
-        icon("ExpandMore", "M12 15.375 5.625 9l1.4-1.4 4.975 4.975L16.975 7.6l1.4 1.4z")
-    }
-
-    val ExpandLess: ImageVector by lazy {
-        icon("ExpandLess", "M12 10.275 5.625 16.65l-1.4-1.4L12 7.475l7.775 7.775-1.4 1.4z")
-    }
-
     val ListView: ImageVector by lazy {
         icon(
             "ListView",

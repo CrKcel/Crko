@@ -1,6 +1,7 @@
 package com.crko.ui.schedule
 
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -121,16 +122,11 @@ internal class CalendarFoldState internal constructor(
 }
 
 @Composable
-internal fun rememberCalendarFold(selected: LocalDate): CalendarFoldState {
+internal fun rememberCalendarFold(): CalendarFoldState {
     val scope = rememberCoroutineScope()
     // Saved with the screen so a configuration change keeps the settled fold position.
     val progress = rememberSaveable { mutableStateOf(0f) }
-    val fold = remember(progress, scope) { CalendarFoldState(progress, scope) }
-
-    val rowHeightPx = with(LocalDensity.current) { MonthRowHeight.toPx() }
-    val monthRows = remember(selected) { selected.startOfMonth().monthGrid().size / 7 }
-    SideEffect { fold.updateFoldPx((monthRows - 1) * rowHeightPx) }
-    return fold
+    return remember(progress, scope) { CalendarFoldState(progress, scope) }
 }
 
 /**
@@ -182,10 +178,10 @@ internal fun WeekMonthCalendar(
 ) {
     val density = LocalDensity.current
     val rowHeightPx = with(density) { MonthRowHeight.toPx() }
-    val foldPx = fold.foldPx
     val progress = fold.progress
 
-    // Geometry follows the selected week's month: the grid must not move while paging months.
+    // The unfold offset is measured inside the selected week's month. It only matters while
+    // folding, and collapsing first sends the pager back to that month.
     val selectedRow = remember(selected) { weekOfMonthIndex(selected) }
 
     LaunchedEffect(expanded) { fold.settle(if (expanded) 1f else 0f) }
@@ -193,6 +189,18 @@ internal fun WeekMonthCalendar(
     val anchorMonth = monthAnchor.startOfMonth()
     val pager = rememberMonthPager(anchorMonth, onMonthChange)
     val weekPager = rememberWeekPager(selected, onSelect)
+
+    // Height follows the month on screen, not the selected week's month: a six-week month opened
+    // from a five-week one must grow instead of clipping its last row. Animated so paging between
+    // months of different lengths does not snap.
+    val shownMonth = pager.monthAt(pager.state.currentPage)
+    val monthRows = remember(shownMonth) { shownMonth.monthGrid().size / 7 }
+    val foldPx by animateFloatAsState(
+        targetValue = (monthRows - 1) * rowHeightPx,
+        animationSpec = tween(200),
+    )
+    // The drag handler maps finger travel with the settled value, not a mid-animation one.
+    SideEffect { fold.updateFoldPx((monthRows - 1) * rowHeightPx) }
 
     // Folding back always returns to the selected week; paging may have left another month shown.
     LaunchedEffect(expanded, selected) {

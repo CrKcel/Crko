@@ -1,5 +1,7 @@
 package com.crko.ui.schedule
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -66,7 +68,11 @@ fun ScheduleTab(
     val monthAnchor = remember(monthAnchorName) { LocalDate.parse(monthAnchorName) }
     val events = state.appState.events
     val hasEvents = remember(events) { { date: LocalDate -> events.any { it.occursOn(date) } } }
-    val fold = rememberCalendarFold(selected)
+    val fold = rememberCalendarFold()
+    // The calendar toggles from the header blocks without a ripple: the movement of the calendar
+    // itself is the feedback.
+    val titleInteraction = remember { MutableInteractionSource() }
+    val summaryInteraction = remember { MutableInteractionSource() }
 
     fun select(date: LocalDate) {
         selectedName = date.toString()
@@ -121,6 +127,11 @@ fun ScheduleTab(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable(
+                        interactionSource = titleInteraction,
+                        indication = null,
+                        onClickLabel = if (expanded) strings.collapseCalendar else strings.expandCalendar,
+                    ) { expanded = !expanded }
                     .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -133,14 +144,6 @@ fun ScheduleTab(
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                 )
-                IconButton(onClick = { expanded = !expanded }) {
-                    Icon(
-                        imageVector = if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
-                        contentDescription = if (expanded) strings.collapseCalendar else strings.expandCalendar,
-                        tint = MiuixTheme.colorScheme.primary,
-                        modifier = Modifier.size(22.dp),
-                    )
-                }
                 Box {
                     IconButton(onClick = { showViewMenu = true }) {
                         Icon(
@@ -189,7 +192,13 @@ fun ScheduleTab(
                     state.deleteEventsOn(selected)
                     state.notify(AppMessage.Deleted)
                 },
-                modifier = Modifier.padding(horizontal = 16.dp),
+                modifier = Modifier
+                    .clickable(
+                        interactionSource = summaryInteraction,
+                        indication = null,
+                        onClickLabel = if (expanded) strings.collapseCalendar else strings.expandCalendar,
+                    ) { expanded = !expanded }
+                    .padding(horizontal = 16.dp),
             )
         }
 
