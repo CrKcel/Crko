@@ -2,7 +2,6 @@ package com.crko.ui.schedule
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -128,7 +127,6 @@ internal fun DayAgendaList(
 ) {
     val tones = eventTones()
     LazyColumn(
-        contentPadding = PaddingValues(bottom = 100.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
         items(events, key = { "event-${it.id}" }) { event ->

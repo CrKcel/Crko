@@ -7,7 +7,6 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -353,7 +352,6 @@ internal fun WeekAgendaList(
     val days = remember(weekStart) { weekStart.weekDates() }
     val tones = eventTones()
     LazyColumn(
-        contentPadding = PaddingValues(bottom = 100.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
         days.forEach { date ->
