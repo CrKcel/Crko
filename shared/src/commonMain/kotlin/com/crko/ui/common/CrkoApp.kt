@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -50,13 +51,16 @@ fun CrkoApp(state: AppStateHolder) {
 
     val now = rememberClock(state)
     val snackbar = remember { SnackbarHostState() }
+    // The collector outlives recompositions; read the latest strings so messages follow a
+    // language switch made after the screen was first shown.
+    val currentStrings by rememberUpdatedState(strings)
 
     LaunchedEffect(Unit) {
         state.messages.collectLatest { message ->
             val text = when (message) {
-                AppMessage.Saved -> strings.saved
-                AppMessage.Deleted -> strings.deleted
-                AppMessage.TodoAdded -> strings.todoAdded
+                AppMessage.Saved -> currentStrings.saved
+                AppMessage.Deleted -> currentStrings.deleted
+                AppMessage.TodoAdded -> currentStrings.todoAdded
             }
             snackbar.showSnackbar(text)
         }
@@ -130,12 +134,14 @@ fun CrkoApp(state: AppStateHolder) {
         strings = strings,
         onDismiss = { eventEditor = null },
         onSave = { event ->
-            when (state.saveEvent(event)) {
-                WriteResult.Success -> true
-                else -> false
-            }
+            val saved = state.saveEvent(event) == WriteResult.Success
+            if (saved) state.notify(AppMessage.Saved)
+            saved
         },
-        onDelete = { state.deleteEvent(it.id) },
+        onDelete = {
+            state.deleteEvent(it.id)
+            state.notify(AppMessage.Deleted)
+        },
     )
 
     TodoEditorDialog(

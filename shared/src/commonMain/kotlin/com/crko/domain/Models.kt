@@ -42,7 +42,7 @@ data class AppState(
     val todos: List<Todo> = emptyList(),
 )
 
-val AppJson = Json {
+val AppJson: Json = Json {
     ignoreUnknownKeys = true
     encodeDefaults = true
 }

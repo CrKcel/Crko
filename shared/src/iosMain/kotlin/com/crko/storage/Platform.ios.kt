@@ -6,9 +6,6 @@ import platform.Foundation.NSUserDefaults
 import platform.Foundation.NSUUID
 import platform.Foundation.currentLocale
 import platform.Foundation.languageCode
-import platform.UIKit.UIUserInterfaceStyle
-import platform.UIKit.UIWindowScene
-import platform.UIKit.UIApplication
 
 /** Pure-Swift hosts on iOS cannot supply wallpaper colors, so the default seed palette is used. */
 actual fun platformSupportsMonet(): Boolean = false
@@ -31,12 +28,3 @@ actual fun settingsStore(): KeyValueStore = UserDefaultsStore("crko.settings")
 actual fun newId(): String = NSUUID().UUIDString()
 
 actual fun systemLocaleTag(): String = NSLocale.currentLocale.languageCode
-
-actual fun systemDarkMode(): Boolean {
-    val style = UIApplication.sharedApplication.connectedScenes
-        .filterIsInstance<UIWindowScene>()
-        .firstNotNullOfOrNull { it.keyWindow() }
-        ?.traitCollection
-        ?.userInterfaceStyle
-    return style == UIUserInterfaceStyle.UIUserInterfaceStyleDark
-}

@@ -30,6 +30,7 @@ import com.crko.domain.startOfMonth
 import com.crko.domain.startOfWeek
 import com.crko.i18n.Strings
 import com.crko.i18n.ZhStrings
+import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
 import com.crko.ui.components.PopupListLayout
 import com.crko.ui.components.PopupTitle
@@ -182,7 +183,10 @@ fun ScheduleTab(
                 today = today,
                 events = dayEvents,
                 strings = strings,
-                onDeleteDay = { dayEvents.forEach { state.deleteEvent(it.id) } },
+                onDeleteDay = {
+                    dayEvents.forEach { state.deleteEvent(it.id) }
+                    state.notify(AppMessage.Deleted)
+                },
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
         }

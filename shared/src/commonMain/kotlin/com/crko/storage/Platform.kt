@@ -30,9 +30,6 @@ expect fun systemLocaleTag(): String
 /** Whether the current platform can supply wallpaper-based Monet colors. */
 expect fun platformSupportsMonet(): Boolean
 
-/** Reads the current dark-mode preference from the platform configuration. */
-expect fun systemDarkMode(): Boolean
-
 private const val STATE_KEY = "state.v1"
 private const val SETTINGS_KEY = "settings.v1"
 

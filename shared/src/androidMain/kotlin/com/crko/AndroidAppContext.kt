@@ -1,11 +1,13 @@
 package com.crko
 
+import android.annotation.SuppressLint
 import android.content.Context
 
 /**
  * Application context captured from the Android entry point. The shared UI layer uses it for
  * preferences and configuration; it never holds an Activity reference.
  */
+@SuppressLint("StaticFieldLeak")
 object AndroidAppContext {
     private var context: Context? = null
 

@@ -69,10 +69,11 @@ fun CrkoTheme(
     darkMode: DarkModeSetting,
     palette: PaletteSetting,
     keyColor: Long,
+    systemDark: Boolean? = null,
     content: @Composable () -> Unit,
 ) {
     val isDark = when (darkMode) {
-        DarkModeSetting.System -> isSystemInDarkTheme()
+        DarkModeSetting.System -> systemDark ?: isSystemInDarkTheme()
         DarkModeSetting.Light -> false
         DarkModeSetting.Dark -> true
     }

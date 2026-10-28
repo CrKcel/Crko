@@ -21,6 +21,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.TodoPriority
@@ -74,6 +76,9 @@ internal fun TodoEditorDialog(
             }
             Spacer(Modifier.height(16.dp))
             SectionCaption(strings.dueDate)
+            val tomorrow = today.plusDays(1)
+            // A due date that is neither of the shortcuts is shown on the custom chip itself.
+            val customDue = due?.takeIf { it != today && it != tomorrow }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 DateChip(
                     text = strings.today,
@@ -83,8 +88,14 @@ internal fun TodoEditorDialog(
                 )
                 DateChip(
                     text = strings.tomorrow,
-                    selected = due == today.plusDays(1),
-                    onClick = { due = if (due == today.plusDays(1)) null else today.plusDays(1) },
+                    selected = due == tomorrow,
+                    onClick = { due = if (due == tomorrow) null else tomorrow },
+                    modifier = Modifier.weight(1f),
+                )
+                DateChip(
+                    text = customDue?.let(strings::dayMonth) ?: strings.customDate,
+                    selected = customDue != null,
+                    onClick = { showDatePicker = true },
                     modifier = Modifier.weight(1f),
                 )
                 DateChip(
@@ -171,6 +182,9 @@ private fun DateChip(
         style = MiuixTheme.textStyles.body2,
         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
         color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        textAlign = TextAlign.Center,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
             .background(
@@ -181,7 +195,7 @@ private fun DateChip(
                 },
             )
             .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
+            .padding(horizontal = 4.dp, vertical = 10.dp),
     )
 }
 
