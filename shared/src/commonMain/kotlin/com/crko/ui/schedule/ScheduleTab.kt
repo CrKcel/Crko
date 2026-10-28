@@ -62,6 +62,7 @@ fun ScheduleTab(
     val weekAnchor = remember(anchorName) { LocalDate.parse(anchorName) }
     val monthAnchor = remember(monthAnchorName) { LocalDate.parse(monthAnchorName) }
     val eventDates = remember(state.appState.events) { state.appState.events.mapTo(HashSet()) { it.date } }
+    val fold = rememberCalendarFold(selected)
 
     fun select(date: LocalDate) {
         selectedName = date.toString()
@@ -89,6 +90,8 @@ fun ScheduleTab(
         )
     }
 
+    val dayEvents = remember(selected, state.appState.events) { state.eventsOn(selected) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -99,77 +102,88 @@ fun ScheduleTab(
                 end = contentPadding.calculateEndPadding(layoutDirection),
             ),
     ) {
-        Row(
+        // The fold gesture covers the title row and the day summary as well, so the calendar can be
+        // pulled open or pushed away from anywhere in the header block, not only over the grid.
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .calendarFoldDrag(
+                    fold = fold,
+                    expanded = expanded,
+                    onExpandedChange = { expanded = it },
+                ),
         ) {
-            // While the calendar is unfolded the pager may show another month; follow it.
-            val heading = if (expanded) monthAnchor else weekAnchor
-            Text(
-                text = strings.monthTitle(heading.year, heading.month),
-                modifier = Modifier.weight(1f),
-                style = if (strings === ZhStrings) MiuixTheme.textStyles.title3 else MiuixTheme.textStyles.title1,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-            )
-            IconButton(onClick = { expanded = !expanded }) {
-                Icon(
-                    imageVector = if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
-                    contentDescription = if (expanded) strings.collapseCalendar else strings.expandCalendar,
-                    tint = MiuixTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp),
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // While the calendar is unfolded the pager may show another month; follow it.
+                val heading = if (expanded) monthAnchor else weekAnchor
+                Text(
+                    text = strings.monthTitle(heading.year, heading.month),
+                    modifier = Modifier.weight(1f),
+                    style = if (strings === ZhStrings) MiuixTheme.textStyles.title3 else MiuixTheme.textStyles.title1,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
                 )
-            }
-            Box {
-                IconButton(onClick = { showViewMenu = true }) {
+                IconButton(onClick = { expanded = !expanded }) {
                     Icon(
-                        imageVector = if (listMode) AppIcons.ListView else AppIcons.Timeline,
-                        contentDescription = null,
+                        imageVector = if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
+                        contentDescription = if (expanded) strings.collapseCalendar else strings.expandCalendar,
                         tint = MiuixTheme.colorScheme.primary,
                         modifier = Modifier.size(22.dp),
                     )
                 }
-                WindowListPopup(show = showViewMenu, onDismissRequest = { showViewMenu = false }) {
-                    PopupListLayout {
-                        PopupTitle(strings.tabSchedule)
-                        ViewOption(strings.viewTimeline, !listMode) {
-                            listMode = false
-                            state.setAgendaView("timeline")
-                            showViewMenu = false
-                        }
-                        ViewOption(strings.viewList, listMode) {
-                            listMode = true
-                            state.setAgendaView("list")
-                            showViewMenu = false
+                Box {
+                    IconButton(onClick = { showViewMenu = true }) {
+                        Icon(
+                            imageVector = if (listMode) AppIcons.ListView else AppIcons.Timeline,
+                            contentDescription = null,
+                            tint = MiuixTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                    WindowListPopup(show = showViewMenu, onDismissRequest = { showViewMenu = false }) {
+                        PopupListLayout {
+                            PopupTitle(strings.tabSchedule)
+                            ViewOption(strings.viewTimeline, !listMode) {
+                                listMode = false
+                                state.setAgendaView("timeline")
+                                showViewMenu = false
+                            }
+                            ViewOption(strings.viewList, listMode) {
+                                listMode = true
+                                state.setAgendaView("list")
+                                showViewMenu = false
+                            }
                         }
                     }
                 }
             }
+
+            WeekMonthCalendar(
+                strings = strings,
+                selected = selected,
+                today = today,
+                monthAnchor = monthAnchor,
+                eventDates = eventDates,
+                fold = fold,
+                expanded = expanded,
+                onSelect = ::select,
+                onMonthChange = { target -> monthAnchorName = target.toString() },
+            )
+
+            DaySummary(
+                date = selected,
+                today = today,
+                events = dayEvents,
+                strings = strings,
+                onDeleteDay = { dayEvents.forEach { state.deleteEvent(it.id) } },
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
         }
-
-        WeekMonthCalendar(
-            strings = strings,
-            selected = selected,
-            today = today,
-            monthAnchor = monthAnchor,
-            eventDates = eventDates,
-            expanded = expanded,
-            onExpandedChange = { expanded = it },
-            onSelect = ::select,
-            onMonthChange = { target -> monthAnchorName = target.toString() },
-        )
-
-        val dayEvents = remember(selected, state.appState.events) { state.eventsOn(selected) }
-        DaySummary(
-            date = selected,
-            today = today,
-            events = dayEvents,
-            strings = strings,
-            onDeleteDay = { dayEvents.forEach { state.deleteEvent(it.id) } },
-            modifier = Modifier.padding(horizontal = 16.dp),
-        )
 
         Box(modifier = Modifier.weight(1f)) {
             if (listMode) {

@@ -27,13 +27,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +52,7 @@ import com.crko.domain.monthGrid
 import com.crko.domain.plusMonths
 import com.crko.domain.startOfMonth
 import com.crko.i18n.Strings
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -65,6 +69,91 @@ private const val MaxMonthRows = 6
 private val FoldFlingVelocity = 400.dp
 
 /**
+ * Fold progress of the week/month calendar. It is owned above the grid so the drag surface can
+ * span the title row and the day summary as well as the calendar itself.
+ */
+@Stable
+internal class CalendarFoldState internal constructor(
+    private val progressState: MutableState<Float>,
+    private val scope: CoroutineScope,
+) {
+    /** 0 reveals the selected week, 1 the whole month. */
+    val progress: Float get() = progressState.value
+
+    // Height hidden while collapsed; depends on how many weeks the selected month needs.
+    private val foldPxState = mutableFloatStateOf(0f)
+    internal val foldPx: Float get() = foldPxState.floatValue
+
+    private var settleJob: Job? = null
+
+    internal fun updateFoldPx(value: Float) {
+        foldPxState.floatValue = value
+    }
+
+    internal fun dragBy(delta: Float) {
+        if (foldPx <= 0f) return
+        cancelSettle()
+        progressState.value = (progress + delta / foldPx).coerceIn(0f, 1f)
+    }
+
+    internal fun cancelSettle() {
+        settleJob?.cancel()
+    }
+
+    internal fun settle(target: Float) {
+        cancelSettle()
+        settleJob = scope.launch {
+            animate(
+                initialValue = progress,
+                targetValue = target,
+                animationSpec = tween(if (target > progress) 280 else 220),
+            ) { value, _ -> progressState.value = value }
+            progressState.value = target
+        }
+    }
+}
+
+@Composable
+internal fun rememberCalendarFold(selected: LocalDate): CalendarFoldState {
+    val scope = rememberCoroutineScope()
+    // Saved with the screen so a configuration change keeps the settled fold position.
+    val progress = rememberSaveable { mutableStateOf(0f) }
+    val fold = remember(progress, scope) { CalendarFoldState(progress, scope) }
+
+    val rowHeightPx = with(LocalDensity.current) { MonthRowHeight.toPx() }
+    val monthRows = remember(selected) { selected.startOfMonth().monthGrid().size / 7 }
+    SideEffect { fold.updateFoldPx((monthRows - 1) * rowHeightPx) }
+    return fold
+}
+
+/**
+ * Vertical drag that folds and unfolds the calendar. Applied to the whole header block, so the
+ * title row and the day summary respond to the fold gesture as well as the grid.
+ */
+@Composable
+internal fun Modifier.calendarFoldDrag(
+    fold: CalendarFoldState,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+): Modifier {
+    val flingVelocityPx = with(LocalDensity.current) { FoldFlingVelocity.toPx() }
+    return draggable(
+        state = rememberDraggableState { delta -> fold.dragBy(delta) },
+        orientation = Orientation.Vertical,
+        onDragStarted = { fold.cancelSettle() },
+        onDragStopped = { velocity ->
+            val target = when {
+                velocity >= flingVelocityPx -> 1f
+                velocity <= -flingVelocityPx -> 0f
+                fold.progress >= 0.5f -> 1f
+                else -> 0f
+            }
+            if ((target == 1f) == expanded) fold.settle(target) else onExpandedChange(target == 1f)
+        },
+    )
+}
+
+/**
  * Weekday header pinned over a paged month grid that unfolds around the selected week. The header
  * is the only place weekday labels appear; every week — the selected one included — is drawn by the
  * same month cell, so collapsing simply reveals one row of the same grid.
@@ -78,37 +167,20 @@ internal fun WeekMonthCalendar(
     today: LocalDate,
     monthAnchor: LocalDate,
     eventDates: Set<String>,
+    fold: CalendarFoldState,
     expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
     onSelect: (LocalDate) -> Unit,
     onMonthChange: (LocalDate) -> Unit,
 ) {
     val density = LocalDensity.current
     val rowHeightPx = with(density) { MonthRowHeight.toPx() }
-    val flingVelocityPx = with(density) { FoldFlingVelocity.toPx() }
+    val foldPx = fold.foldPx
+    val progress = fold.progress
 
     // Geometry follows the selected week's month: the grid must not move while paging months.
     val selectedRow = remember(selected) { weekOfMonthIndex(selected) }
-    val monthRows = remember(selected) { selected.startOfMonth().monthGrid().size / 7 }
-    val foldPx = (monthRows - 1) * rowHeightPx
 
-    var progress by rememberSaveable { mutableStateOf(0f) }
-    val scope = rememberCoroutineScope()
-    var settleJob by remember { mutableStateOf<Job?>(null) }
-
-    fun settle(target: Float) {
-        settleJob?.cancel()
-        settleJob = scope.launch {
-            animate(
-                initialValue = progress,
-                targetValue = target,
-                animationSpec = tween(if (target > progress) 280 else 220),
-            ) { value, _ -> progress = value }
-            progress = target
-        }
-    }
-
-    LaunchedEffect(expanded) { settle(if (expanded) 1f else 0f) }
+    LaunchedEffect(expanded) { fold.settle(if (expanded) 1f else 0f) }
 
     val anchorMonth = monthAnchor.startOfMonth()
     val pager = rememberMonthPager(anchorMonth, onMonthChange)
@@ -124,28 +196,7 @@ internal fun WeekMonthCalendar(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .draggable(
-                state = rememberDraggableState { delta ->
-                    if (foldPx > 0f) {
-                        progress = (progress + delta / foldPx).coerceIn(0f, 1f)
-                    }
-                },
-                orientation = Orientation.Vertical,
-                onDragStarted = { settleJob?.cancel() },
-                onDragStopped = { velocity ->
-                    val target = when {
-                        velocity >= flingVelocityPx -> 1f
-                        velocity <= -flingVelocityPx -> 0f
-                        progress >= 0.5f -> 1f
-                        else -> 0f
-                    }
-                    if ((target == 1f) == expanded) settle(target) else onExpandedChange(target == 1f)
-                },
-            ),
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         WeekdayHeader(strings)
         Spacer(Modifier.height(2.dp))
         Box(
