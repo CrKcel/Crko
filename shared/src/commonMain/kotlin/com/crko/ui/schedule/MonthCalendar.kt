@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -224,6 +225,13 @@ private fun rememberMonthPagerState(
 ): PagerState {
     val pagerState = rememberPagerState(initialPage = HomePage) { PageCount }
 
+    // The collector below is keyed on the pager alone, so reading the parameters directly would
+    // keep the anchor from the first composition. After every settled page the pager recenters on
+    // HomePage while the anchor moves, so the relative offset must be applied to the current
+    // anchor — otherwise a swipe is measured against a month that is no longer displayed.
+    val currentAnchor by rememberUpdatedState(anchorMonth)
+    val currentOnMonthChange by rememberUpdatedState(onMonthChange)
+
     // Selection outside the pager (week row, today) recenters the pager on the anchor month.
     LaunchedEffect(anchorMonth) {
         val pageMonth = anchorMonth.plusMonths(pagerState.currentPage - HomePage)
@@ -231,7 +239,7 @@ private fun rememberMonthPagerState(
     }
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.settledPage }.collect { page ->
-            if (page != HomePage) onMonthChange(anchorMonth.plusMonths(page - HomePage))
+            if (page != HomePage) currentOnMonthChange(currentAnchor.plusMonths(page - HomePage))
         }
     }
     return pagerState
