@@ -1,5 +1,11 @@
 package com.crko.ui.schedule
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -31,6 +37,7 @@ import com.crko.domain.minutesOfDay
 import com.crko.domain.occursOn
 import com.crko.domain.startOfMonth
 import com.crko.domain.startOfWeek
+import com.crko.domain.weekDates
 import com.crko.i18n.Strings
 import com.crko.i18n.ZhStrings
 import com.crko.state.AppMessage
@@ -60,6 +67,7 @@ fun ScheduleTab(
     var monthAnchorName by rememberSaveable { mutableStateOf(today.startOfMonth().toString()) }
     var expanded by rememberSaveable { mutableStateOf(false) }
     var listMode by rememberSaveable { mutableStateOf(state.settings.agendaView == "list") }
+    var weekMode by rememberSaveable { mutableStateOf(false) }
     var showViewMenu by remember { mutableStateOf(false) }
     val layoutDirection = LocalLayoutDirection.current
 
@@ -147,7 +155,11 @@ fun ScheduleTab(
                 Box {
                     IconButton(onClick = { showViewMenu = true }) {
                         Icon(
-                            imageVector = if (listMode) AppIcons.ListView else AppIcons.Timeline,
+                            imageVector = when {
+                                weekMode -> AppIcons.Week
+                                listMode -> AppIcons.ListView
+                                else -> AppIcons.Timeline
+                            },
                             contentDescription = null,
                             tint = MiuixTheme.colorScheme.primary,
                             modifier = Modifier.size(22.dp),
@@ -164,6 +176,14 @@ fun ScheduleTab(
                             ViewOption(strings.viewList, listMode) {
                                 listMode = true
                                 state.setAgendaView("list")
+                                showViewMenu = false
+                            }
+                            ViewOption(strings.dayView, !weekMode) {
+                                weekMode = false
+                                showViewMenu = false
+                            }
+                            ViewOption(strings.weekOverview, weekMode) {
+                                weekMode = true
                                 showViewMenu = false
                             }
                         }
@@ -202,34 +222,81 @@ fun ScheduleTab(
             )
         }
 
-        // Both views live on the same day pager, so swiping left or right always moves one day and
-        // the transition follows the finger instead of jumping.
-        HorizontalPager(
-            state = dayPager.state,
-            beyondViewportPageCount = 1,
+        // The overview and the day pager share this area; the upper calendar stays untouched.
+        // A two-finger spread opens the week overview and a pinch closes it, while one-finger
+        // swipes still page the day view.
+        Box(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth(),
-        ) { page ->
-            val date = dayPager.dateAt(page)
-            val events = remember(date, state.appState.events) { state.eventsOn(date) }
-            if (listMode) {
-                DayAgendaList(
-                    events = events,
-                    strings = strings,
-                    onOpen = onOpenEvent,
-                )
-            } else {
-                DayTimeline(
-                    strings = strings,
-                    today = today,
-                    now = now,
-                    date = date,
-                    events = events,
-                    defaultScrollHour = state.settings.agendaScrollHour,
-                    onAdd = ::createAt,
-                    onOpen = onOpenEvent,
-                )
+                .fillMaxWidth()
+                .weekOverviewGesture(
+                    inWeekView = weekMode,
+                    onEnter = { weekMode = true },
+                    onExit = { weekMode = false },
+                ),
+        ) {
+            AnimatedContent(
+                targetState = weekMode,
+                transitionSpec = {
+                    val enterScale = if (targetState) 0.94f else 1.04f
+                    (fadeIn(tween(200)) + scaleIn(tween(200), initialScale = enterScale))
+                        .togetherWith(fadeOut(tween(140)))
+                },
+                modifier = Modifier.fillMaxSize(),
+                label = "schedule-content",
+            ) { inWeekView ->
+                if (inWeekView) {
+                    val weekDays = remember(weekAnchor) { weekAnchor.weekDates() }
+                    val weekEvents = remember(weekDays, events) {
+                        weekDays.associateWith { date -> state.eventsOn(date) }
+                    }
+                    if (listMode) {
+                        WeekAgendaList(
+                            strings = strings,
+                            today = today,
+                            weekStart = weekAnchor,
+                            eventsByDate = weekEvents,
+                            onOpen = onOpenEvent,
+                        )
+                    } else {
+                        WeekTimeline(
+                            strings = strings,
+                            today = today,
+                            now = now,
+                            weekStart = weekAnchor,
+                            eventsByDate = weekEvents,
+                            defaultScrollHour = state.settings.agendaScrollHour,
+                            onOpen = onOpenEvent,
+                        )
+                    }
+                } else {
+                    HorizontalPager(
+                        state = dayPager.state,
+                        beyondViewportPageCount = 1,
+                        modifier = Modifier.fillMaxSize(),
+                    ) { page ->
+                        val date = dayPager.dateAt(page)
+                        val events = remember(date, state.appState.events) { state.eventsOn(date) }
+                        if (listMode) {
+                            DayAgendaList(
+                                events = events,
+                                strings = strings,
+                                onOpen = onOpenEvent,
+                            )
+                        } else {
+                            DayTimeline(
+                                strings = strings,
+                                today = today,
+                                now = now,
+                                date = date,
+                                events = events,
+                                defaultScrollHour = state.settings.agendaScrollHour,
+                                onAdd = ::createAt,
+                                onOpen = onOpenEvent,
+                            )
+                        }
+                    }
+                }
             }
         }
     }

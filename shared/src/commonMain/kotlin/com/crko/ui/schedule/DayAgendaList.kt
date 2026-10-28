@@ -80,6 +80,45 @@ internal fun DaySummary(
     }
 }
 
+/** Event row shared by the day list and the week list. */
+@Composable
+internal fun AgendaEventRow(
+    event: Event,
+    tones: List<Pair<Color, Color>>,
+    strings: Strings,
+    onOpen: (Event) -> Unit,
+) {
+    val (container, content) = tones[eventToneIndex(event, tones.size)]
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(container)
+            .clickable { onOpen(event) }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = timeRangeText(event, strings),
+            style = MiuixTheme.textStyles.footnote1,
+            fontSize = 12.sp,
+            color = content,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = event.title,
+            style = MiuixTheme.textStyles.body1,
+            fontWeight = FontWeight.Medium,
+            color = content,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
 /** Agenda list for the selected day, ordered by start time. */
 @Composable
 internal fun DayAgendaList(
@@ -93,35 +132,7 @@ internal fun DayAgendaList(
         modifier = Modifier.fillMaxWidth(),
     ) {
         items(events, key = { "event-${it.id}" }) { event ->
-            val (container, content) = tones[eventToneIndex(event, tones.size)]
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 2.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(container)
-                    .clickable { onOpen(event) }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = timeRangeText(event, strings),
-                    style = MiuixTheme.textStyles.footnote1,
-                    fontSize = 12.sp,
-                    color = content,
-                    maxLines = 1,
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    text = event.title,
-                    style = MiuixTheme.textStyles.body1,
-                    fontWeight = FontWeight.Medium,
-                    color = content,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-            }
+            AgendaEventRow(event = event, tones = tones, strings = strings, onOpen = onOpen)
         }
     }
 }

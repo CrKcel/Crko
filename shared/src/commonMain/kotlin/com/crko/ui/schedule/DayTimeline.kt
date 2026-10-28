@@ -43,6 +43,25 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val TimelineSlots = 24 * 60 / SlotMinutes
 
+/** Hour labels for a 24-hour grid, shared by the day and week timelines. */
+@Composable
+internal fun TimeGutterLabels(strings: Strings) {
+    Column(modifier = Modifier.width(TimeGutterWidth).clipToBounds()) {
+        repeat(24) { hour ->
+            Text(
+                text = strings.time(LocalTime(hour, 0)),
+                style = MiuixTheme.textStyles.footnote2,
+                fontSize = 11.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                // Centres each label on its hour line, clipped at the top edge of the grid.
+                modifier = Modifier
+                    .height(HourHeight)
+                    .offset(y = (-7).dp),
+            )
+        }
+    }
+}
+
 /** Single-day timeline; tapping an empty slot opens the editor at that time. */
 @Composable
 internal fun DayTimeline(
@@ -110,20 +129,7 @@ private fun TimelineGrid(
             .height(hourHeight * 24)
             .padding(horizontal = ColumnHorizontalPadding),
     ) {
-        Column(modifier = Modifier.width(TimeGutterWidth).clipToBounds()) {
-            repeat(24) { hour ->
-                Text(
-                    text = strings.time(LocalTime(hour, 0)),
-                    style = MiuixTheme.textStyles.footnote2,
-                    fontSize = 11.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    // Centres each label on its hour line, clipped at the top edge of the grid.
-                    modifier = Modifier
-                        .height(hourHeight)
-                        .offset(y = (-7).dp),
-                )
-            }
-        }
+        TimeGutterLabels(strings)
         Box(
             modifier = Modifier
                 .weight(1f)

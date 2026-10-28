@@ -69,6 +69,8 @@ interface Strings {
     fun eventsCount(count: Int): String
     val viewTimeline: String
     val viewList: String
+    val dayView: String
+    val weekOverview: String
     val repeat: String
     val repeatNone: String
     val repeatDaily: String
@@ -170,6 +172,8 @@ object ZhStrings : Strings {
     override fun eventsCount(count: Int) = if (count == 0) "" else "$count 项"
     override val viewTimeline = "时间轴"
     override val viewList = "列表"
+    override val dayView = "日视图"
+    override val weekOverview = "周总览"
     override val repeat = "重复"
     override val repeatNone = "不重复"
     override val repeatDaily = "每天"
@@ -274,6 +278,8 @@ object EnStrings : Strings {
     override fun eventsCount(count: Int) = if (count == 0) "" else if (count == 1) "1 event" else "$count events"
     override val viewTimeline = "Timeline"
     override val viewList = "List"
+    override val dayView = "Day view"
+    override val weekOverview = "Week overview"
     override val repeat = "Repeat"
     override val repeatNone = "Never"
     override val repeatDaily = "Daily"

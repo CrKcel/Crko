@@ -44,6 +44,15 @@ object AppIcons {
         icon("Timeline", "M5 3h2v18H5zM9 6h11v3H9zM9 11h7v3H9zM9 16h9v3H9z")
     }
 
+    val Week: ImageVector by lazy {
+        icon(
+            "Week",
+            "M3 4h17.6v2.5H3z" +
+                "M3 9h2v11H3zM5.6 9h2v11h-2zM8.2 9h2v11h-2zM10.8 9h2v11h-2z" +
+                "M13.4 9h2v11h-2zM16 9h2v11h-2zM18.6 9h2v11h-2z",
+        )
+    }
+
     val Task: ImageVector by lazy {
         icon(
             "Task",
