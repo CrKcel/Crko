@@ -1,11 +1,5 @@
 package com.crko.ui.schedule
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -114,8 +108,10 @@ fun ScheduleTab(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f, fill = false)) {
+                // While the calendar is unfolded the pager may show another month; follow it.
+                val heading = if (expanded) monthAnchor else weekAnchor
                 Text(
-                    text = strings.monthTitle(weekAnchor.year, weekAnchor.month),
+                    text = strings.monthTitle(heading.year, heading.month),
                     style = if (strings === ZhStrings) MiuixTheme.textStyles.title3 else MiuixTheme.textStyles.title1,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -165,32 +161,17 @@ fun ScheduleTab(
             }
         }
 
-        WeekStrip(
-            state = state,
+        WeekMonthCalendar(
             strings = strings,
-            weekStart = weekAnchor,
             selected = selected,
             today = today,
+            monthAnchor = monthAnchor,
+            eventDates = eventDates,
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
             onSelect = ::select,
-            modifier = Modifier.padding(horizontal = 12.dp),
+            onMonthChange = { target -> monthAnchorName = target.toString() },
         )
-
-        AnimatedVisibility(
-            visible = expanded,
-            enter = expandVertically(tween(280)) + fadeIn(tween(280)),
-            exit = shrinkVertically(tween(220)) + fadeOut(tween(160)),
-        ) {
-            MonthCalendar(
-                eventDates = eventDates,
-                strings = strings,
-                monthAnchor = monthAnchor,
-                selected = selected,
-                today = today,
-                onSelect = ::select,
-                onMonthChange = { target -> monthAnchorName = target.toString() },
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            )
-        }
 
         val dayEvents = remember(selected, state.appState.events) { state.eventsOn(selected) }
         DaySummary(

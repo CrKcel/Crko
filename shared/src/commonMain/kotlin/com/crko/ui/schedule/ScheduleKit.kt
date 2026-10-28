@@ -16,7 +16,7 @@ internal const val SlotsPerHour = 60 / SlotMinutes
 internal val SlotHeight = HourHeight / SlotsPerHour
 internal val TimeGutterWidth = 40.dp
 internal val ColumnHorizontalPadding = 6.dp
-internal val StripHeight = 54.dp
+internal val MonthRowHeight = 54.dp
 
 internal fun isOverdue(todo: Todo, today: LocalDate): Boolean =
     !todo.done && todo.due != null && LocalDate.parse(todo.due) < today
