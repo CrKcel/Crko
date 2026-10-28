@@ -1,8 +1,11 @@
 package com.crko.storage
 
+import com.crko.dev.sampleState
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.PersistedSettings
+import com.crko.domain.today
+import com.crko.isDebugBuild
 
 /**
  * Minimal key-value persistence. Reads are synchronous so the first frame shows restored data.
@@ -43,8 +46,12 @@ interface StateStorage {
 
 object AppStorage : StateStorage {
     override fun loadState(): AppState {
-        val raw = appStore().getString(STATE_KEY) ?: return AppState()
-        return decodeState(raw)
+        appStore().getString(STATE_KEY)?.let { return decodeState(it) }
+        if (!isDebugBuild()) return AppState()
+        // First launch of a debug build: seed sample content, then persist it so edits stick.
+        val sample = sampleState(today())
+        saveState(sample)
+        return sample
     }
 
     override fun saveState(state: AppState) {
