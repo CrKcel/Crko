@@ -3,7 +3,6 @@ package com.crko.ui.schedule
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -23,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -41,91 +39,75 @@ import com.crko.domain.LocalClock
 import com.crko.domain.minutesOfDay
 import com.crko.domain.plusDays
 import com.crko.i18n.Strings
-import com.crko.state.AppStateHolder
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-private val ColumnGap = 1.dp
-private const val TotalMinutes = 24 * 60
-private const val TimelineSlots = TotalMinutes / SlotMinutes
+private const val TimelineSlots = 24 * 60 / SlotMinutes
 
-/** Seven-day timeline; tapping an empty slot opens the editor at that time. */
+/** Single-day timeline; tapping an empty slot opens the editor at that time. */
 @Composable
-internal fun WeekTimeline(
-    state: AppStateHolder,
+internal fun DayTimeline(
     strings: Strings,
     today: LocalDate,
     now: LocalClock,
-    weekDates: List<LocalDate>,
-    selected: LocalDate,
+    date: LocalDate,
+    events: List<Event>,
     defaultScrollHour: Int,
-    onSelectInWeek: (LocalDate) -> Unit,
+    onSelectDay: (LocalDate) -> Unit,
     onAdd: (LocalDate, Int?) -> Unit,
     onOpen: (Event) -> Unit,
 ) {
     // The grid is one tall canvas, so scrolling is a plain offset rather than per-item lazy
     // scrolling: a 24-hour column fits comfortably in memory and keeps hour alignment exact.
-    val events = state.appState.events
     val scrollState = rememberScrollState()
     val targetOffsetPx = with(LocalDensity.current) {
-        (HourHeight * (if (today in weekDates) now.time.hour else defaultScrollHour)).roundToPx()
+        (HourHeight * (if (date == today) now.time.hour else defaultScrollHour)).roundToPx()
     }
 
-    // Anchor the visible window on the current hour for the current week, otherwise a fixed hour.
-    LaunchedEffect(weekDates.first(), targetOffsetPx) {
+    // Anchor the visible window on the current hour for today, otherwise a fixed hour.
+    LaunchedEffect(date, targetOffsetPx) {
         val maxOffset = scrollState.maxValue
         if (maxOffset > 0) {
             scrollState.scrollTo(targetOffsetPx.coerceIn(0, maxOffset))
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        TimelineDayHeader(
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .swipeDayPager(date, onSelectDay),
+    ) {
+        TimelineGrid(
             strings = strings,
             today = today,
-            weekDates = weekDates,
-            selected = selected,
-            onSelect = onSelectInWeek,
+            now = now,
+            date = date,
+            events = events,
+            onAdd = onAdd,
+            onOpen = onOpen,
         )
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .verticalScroll(scrollState)
-                .swipeWeekPager(weekDates, onSelectInWeek),
-        ) {
-            TimelineGrid(
-                strings = strings,
-                today = today,
-                now = now,
-                weekDates = weekDates,
-                selected = selected,
-                events = events,
-                onAdd = onAdd,
-                onOpen = onOpen,
-            )
-        }
     }
 }
 
 /**
- * Turns a decisive horizontal swipe into a week change. Small movements never consume the
+ * Turns a decisive horizontal swipe into a day change. Small movements never consume the
  * gesture, so slot taps and vertical scrolling keep working inside the grid.
  */
-private fun Modifier.swipeWeekPager(
-    weekDates: List<LocalDate>,
-    onSelectInWeek: (LocalDate) -> Unit,
-): Modifier = pointerInput(weekDates) {
+private fun Modifier.swipeDayPager(
+    date: LocalDate,
+    onSelectDay: (LocalDate) -> Unit,
+): Modifier = pointerInput(date) {
     var total = 0f
     detectHorizontalDragGestures(
         onHorizontalDrag = { _, amount -> total += amount },
         onDragEnd = {
             val threshold = size.width * 0.2f
             when {
-                total > threshold -> onSelectInWeek(weekDates.first().plusDays(-1))
-                total < -threshold -> onSelectInWeek(weekDates.last().plusDays(1))
+                total > threshold -> onSelectDay(date.plusDays(-1))
+                total < -threshold -> onSelectDay(date.plusDays(1))
             }
             total = 0f
         },
@@ -134,76 +116,21 @@ private fun Modifier.swipeWeekPager(
 }
 
 @Composable
-private fun TimelineDayHeader(
-    strings: Strings,
-    today: LocalDate,
-    weekDates: List<LocalDate>,
-    selected: LocalDate,
-    onSelect: (LocalDate) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = ColumnHorizontalPadding, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Spacer(Modifier.width(TimeGutterWidth))
-        weekDates.forEachIndexed { index, date ->
-            if (index > 0) Spacer(Modifier.width(ColumnGap))
-            val isToday = date == today
-            val isSelected = date == selected
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { onSelect(date) }
-                    .padding(vertical = 4.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = strings.weekdaysShort[index],
-                    style = MiuixTheme.textStyles.footnote2,
-                    fontSize = if (strings.weekdaysShort[index].length > 1) 10.sp else 11.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
-                Spacer(Modifier.width(3.dp))
-                Text(
-                    text = date.day.toString(),
-                    style = MiuixTheme.textStyles.body1,
-                    fontSize = 13.sp,
-                    fontWeight = if (isToday || isSelected) FontWeight.Bold else FontWeight.Normal,
-                    color = when {
-                        isToday -> MiuixTheme.colorScheme.primary
-                        isSelected -> MiuixTheme.colorScheme.onSurface
-                        else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
-                    },
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun TimelineGrid(
     strings: Strings,
     today: LocalDate,
     now: LocalClock,
-    weekDates: List<LocalDate>,
-    selected: LocalDate,
+    date: LocalDate,
     events: List<Event>,
     onAdd: (LocalDate, Int?) -> Unit,
     onOpen: (Event) -> Unit,
 ) {
     val hourHeight = HourHeight
-    val eventsByDate = remember(events, weekDates) {
-        weekDates.associateWith { date -> events.filter { it.date == date.toString() }.sortedBy { it.startMinutes } }
-    }
     val nowMinutes = now.time.minutesOfDay()
     val primary = MiuixTheme.colorScheme.primary
     val alarmColor = MiuixTheme.colorScheme.error
     val halfHourColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.08f)
-    val columnGapColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.06f)
+    val hourLineColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.06f)
 
     Row(
         modifier = Modifier
@@ -225,72 +152,69 @@ private fun TimelineGrid(
                 )
             }
         }
-        weekDates.forEachIndexed { index, date ->
-            if (index > 0) Spacer(Modifier.width(ColumnGap))
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .clip(RoundedCornerShape(3.dp))
-                    // Grid lines are drawn by a single modifier instead of 48 nested boxes.
-                    .drawBehind {
-                        val hourPx = hourHeight.toPx()
-                        for (hour in 0..24) {
-                            val y = (hour * hourPx).coerceAtMost(size.height - 1f)
-                            drawLine(
-                                color = columnGapColor,
-                                start = Offset(0f, y),
-                                end = Offset(size.width, y),
-                                strokeWidth = 1f,
-                            )
-                        }
-                        for (half in 0..47) {
-                            val y = (half * hourPx / 2f).coerceIn(0f, size.height - 1f)
-                            drawLine(
-                                color = halfHourColor,
-                                start = Offset(0f, y),
-                                end = Offset(size.width, y),
-                                strokeWidth = 1f,
-                            )
-                        }
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(3.dp))
+                // Grid lines are drawn by a single modifier instead of 48 nested boxes.
+                .drawBehind {
+                    val hourPx = hourHeight.toPx()
+                    for (hour in 0..24) {
+                        val y = (hour * hourPx).coerceAtMost(size.height - 1f)
+                        drawLine(
+                            color = hourLineColor,
+                            start = Offset(0f, y),
+                            end = Offset(size.width, y),
+                            strokeWidth = 1f,
+                        )
                     }
-                    // Drawn on top of the content so the marker is never covered by event blocks.
-                    .drawWithContent {
-                        drawContent()
-                        if (date == today) {
-                            val y = hourHeight.toPx() * (nowMinutes / 60f)
-                            drawLine(
-                                color = alarmColor,
-                                start = Offset(0f, y),
-                                end = Offset(size.width, y),
-                                strokeWidth = 1.5.dp.toPx(),
-                            )
-                            drawCircle(color = alarmColor, radius = 2.5.dp.toPx(), center = Offset(0f, y))
-                        }
-                    },
-            ) {
-                if (date == today || date == selected) {
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .background(primary.copy(alpha = if (date == today) 0.06f else 0.03f)),
-                    )
-                }
-                Column(modifier = Modifier.fillMaxSize()) {
-                    repeat(TimelineSlots) { slot ->
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(SlotHeight)
-                                .clickable { onAdd(date, slot * SlotMinutes) },
+                    for (half in 0..47) {
+                        val y = (half * hourPx / 2f).coerceIn(0f, size.height - 1f)
+                        drawLine(
+                            color = halfHourColor,
+                            start = Offset(0f, y),
+                            end = Offset(size.width, y),
+                            strokeWidth = 1f,
                         )
                     }
                 }
-                EventBlocks(
-                    events = eventsByDate.getValue(date),
-                    onOpen = onOpen,
+                // Drawn on top of the content so the marker is never covered by event blocks.
+                .drawWithContent {
+                    drawContent()
+                    if (date == today) {
+                        val y = hourHeight.toPx() * (nowMinutes / 60f)
+                        drawLine(
+                            color = alarmColor,
+                            start = Offset(0f, y),
+                            end = Offset(size.width, y),
+                            strokeWidth = 1.5.dp.toPx(),
+                        )
+                        drawCircle(color = alarmColor, radius = 2.5.dp.toPx(), center = Offset(0f, y))
+                    }
+                },
+        ) {
+            if (date == today) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(primary.copy(alpha = 0.06f)),
                 )
             }
+            Column(modifier = Modifier.fillMaxSize()) {
+                repeat(TimelineSlots) { slot ->
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(SlotHeight)
+                            .clickable { onAdd(date, slot * SlotMinutes) },
+                    )
+                }
+            }
+            EventBlocks(
+                events = events,
+                onOpen = onOpen,
+            )
         }
     }
 }

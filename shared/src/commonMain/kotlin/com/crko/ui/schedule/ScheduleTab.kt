@@ -35,7 +35,6 @@ import com.crko.domain.MaxEndMinutes
 import com.crko.domain.minutesOfDay
 import com.crko.domain.startOfMonth
 import com.crko.domain.startOfWeek
-import com.crko.domain.weekDates
 import com.crko.i18n.Strings
 import com.crko.i18n.ZhStrings
 import com.crko.state.AppStateHolder
@@ -193,35 +192,32 @@ fun ScheduleTab(
             )
         }
 
+        val dayEvents = remember(selected, state.appState.events) { state.eventsOn(selected) }
         DaySummary(
             date = selected,
             today = today,
-            events = state.eventsOn(selected),
+            events = dayEvents,
             strings = strings,
+            onDeleteDay = { dayEvents.forEach { state.deleteEvent(it.id) } },
             modifier = Modifier.padding(horizontal = 16.dp),
         )
 
         Box(modifier = Modifier.weight(1f)) {
             if (listMode) {
-                WeekAgendaList(
-                    state = state,
+                DayAgendaList(
+                    events = dayEvents,
                     strings = strings,
-                    today = today,
-                    weekDates = weekAnchor.weekDates(),
-                    onSelect = ::select,
                     onOpen = onOpenEvent,
-                    onDeleteDay = { date -> state.appState.events.filter { it.date == date.toString() }.forEach { state.deleteEvent(it.id) } },
                 )
             } else {
-                WeekTimeline(
-                    state = state,
+                DayTimeline(
                     strings = strings,
                     today = today,
                     now = now,
-                    weekDates = weekAnchor.weekDates(),
-                    selected = selected,
+                    date = selected,
+                    events = dayEvents,
                     defaultScrollHour = state.settings.agendaScrollHour,
-                    onSelectInWeek = { selectedName = it.toString() },
+                    onSelectDay = ::select,
                     onAdd = ::createAt,
                     onOpen = onOpenEvent,
                 )

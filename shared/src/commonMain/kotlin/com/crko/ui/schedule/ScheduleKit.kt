@@ -51,12 +51,6 @@ internal fun priorityColor(priority: TodoPriority): Color = when (priority) {
     TodoPriority.Low -> MiuixTheme.colorScheme.onSurfaceVariantSummary
 }
 
-/** "Today" / "Tomorrow" / weekday name for the day relative to [today]. */
-internal fun dayLabel(strings: Strings, date: LocalDate, today: LocalDate): String {
-    val delta = (date.toEpochDays() - today.toEpochDays()).toInt()
-    return if (delta in -1..1) strings.relativeDay(date, delta) else strings.weekdaysFull[date.dayOfWeek.ordinal]
-}
-
 internal fun timeRangeText(event: Event, strings: Strings): String =
     strings.timeRange(
         kotlinx.datetime.LocalTime(event.startMinutes / 60, event.startMinutes % 60),
