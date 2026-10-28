@@ -69,6 +69,13 @@ interface Strings {
     fun eventsCount(count: Int): String
     val viewTimeline: String
     val viewList: String
+    val repeat: String
+    val repeatNone: String
+    val repeatDaily: String
+    val repeatWeekly: String
+    val repeatCustom: String
+    val repeatWeekdaysRequired: String
+    val repeatSeriesHint: String
 
     val todos: String
     val todoNew: String
@@ -163,6 +170,13 @@ object ZhStrings : Strings {
     override fun eventsCount(count: Int) = if (count == 0) "" else "$count 项"
     override val viewTimeline = "时间轴"
     override val viewList = "列表"
+    override val repeat = "重复"
+    override val repeatNone = "不重复"
+    override val repeatDaily = "每天"
+    override val repeatWeekly = "每周"
+    override val repeatCustom = "自定义"
+    override val repeatWeekdaysRequired = "请至少选择一天"
+    override val repeatSeriesHint = "重复日程的修改会应用到所有日期"
 
     override val todos = "待办"
     override val todoNew = "新建待办"
@@ -260,6 +274,13 @@ object EnStrings : Strings {
     override fun eventsCount(count: Int) = if (count == 0) "" else if (count == 1) "1 event" else "$count events"
     override val viewTimeline = "Timeline"
     override val viewList = "List"
+    override val repeat = "Repeat"
+    override val repeatNone = "Never"
+    override val repeatDaily = "Daily"
+    override val repeatWeekly = "Weekly"
+    override val repeatCustom = "Custom"
+    override val repeatWeekdaysRequired = "Pick at least one day"
+    override val repeatSeriesHint = "Changes apply to every date in this repeat"
 
     override val todos = "Todo"
     override val todoNew = "New todo"

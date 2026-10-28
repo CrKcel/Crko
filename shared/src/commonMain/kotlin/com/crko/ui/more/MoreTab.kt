@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
+import com.crko.domain.occursOn
 import com.crko.domain.plusDays
 import com.crko.domain.startOfWeek
 import com.crko.domain.weekDates
@@ -145,12 +146,9 @@ private fun StatisticsSection(state: AppStateHolder, strings: Strings, today: Lo
     val weekDates = today.startOfWeek().weekDates()
     val completedToday = state.completedToday()
     val active = todos.count { !it.done }
-    val upcoming = events.count {
-        val date = LocalDate.parse(it.date)
-        date >= today && date <= today.plusDays(2)
-    }
-    val weekEvents = events.count { it.date in weekDates.map { d -> d.toString() } }
-    val todayEvents = events.count { it.date == today.toString() }
+    val upcoming = (0..2).sumOf { offset -> events.count { it.occursOn(today.plusDays(offset)) } }
+    val weekEvents = weekDates.sumOf { day -> events.count { it.occursOn(day) } }
+    val todayEvents = events.count { it.occursOn(today) }
 
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
         StatTile(strings.completedToday, completedToday.toString(), Modifier.weight(1f))

@@ -4,17 +4,31 @@ import kotlinx.datetime.LocalDate
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
+enum class RepeatFrequency { Daily, Weekly, Custom }
+
+@Serializable
+data class RepeatRule(
+    val frequency: RepeatFrequency,
+    /** Monday-first weekday indices (0 = Monday) used when [frequency] is [RepeatFrequency.Custom]. */
+    val weekdays: List<Int> = emptyList(),
+)
+
 @Serializable
 data class Event(
     /** Null for events that have not been saved yet. */
     val id: String?,
     val title: String,
+    /** The date of the first occurrence, also the anchor for a repeating event. */
     val date: String,
     /** Minutes after midnight. */
     val startMinutes: Int,
     /** Minutes after midnight, strictly greater than [startMinutes]. */
     val endMinutes: Int,
     val note: String = "",
+    /** Null for a one-off event. */
+    val repeat: RepeatRule? = null,
+    /** Dates on which a repeating event is skipped, e.g. a single day cleared from the agenda. */
+    val excludedDates: List<String> = emptyList(),
 )
 
 /**
@@ -59,3 +73,16 @@ data class PersistedSettings(
 
 val Event.day: LocalDate
     get() = LocalDate.parse(date)
+
+/** Whether this event happens on [date]; repeating events also cover every later matching date. */
+fun Event.occursOn(date: LocalDate): Boolean {
+    if (date.toString() in excludedDates) return false
+    val anchor = day
+    if (date < anchor) return false
+    val rule = repeat ?: return date == anchor
+    return when (rule.frequency) {
+        RepeatFrequency.Daily -> true
+        RepeatFrequency.Weekly -> date.dayOfWeek == anchor.dayOfWeek
+        RepeatFrequency.Custom -> date.mondayIndex in rule.weekdays
+    }
+}

@@ -8,8 +8,10 @@ import com.crko.domain.AppState
 import com.crko.domain.Event
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.PersistedSettings
+import com.crko.domain.RepeatFrequency
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
+import com.crko.domain.occursOn
 import com.crko.domain.today
 import com.crko.i18n.AppLanguage
 import com.crko.i18n.Strings
@@ -44,6 +46,7 @@ sealed interface WriteResult {
     data object Success : WriteResult
     data object EmptyTitle : WriteResult
     data object InvalidTimeRange : WriteResult
+    data object InvalidRepeat : WriteResult
 }
 
 @Stable
@@ -110,14 +113,29 @@ class AppStateHolder(
 
     // ----- events -----
 
-    /** Events of a date ordered by start time. */
+    /** Events that occur on a date, including occurrences of repeating events, ordered by start time. */
     fun eventsOn(date: LocalDate): List<Event> =
-        appState.events.filter { it.date == date.toString() }.sortedBy { it.startMinutes }
+        appState.events.filter { it.occursOn(date) }.sortedBy { it.startMinutes }
 
     fun saveEvent(event: Event): WriteResult {
         if (event.title.isBlank()) return WriteResult.EmptyTitle
         if (event.endMinutes <= event.startMinutes) return WriteResult.InvalidTimeRange
-        val normalized = event.copy(title = event.title.trim(), endMinutes = event.endMinutes.coerceAtMost(MaxEndMinutes))
+        val repeat = event.repeat?.let { rule ->
+            if (rule.frequency == RepeatFrequency.Custom) {
+                val days = rule.weekdays.filter { it in 0..6 }.distinct().sorted()
+                if (days.isEmpty()) return WriteResult.InvalidRepeat
+                rule.copy(weekdays = days)
+            } else {
+                rule
+            }
+        }
+        val normalized = event.copy(
+            title = event.title.trim(),
+            endMinutes = event.endMinutes.coerceAtMost(MaxEndMinutes),
+            repeat = repeat,
+            // Skips only make sense for a series; a one-off event must not inherit stale ones.
+            excludedDates = if (repeat == null) emptyList() else event.excludedDates.distinct(),
+        )
         val events = appState.events
         val exists = events.any { it.id == normalized.id }
         val updated = if (exists) events.map { if (it.id == normalized.id) normalized else it } else events + normalized
@@ -128,6 +146,22 @@ class AppStateHolder(
     fun deleteEvent(id: String?) {
         if (id == null) return
         persist(appState.copy(events = appState.events.filterNot { it.id == id }))
+    }
+
+    /**
+     * Clears a single day: one-off events are removed while repeating events only skip that date,
+     * so clearing today never wipes a whole series.
+     */
+    fun deleteEventsOn(date: LocalDate) {
+        val key = date.toString()
+        val updated = appState.events.mapNotNull { event ->
+            when {
+                !event.occursOn(date) -> event
+                event.repeat == null -> null
+                else -> event.copy(excludedDates = event.excludedDates + key)
+            }
+        }
+        persist(appState.copy(events = updated))
     }
 
     // ----- todos -----

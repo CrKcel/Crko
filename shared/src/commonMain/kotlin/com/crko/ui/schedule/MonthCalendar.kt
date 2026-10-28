@@ -166,7 +166,7 @@ internal fun WeekMonthCalendar(
     selected: LocalDate,
     today: LocalDate,
     monthAnchor: LocalDate,
-    eventDates: Set<String>,
+    hasEvents: (LocalDate) -> Boolean,
     fold: CalendarFoldState,
     expanded: Boolean,
     onSelect: (LocalDate) -> Unit,
@@ -226,7 +226,7 @@ internal fun WeekMonthCalendar(
                         days = month.monthGrid(),
                         selected = selected,
                         today = today,
-                        eventDates = eventDates,
+                        hasEvents = hasEvents,
                         onSelect = onSelect,
                     )
                 }
@@ -238,7 +238,7 @@ internal fun WeekMonthCalendar(
 /** Standalone month grid used where a folding week view is not wanted (e.g. the due-date picker). */
 @Composable
 internal fun MonthCalendar(
-    eventDates: Set<String>,
+    hasEvents: (LocalDate) -> Boolean,
     strings: Strings,
     monthAnchor: LocalDate,
     selected: LocalDate,
@@ -271,7 +271,7 @@ internal fun MonthCalendar(
                 days = month.monthGrid(),
                 selected = selected,
                 today = today,
-                eventDates = eventDates,
+                hasEvents = hasEvents,
                 onSelect = onSelect,
             )
         }
@@ -378,7 +378,7 @@ private fun MonthPage(
     days: List<LocalDate>,
     selected: LocalDate,
     today: LocalDate,
-    eventDates: Set<String>,
+    hasEvents: (LocalDate) -> Boolean,
     onSelect: (LocalDate) -> Unit,
 ) {
     // Fill the pager so short months stay top-aligned; otherwise the pager centres the page and
@@ -396,7 +396,7 @@ private fun MonthPage(
                         inMonth = date.month == month.month && date.year == month.year,
                         selected = date == selected,
                         isToday = date == today,
-                        hasEvents = date.toString() in eventDates,
+                        hasEvents = hasEvents(date),
                         onClick = { onSelect(date) },
                         modifier = Modifier
                             .weight(1f)

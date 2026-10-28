@@ -3,6 +3,8 @@ package com.crko
 import com.crko.domain.AppState
 import com.crko.domain.Event
 import com.crko.domain.MaxEndMinutes
+import com.crko.domain.RepeatFrequency
+import com.crko.domain.RepeatRule
 import com.crko.domain.plusDays
 import com.crko.domain.PersistedSettings
 import com.crko.domain.TodoPriority
@@ -96,6 +98,85 @@ class StateHolderTest {
         f.holder.saveEvent(Event("e1", "Late", "2026-10-27", 1400, 2000))
         // 24:00 is not representable as LocalTime; the editor would crash recomposing it.
         assertEquals(MaxEndMinutes, f.holder.appState.events.single().endMinutes)
+    }
+
+    @Test
+    fun dailyRepeatOccursOnEveryDayFromTheStartDate() {
+        val f = Fixture()
+        val start = f.holder.today
+        f.holder.saveEvent(
+            Event("e1", "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
+        )
+        assertEquals(1, f.holder.eventsOn(start).size)
+        assertEquals(1, f.holder.eventsOn(start.plusDays(1)).size)
+        assertEquals(1, f.holder.eventsOn(start.plusDays(30)).size)
+        assertTrue(f.holder.eventsOn(start.plusDays(-1)).isEmpty())
+        // The stored series stays a single record.
+        assertEquals(1, f.holder.appState.events.size)
+    }
+
+    @Test
+    fun weeklyRepeatOccursOnTheAnchorWeekday() {
+        val f = Fixture()
+        val start = f.holder.today
+        f.holder.saveEvent(
+            Event("e1", "Review", start.toString(), 600, 660, repeat = RepeatRule(RepeatFrequency.Weekly)),
+        )
+        assertTrue(f.holder.eventsOn(start.plusDays(1)).isEmpty())
+        assertEquals(1, f.holder.eventsOn(start.plusDays(7)).size)
+        assertEquals(1, f.holder.eventsOn(start.plusDays(21)).size)
+    }
+
+    @Test
+    fun customRepeatUsesTheSelectedWeekdays() {
+        val f = Fixture()
+        val start = f.holder.today
+        // Tuesday, repeated on Monday and Thursday.
+        f.holder.saveEvent(
+            Event(
+                "e1",
+                "Gym",
+                start.toString(),
+                420,
+                480,
+                repeat = RepeatRule(RepeatFrequency.Custom, listOf(0, 3)),
+            ),
+        )
+        assertTrue(f.holder.eventsOn(start.plusDays(1)).isEmpty())
+        assertEquals(1, f.holder.eventsOn(start.plusDays(2)).size)
+        assertEquals(1, f.holder.eventsOn(start.plusDays(6)).size)
+    }
+
+    @Test
+    fun customRepeatRequiresAtLeastOneWeekday() {
+        val f = Fixture()
+        val result = f.holder.saveEvent(
+            Event("e1", "Gym", "2026-10-27", 420, 480, repeat = RepeatRule(RepeatFrequency.Custom)),
+        )
+        assertEquals(WriteResult.InvalidRepeat, result)
+        assertTrue(f.holder.appState.events.isEmpty())
+    }
+
+    @Test
+    fun clearingADaySkipsOneOccurrenceAndKeepsTheSeries() {
+        val f = Fixture()
+        val start = f.holder.today
+        f.holder.saveEvent(
+            Event("e1", "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
+        )
+        f.holder.deleteEventsOn(start.plusDays(1))
+        assertTrue(f.holder.eventsOn(start.plusDays(1)).isEmpty())
+        assertEquals(1, f.holder.eventsOn(start.plusDays(2)).size)
+        assertEquals(1, f.holder.appState.events.size)
+    }
+
+    @Test
+    fun clearingADayRemovesOneOffEvents() {
+        val f = Fixture()
+        val start = f.holder.today
+        f.holder.saveEvent(Event("e1", "Dentist", start.toString(), 540, 600))
+        f.holder.deleteEventsOn(start)
+        assertTrue(f.holder.appState.events.isEmpty())
     }
 
     @Test

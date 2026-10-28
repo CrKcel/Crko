@@ -210,7 +210,6 @@ internal fun DatePickerDialog(
 ) {
     var month by remember { mutableStateOf(LocalDate(initial.year, initial.month, 1)) }
     var selected by remember { mutableStateOf(initial) }
-    val eventDates = remember { emptySet<String>() }
 
     WindowDialog(
         show = true,
@@ -219,7 +218,7 @@ internal fun DatePickerDialog(
     ) {
         Column {
             MonthCalendar(
-                eventDates = eventDates,
+                hasEvents = { false },
                 strings = strings,
                 monthAnchor = month,
                 selected = selected,

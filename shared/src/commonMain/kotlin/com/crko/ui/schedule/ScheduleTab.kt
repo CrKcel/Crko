@@ -26,6 +26,7 @@ import com.crko.domain.Event
 import com.crko.domain.LocalClock
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.minutesOfDay
+import com.crko.domain.occursOn
 import com.crko.domain.startOfMonth
 import com.crko.domain.startOfWeek
 import com.crko.i18n.Strings
@@ -63,7 +64,8 @@ fun ScheduleTab(
     val selected = remember(selectedName) { LocalDate.parse(selectedName) }
     val weekAnchor = remember(anchorName) { LocalDate.parse(anchorName) }
     val monthAnchor = remember(monthAnchorName) { LocalDate.parse(monthAnchorName) }
-    val eventDates = remember(state.appState.events) { state.appState.events.mapTo(HashSet()) { it.date } }
+    val events = state.appState.events
+    val hasEvents = remember(events) { { date: LocalDate -> events.any { it.occursOn(date) } } }
     val fold = rememberCalendarFold(selected)
 
     fun select(date: LocalDate) {
@@ -171,7 +173,7 @@ fun ScheduleTab(
                 selected = selected,
                 today = today,
                 monthAnchor = monthAnchor,
-                eventDates = eventDates,
+                hasEvents = hasEvents,
                 fold = fold,
                 expanded = expanded,
                 onSelect = ::select,
@@ -184,7 +186,7 @@ fun ScheduleTab(
                 events = dayEvents,
                 strings = strings,
                 onDeleteDay = {
-                    dayEvents.forEach { state.deleteEvent(it.id) }
+                    state.deleteEventsOn(selected)
                     state.notify(AppMessage.Deleted)
                 },
                 modifier = Modifier.padding(horizontal = 16.dp),
