@@ -3,7 +3,6 @@ package com.crko.ui.schedule
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,9 +25,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -38,6 +40,7 @@ import com.crko.domain.minutesOfDay
 import com.crko.i18n.Strings
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
+import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -206,57 +209,75 @@ private fun EventBlocks(
     if (events.isEmpty()) return
     val tones = eventTones()
     val placed = remember(events) { layoutEvents(events) }
-    BoxWithConstraints(
+    val totalColumns = remember(placed) { placed.maxOf { it.totalColumns } }
+    // Width and position are resolved while measuring: the calendar above animates its height, and
+    // a BoxWithConstraints here would recompose every block whenever the viewport changes.
+    Layout(
         modifier = Modifier
             .fillMaxSize()
             .zIndex(1f),
-    ) {
-        val columnWidth = maxWidth / (placed.maxOf { it.totalColumns }.toFloat())
-        placed.forEach { item ->
-            val (container, content) = tones[eventToneIndex(item.event, tones.size)]
-            val height = HourHeight * ((item.endMinutes - item.startMinutes) / 60f).coerceAtLeast(20f / 56f)
-            val compact = height < 44.dp
-            Column(
-                modifier = Modifier
-                    .offset(
-                        x = columnWidth * item.column.toFloat(),
-                        y = HourHeight * (item.startMinutes / 60f),
-                    )
-                    .width(columnWidth)
-                    // Fixed slot heights can be shorter than a minute's worth of space; never
-                    // drop below a readable one-line block.
-                    .height(height.coerceAtLeast(20.dp))
-                    .padding(end = 1.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(container)
-                    .clickable { onOpen(item.event) }
-                    .padding(horizontal = 2.dp, vertical = 1.dp),
-            ) {
-                Text(
-                    text = item.event.title,
-                    style = MiuixTheme.textStyles.footnote1,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = content,
-                    maxLines = if (compact) 1 else 3,
-                    overflow = TextOverflow.Ellipsis,
-                    softWrap = !compact,
-                )
-                if (!compact) {
-                    Spacer(Modifier.weight(1f))
+        content = {
+            placed.forEach { item ->
+                val (container, content) = tones[eventToneIndex(item.event, tones.size)]
+                val compact = eventBlockHeight(item) < 44.dp
+                Column(
+                    modifier = Modifier
+                        .padding(end = 1.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(container)
+                        .clickable { onOpen(item.event) }
+                        .padding(horizontal = 2.dp, vertical = 1.dp),
+                ) {
                     Text(
-                        text = clockRange(item.event),
-                        style = MiuixTheme.textStyles.footnote2,
-                        fontSize = 9.sp,
-                        color = content.copy(alpha = 0.85f),
-                        maxLines = 1,
+                        text = item.event.title,
+                        style = MiuixTheme.textStyles.footnote1,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = content,
+                        maxLines = if (compact) 1 else 3,
                         overflow = TextOverflow.Ellipsis,
+                        softWrap = !compact,
                     )
+                    if (!compact) {
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            text = clockRange(item.event),
+                            style = MiuixTheme.textStyles.footnote2,
+                            fontSize = 9.sp,
+                            color = content.copy(alpha = 0.85f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
+            }
+        },
+    ) { measurables, constraints ->
+        val columnWidth = constraints.maxWidth / totalColumns.toFloat()
+        val placeables = measurables.mapIndexed { index, measurable ->
+            measurable.measure(
+                Constraints.fixed(
+                    width = columnWidth.roundToInt(),
+                    height = eventBlockHeight(placed[index]).roundToPx(),
+                ),
+            )
+        }
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            placeables.forEachIndexed { index, placeable ->
+                val item = placed[index]
+                placeable.place(
+                    x = (columnWidth * item.column).roundToInt(),
+                    y = (HourHeight * (item.startMinutes / 60f)).roundToPx(),
+                )
             }
         }
     }
 }
+
+/** Block height for [item]; fixed slot heights can be shorter than a readable one-line block. */
+private fun eventBlockHeight(item: PlacedEvent): Dp =
+    (HourHeight * ((item.endMinutes - item.startMinutes) / 60f).coerceAtLeast(20f / 56f))
+        .coerceAtLeast(20.dp)
 
 
 internal class PlacedEvent(val event: Event, val column: Int, val totalColumns: Int) {

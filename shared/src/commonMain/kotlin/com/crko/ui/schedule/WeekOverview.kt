@@ -6,7 +6,6 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -36,9 +35,12 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Event
@@ -267,8 +269,7 @@ private fun WeekDayColumn(
     val scheme = MiuixTheme.colorScheme
     val tones = eventTones()
     val placed = remember(events) { layoutEvents(events) }
-    BoxWithConstraints(modifier = modifier) {
-        val dayWidth = maxWidth
+    Box(modifier = modifier) {
         if (isToday) {
             Box(
                 modifier = Modifier
@@ -276,34 +277,53 @@ private fun WeekDayColumn(
                     .background(scheme.primary.copy(alpha = 0.06f)),
             )
         }
-        placed.forEach { item ->
-            val columnWidth = dayWidth / item.totalColumns.toFloat()
-            val height = (HourHeight * ((item.endMinutes - item.startMinutes) / 60f))
-                .coerceAtLeast(18.dp)
-            val (container, content) = tones[eventToneIndex(item.event, tones.size)]
-            Box(
-                modifier = Modifier
-                    .offset(
-                        x = columnWidth * item.column.toFloat(),
-                        y = HourHeight * (item.startMinutes / 60f),
-                    )
-                    .width(columnWidth)
-                    .height(height)
-                    .padding(end = 1.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(container)
-                    .clickable { onOpen(item.event) }
-                    .padding(horizontal = 2.dp, vertical = 1.dp),
-            ) {
-                Text(
-                    text = item.event.title,
-                    style = MiuixTheme.textStyles.footnote2,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = content,
-                    maxLines = if (height >= 34.dp) 2 else 1,
-                    overflow = TextOverflow.Ellipsis,
+        // Width and position are resolved while measuring: the calendar above animates its height,
+        // and a BoxWithConstraints here would recompose the column whenever the viewport changes.
+        Layout(
+            modifier = Modifier.fillMaxSize(),
+            content = {
+                placed.forEach { item ->
+                    val (container, content) = tones[eventToneIndex(item.event, tones.size)]
+                    Box(
+                        modifier = Modifier
+                            .padding(end = 1.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(container)
+                            .clickable { onOpen(item.event) }
+                            .padding(horizontal = 2.dp, vertical = 1.dp),
+                    ) {
+                        Text(
+                            text = item.event.title,
+                            style = MiuixTheme.textStyles.footnote2,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = content,
+                            maxLines = if (weekBlockHeight(item) >= 34.dp) 2 else 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            },
+        ) { measurables, constraints ->
+            val dayWidth = constraints.maxWidth
+            val placeables = measurables.mapIndexed { index, measurable ->
+                val item = placed[index]
+                measurable.measure(
+                    Constraints.fixed(
+                        width = (dayWidth / item.totalColumns.toFloat()).roundToInt(),
+                        height = weekBlockHeight(item).roundToPx(),
+                    ),
                 )
+            }
+            layout(constraints.maxWidth, constraints.maxHeight) {
+                placeables.forEachIndexed { index, placeable ->
+                    val item = placed[index]
+                    val columnWidth = dayWidth / item.totalColumns.toFloat()
+                    placeable.place(
+                        x = (columnWidth * item.column).roundToInt(),
+                        y = (HourHeight * (item.startMinutes / 60f)).roundToPx(),
+                    )
+                }
             }
         }
         if (isToday) {
@@ -317,6 +337,9 @@ private fun WeekDayColumn(
         }
     }
 }
+
+private fun weekBlockHeight(item: PlacedEvent): Dp =
+    (HourHeight * ((item.endMinutes - item.startMinutes) / 60f)).coerceAtLeast(18.dp)
 
 /** Whole-week overview grouped by day, ordered by start time within each day. */
 @Composable

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerScope
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -31,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -45,6 +47,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
@@ -178,7 +181,6 @@ internal fun WeekMonthCalendar(
 ) {
     val density = LocalDensity.current
     val rowHeightPx = with(density) { MonthRowHeight.toPx() }
-    val progress = fold.progress
 
     // The unfold offset is measured inside the selected week's month. It only matters while
     // folding, and collapsing first sends the pager back to that month.
@@ -189,6 +191,12 @@ internal fun WeekMonthCalendar(
     val anchorMonth = monthAnchor.startOfMonth()
     val pager = rememberMonthPager(anchorMonth, onMonthChange)
     val weekPager = rememberWeekPager(selected, onSelect)
+
+    // Progress changes on every animation frame, so it is only read in the layout/draw passes or
+    // through a derived state that flips at most twice per fold. Reading it during composition
+    // would recompose the grid, the pagers and every date cell on each frame.
+    val showMonthGrid by remember(fold) { derivedStateOf { fold.progress > 0.001f } }
+    val monthGridScrollable by remember(fold) { derivedStateOf { fold.progress > 0.99f } }
 
     // Height follows the month on screen, not the selected week's month: a six-week month opened
     // from a five-week one must grow instead of clipping its last row. Animated so paging between
@@ -213,6 +221,40 @@ internal fun WeekMonthCalendar(
         }
     }
 
+    // Pager content is remembered and reads the latest parameters through states: a fresh content
+    // lambda per recomposition would rebuild the pager item provider and recompose its pages along
+    // with it.
+    val currentSelected by rememberUpdatedState(selected)
+    val currentToday by rememberUpdatedState(today)
+    val currentHasEvents by rememberUpdatedState(hasEvents)
+    val currentOnSelect by rememberUpdatedState(onSelect)
+
+    val monthPage: @Composable PagerScope.(Int) -> Unit = remember(pager) {
+        { page ->
+            val month = pager.monthAt(page)
+            MonthPage(
+                month = month,
+                days = remember(month) { month.monthGrid() },
+                selected = currentSelected,
+                today = currentToday,
+                hasEvents = currentHasEvents,
+                onSelect = { currentOnSelect(it) },
+            )
+        }
+    }
+    val weekPage: @Composable PagerScope.(Int) -> Unit = remember(weekPager) {
+        { page ->
+            WeekRow(
+                weekStart = weekPager.weekStartAt(page),
+                month = currentSelected.startOfMonth(),
+                selected = currentSelected,
+                today = currentToday,
+                hasEvents = currentHasEvents,
+                onSelect = { currentOnSelect(it) },
+            )
+        }
+    }
+
     Column(modifier = Modifier.fillMaxWidth()) {
         WeekdayHeader(strings)
         Spacer(Modifier.height(2.dp))
@@ -220,40 +262,30 @@ internal fun WeekMonthCalendar(
             modifier = Modifier
                 .fillMaxWidth()
                 .clipToBounds()
-                .height(with(density) { (rowHeightPx + progress * foldPx).toDp() }),
+                .foldRevealHeight(fold, rowHeightPx) { foldPx },
         ) {
             // Collapsed, the week row is the only thing shown; the month grid is kept composed but
             // transparent so it stays laid out (programmatic page jumps while hidden still work).
             // Leaving it visible would show a second copy of the dates whenever a week swipe moves
             // the row aside.
-            val showMonthGrid = progress > 0.001f
-
+            //
             // Measured unbounded and top-aligned: the grid keeps its full size while the folding
             // box clips it, otherwise the small container would centre and swallow the pager.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .wrapContentHeight(align = Alignment.Top, unbounded = true)
-                    .graphicsLayer { alpha = if (showMonthGrid) 1f else 0f },
+                    .graphicsLayer { alpha = if (fold.progress > 0.001f) 1f else 0f },
             ) {
                 HorizontalPager(
                     state = pager.state,
-                    userScrollEnabled = progress > 0.99f,
+                    userScrollEnabled = monthGridScrollable,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(MonthRowHeight * MaxMonthRows.toFloat())
-                        .offset { IntOffset(0, (-(1f - progress) * selectedRow * rowHeightPx).roundToInt()) },
-                ) { page ->
-                    val month = pager.monthAt(page)
-                    MonthPage(
-                        month = month,
-                        days = month.monthGrid(),
-                        selected = selected,
-                        today = today,
-                        hasEvents = hasEvents,
-                        onSelect = onSelect,
-                    )
-                }
+                        .offset { IntOffset(0, (-(1f - fold.progress) * selectedRow * rowHeightPx).roundToInt()) },
+                    pageContent = monthPage,
+                )
             }
 
             // The week pager draws the same row the month grid would, so the switch as the
@@ -265,20 +297,29 @@ internal fun WeekMonthCalendar(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(MonthRowHeight),
-                ) { page ->
-                    WeekRow(
-                        weekStart = weekPager.weekStartAt(page),
-                        month = selected.startOfMonth(),
-                        selected = selected,
-                        today = today,
-                        hasEvents = hasEvents,
-                        onSelect = onSelect,
-                    )
-                }
+                    pageContent = weekPage,
+                )
             }
         }
     }
 }
+
+/**
+ * Height of the visible calendar window. The fold progress and the animated hidden height are read
+ * while measuring, so dragging and settling only re-layout the header instead of recomposing it and
+ * everything below.
+ */
+private fun Modifier.foldRevealHeight(
+    fold: CalendarFoldState,
+    rowHeightPx: Float,
+    animatedFoldPx: () -> Float,
+): Modifier =
+    layout { measurable, constraints ->
+        val height = (rowHeightPx + fold.progress * animatedFoldPx()).roundToInt()
+            .coerceIn(constraints.minHeight, constraints.maxHeight)
+        val placeable = measurable.measure(constraints.copy(minHeight = height, maxHeight = height))
+        layout(placeable.width, height) { placeable.place(0, 0) }
+    }
 
 /** Standalone month grid used where a folding week view is not wanted (e.g. the due-date picker). */
 @Composable
@@ -313,7 +354,7 @@ internal fun MonthCalendar(
             val month = pager.monthAt(page)
             MonthPage(
                 month = month,
-                days = month.monthGrid(),
+                days = remember(month) { month.monthGrid() },
                 selected = selected,
                 today = today,
                 hasEvents = hasEvents,
@@ -498,10 +539,13 @@ private fun MonthPage(
     hasEvents: (LocalDate) -> Boolean,
     onSelect: (LocalDate) -> Unit,
 ) {
+    // Event dots are resolved once per month instead of once per cell per recomposition.
+    val weeks = remember(days) { days.chunked(7) }
+    val daysWithEvents = remember(days, hasEvents) { days.associateWith(hasEvents) }
     // Fill the pager so short months stay top-aligned; otherwise the pager centres the page and
     // the first row would not line up with the folding window.
     Column(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
-        days.chunked(7).forEach { week ->
+        weeks.forEach { week ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -513,7 +557,7 @@ private fun MonthPage(
                         inMonth = date.month == month.month && date.year == month.year,
                         selected = date == selected,
                         isToday = date == today,
-                        hasEvents = hasEvents(date),
+                        hasEvents = daysWithEvents[date] == true,
                         onClick = { onSelect(date) },
                         modifier = Modifier
                             .weight(1f)

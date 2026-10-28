@@ -29,7 +29,10 @@ data class Event(
     val repeat: RepeatRule? = null,
     /** Dates on which a repeating event is skipped, e.g. a single day cleared from the agenda. */
     val excludedDates: List<String> = emptyList(),
-)
+) {
+    /** Parsed [date], cached because [occursOn] runs for every visible calendar cell. */
+    val day: LocalDate by lazy(LazyThreadSafetyMode.NONE) { LocalDate.parse(date) }
+}
 
 /**
  * Latest minute of day an event may end at (23:59). The editor renders times as LocalTime,
@@ -71,14 +74,12 @@ data class PersistedSettings(
     val agendaScrollHour: Int = -1,
 )
 
-val Event.day: LocalDate
-    get() = LocalDate.parse(date)
-
 /** Whether this event happens on [date]; repeating events also cover every later matching date. */
 fun Event.occursOn(date: LocalDate): Boolean {
-    if (date.toString() in excludedDates) return false
     val anchor = day
     if (date < anchor) return false
+    // Skip the string allocation when the series has no exceptions.
+    if (excludedDates.isNotEmpty() && date.toString() in excludedDates) return false
     val rule = repeat ?: return date == anchor
     return when (rule.frequency) {
         RepeatFrequency.Daily -> true

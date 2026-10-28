@@ -270,9 +270,10 @@ fun ScheduleTab(
                         )
                     }
                 } else {
+                    // No offscreen pages: the calendar above animates its height, so every frame
+                    // would otherwise re-measure the neighbouring days as well.
                     HorizontalPager(
                         state = dayPager.state,
-                        beyondViewportPageCount = 1,
                         modifier = Modifier.fillMaxSize(),
                     ) { page ->
                         val date = dayPager.dateAt(page)
