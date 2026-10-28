@@ -30,7 +30,9 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: "platforms;android-37.0,build-tools;36.0.0"
+          # cmdline-tools 23.0: the runner's preinstalled 16.0 predates API 37.0 packages
+          cmdline-tools-version: "16111833"
+          packages: "platform-tools platforms;android-37.0 build-tools;36.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -50,11 +52,25 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload APK
+        id: upload-apk
         uses: actions/upload-artifact@v4
         with:
           name: android-debug-apk
           path: androidApp/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Add APK to run summary
+        run: |
+          apk=$(ls androidApp/build/outputs/apk/debug/*.apk | head -1)
+          {
+            echo "### CrKo Android"
+            echo ""
+            echo "| File | Size | Download |"
+            echo "| --- | --- | --- |"
+            echo "| $(basename "$apk") | $(du -h "$apk" | cut -f1 | xargs) | [APK](${{ steps.upload-apk.outputs.artifact-url }}) |"
+            echo ""
+            echo "Install with \`adb install -r $(basename "$apk")\`."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   ios:
     name: iOS (tests + unsigned IPA)
@@ -110,8 +126,22 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload IPA
+        id: upload-ipa
         uses: actions/upload-artifact@v4
         with:
           name: ios-unsigned-ipa
           path: build/CrKo-unsigned.ipa
           if-no-files-found: error
+
+      - name: Add IPA to run summary
+        run: |
+          ipa=build/CrKo-unsigned.ipa
+          {
+            echo "### CrKo iOS"
+            echo ""
+            echo "| File | Size | Download |"
+            echo "| --- | --- | --- |"
+            echo "| $(basename "$ipa") | $(du -h "$ipa" | cut -f1 | xargs) | [IPA](${{ steps.upload-ipa.outputs.artifact-url }}) |"
+            echo ""
+            echo "Unsigned IPA: re-sign it (AltStore/Sideloadly) or add Apple signing credentials to install on a device."
+          } >> "$GITHUB_STEP_SUMMARY"
