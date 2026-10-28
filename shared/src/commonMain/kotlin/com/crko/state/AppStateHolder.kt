@@ -12,6 +12,7 @@ import com.crko.domain.RepeatFrequency
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
 import com.crko.domain.occursOn
+import com.crko.domain.occurringOn
 import com.crko.domain.today
 import com.crko.i18n.AppLanguage
 import com.crko.i18n.Strings
@@ -114,8 +115,7 @@ class AppStateHolder(
     // ----- events -----
 
     /** Events that occur on a date, including occurrences of repeating events, ordered by start time. */
-    fun eventsOn(date: LocalDate): List<Event> =
-        appState.events.filter { it.occursOn(date) }.sortedBy { it.startMinutes }
+    fun eventsOn(date: LocalDate): List<Event> = appState.events.occurringOn(date)
 
     fun saveEvent(event: Event): WriteResult {
         if (event.title.isBlank()) return WriteResult.EmptyTitle

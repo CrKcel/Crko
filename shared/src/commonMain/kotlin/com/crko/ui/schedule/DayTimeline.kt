@@ -14,11 +14,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -26,7 +23,6 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -65,52 +61,13 @@ internal fun TimeGutterLabels(strings: Strings) {
     }
 }
 
-/** Single-day timeline; tapping an empty slot opens the editor at that time. */
+/**
+ * Single-day grid: a 24-hour canvas with the hour gutter on the left. Tapping an empty slot opens
+ * the editor at that time. One of these per day is stacked in [ContinuousTimeline], which owns the
+ * scrolling.
+ */
 @Composable
-internal fun DayTimeline(
-    strings: Strings,
-    today: LocalDate,
-    now: LocalClock,
-    date: LocalDate,
-    events: List<Event>,
-    defaultScrollHour: Int,
-    onAdd: (LocalDate, Int?) -> Unit,
-    onOpen: (Event) -> Unit,
-) {
-    // The grid is one tall canvas, so scrolling is a plain offset rather than per-item lazy
-    // scrolling: a 24-hour column fits comfortably in memory and keeps hour alignment exact.
-    val scrollState = rememberScrollState()
-    val targetOffsetPx = with(LocalDensity.current) {
-        (HourHeight * (if (date == today) now.time.hour else defaultScrollHour)).roundToPx()
-    }
-
-    // Anchor the visible window on the current hour for today, otherwise a fixed hour.
-    LaunchedEffect(date, targetOffsetPx) {
-        val maxOffset = scrollState.maxValue
-        if (maxOffset > 0) {
-            scrollState.scrollTo(targetOffsetPx.coerceIn(0, maxOffset))
-        }
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(scrollState),
-    ) {
-        TimelineGrid(
-            strings = strings,
-            today = today,
-            now = now,
-            date = date,
-            events = events,
-            onAdd = onAdd,
-            onOpen = onOpen,
-        )
-    }
-}
-
-@Composable
-private fun TimelineGrid(
+internal fun DayTimelineGrid(
     strings: Strings,
     today: LocalDate,
     now: LocalClock,

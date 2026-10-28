@@ -2,6 +2,7 @@ package com.crko.ui.schedule
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,7 +23,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Event
+import com.crko.domain.mondayIndex
 import com.crko.i18n.Strings
+import com.crko.ui.components.GlassNavigationBarDefaults
 import com.crko.ui.icons.AppIcons
 import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.basic.Icon
@@ -119,6 +122,59 @@ internal fun AgendaEventRow(
     }
 }
 
+/**
+ * Day title with its event count, used wherever days are stacked: the week agenda list and the
+ * blocks of the scrolling timeline.
+ */
+@Composable
+internal fun DayHeadingRow(
+    date: LocalDate,
+    today: LocalDate,
+    count: Int,
+    strings: Strings,
+    modifier: Modifier = Modifier,
+) {
+    val scheme = MiuixTheme.colorScheme
+    val isToday = date == today
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = strings.weekdaysFull[date.mondayIndex],
+            style = MiuixTheme.textStyles.title4,
+            fontWeight = FontWeight.SemiBold,
+            color = if (isToday) scheme.primary else scheme.onSurface,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = strings.dayMonth(date),
+            style = MiuixTheme.textStyles.footnote1,
+            color = scheme.onSurfaceVariantSummary,
+            maxLines = 1,
+        )
+        if (isToday) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = strings.today,
+                style = MiuixTheme.textStyles.footnote1,
+                color = scheme.primary,
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        if (count > 0) {
+            Text(
+                text = strings.eventsCount(count),
+                style = MiuixTheme.textStyles.footnote1,
+                color = scheme.onSurfaceVariantSummary,
+            )
+        }
+    }
+}
+
 /** Agenda list for the selected day, ordered by start time. */
 @Composable
 internal fun DayAgendaList(
@@ -131,6 +187,9 @@ internal fun DayAgendaList(
     // band of empty screen above the first row.
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
+        // The page runs to the window bottom behind the glass bar, so the last row needs its own
+        // clearance to be reachable.
+        contentPadding = PaddingValues(bottom = GlassNavigationBarDefaults.clearance()),
     ) {
         items(events, key = { "event-${it.id}" }) { event ->
             AgendaEventRow(event = event, tones = tones, strings = strings, onOpen = onOpen)

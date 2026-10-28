@@ -7,6 +7,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -20,9 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,7 +38,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -54,23 +52,19 @@ import com.crko.domain.plusDays
 import com.crko.domain.startOfWeek
 import com.crko.domain.weekDates
 import com.crko.i18n.Strings
+import com.crko.ui.components.GlassNavigationBarDefaults
 import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.roundToInt
 
-private val WeekDayHeaderHeight = 38.dp
-
 // Finger span change that switches between the day pager and the week overview.
 private const val ExpandTriggerRatio = 1.3f
 private const val CollapseTriggerRatio = 0.72f
 
-private const val WeekPageCount = 2400
-private const val WeekHomePage = WeekPageCount / 2
-
 /**
  * Two-finger pinch that opens the week overview (spread) and closes it (pinch). Single-pointer
- * events are left untouched so the day pager and the scrollable content keep working; once a
+ * events are left untouched so the timeline scroll and the list pagers keep working; once a
  * second finger lands the events are consumed so nothing underneath scrolls mid-pinch.
  */
 @Composable
@@ -120,16 +114,15 @@ internal fun Modifier.weekOverviewGesture(
 
 /**
  * Week pager with a pinned page-to-week mapping, the same arrangement as [DayPager]: page
- * [WeekHomePage] always shows the week the screen opened on and every other page a fixed offset
+ * [BlockAxis.center] always shows the week the screen opened on and every other page a fixed offset
  * from it. Paging never remaps content, so a fling is never rewritten while it is in flight.
  */
-internal class WeekPager(val state: PagerState, private val baseWeek: LocalDate) {
-    fun weekAt(page: Int): LocalDate = baseWeek.plusDays((page - WeekHomePage) * 7)
+internal class WeekPager(val state: PagerState, baseWeek: LocalDate) {
+    private val axis = BlockAxis(baseWeek, 7, WeekBlockCount)
 
-    fun pageOf(date: LocalDate): Int {
-        val weeks = ((date.startOfWeek().toEpochDays() - baseWeek.toEpochDays()) / 7).toInt()
-        return (WeekHomePage + weeks).coerceIn(0, WeekPageCount - 1)
-    }
+    fun weekAt(page: Int): LocalDate = axis.dateAt(page)
+
+    fun pageOf(date: LocalDate): Int = axis.indexOf(date)
 }
 
 /**
@@ -141,7 +134,7 @@ internal fun rememberWeekPager(
     selected: LocalDate,
     onSelect: (LocalDate) -> Unit,
 ): WeekPager {
-    val pagerState = rememberPagerState(initialPage = WeekHomePage) { WeekPageCount }
+    val pagerState = rememberPagerState(initialPage = WeekBlockCount / 2) { WeekBlockCount }
     // Saved with the pager so a restored page index still maps to the week it was showing.
     val savedBaseWeek = rememberSaveable { selected.startOfWeek().toString() }
     val pager = remember(pagerState, savedBaseWeek) {
@@ -171,61 +164,41 @@ internal fun rememberWeekPager(
     return pager
 }
 
-/** Whole-week overview drawn as seven day columns on a shared 24-hour grid. */
+/**
+ * Whole-week overview drawn as seven day columns on a shared 24-hour grid. One of these per week is
+ * stacked in [ContinuousTimeline], which owns the scrolling and pins [WeekDayHeaderRow] above it.
+ */
 @Composable
-internal fun WeekTimeline(
+internal fun WeekTimelineGrid(
     strings: Strings,
     today: LocalDate,
     now: LocalClock,
     weekStart: LocalDate,
     eventsByDate: Map<LocalDate, List<Event>>,
-    defaultScrollHour: Int,
     onOpen: (Event) -> Unit,
 ) {
     val days = remember(weekStart) { weekStart.weekDates() }
-    val startHour = if (today in days) now.time.hour else defaultScrollHour
-    val targetOffsetPx = with(LocalDensity.current) { (HourHeight * startHour).roundToPx() }
-    // Seeded on first composition: a page swiped in is drawn as soon as it is partly visible, and
-    // starting at midnight would show for the frame before the effect below gets to run.
-    val scrollState = rememberScrollState(targetOffsetPx)
-
-    LaunchedEffect(weekStart, targetOffsetPx) {
-        val maxOffset = scrollState.maxValue
-        if (maxOffset > 0) {
-            scrollState.scrollTo(targetOffsetPx.coerceIn(0, maxOffset))
-        }
-    }
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        WeekDayHeaderRow(days = days, today = today, strings = strings)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .verticalScroll(scrollState),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(HourHeight * 24)
-                    .padding(horizontal = ColumnHorizontalPadding),
-            ) {
-                TimeGutterLabels(strings)
-                WeekColumns(
-                    days = days,
-                    today = today,
-                    nowMinutes = now.time.minutesOfDay(),
-                    eventsByDate = eventsByDate,
-                    onOpen = onOpen,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(HourHeight * 24)
+            .padding(horizontal = ColumnHorizontalPadding),
+    ) {
+        TimeGutterLabels(strings)
+        WeekColumns(
+            days = days,
+            today = today,
+            nowMinutes = now.time.minutesOfDay(),
+            eventsByDate = eventsByDate,
+            onOpen = onOpen,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
+/** Weekday and date strip of one week block; pinned above the week timeline while it scrolls. */
 @Composable
-private fun WeekDayHeaderRow(
+internal fun WeekDayHeaderRow(
     days: List<LocalDate>,
     today: LocalDate,
     strings: Strings,
@@ -417,11 +390,18 @@ internal fun WeekAgendaList(
     val tones = eventTones()
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = GlassNavigationBarDefaults.clearance()),
     ) {
         days.forEach { date ->
             val dayEvents = eventsByDate[date].orEmpty()
             item(key = "week-day-$date") {
-                WeekDayHeading(date = date, today = today, count = dayEvents.size, strings = strings)
+                DayHeadingRow(
+                    date = date,
+                    today = today,
+                    count = dayEvents.size,
+                    strings = strings,
+                    modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+                )
             }
             if (dayEvents.isEmpty()) {
                 item(key = "week-empty-$date") {
@@ -437,54 +417,6 @@ internal fun WeekAgendaList(
                     AgendaEventRow(event = event, tones = tones, strings = strings, onOpen = onOpen)
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun WeekDayHeading(
-    date: LocalDate,
-    today: LocalDate,
-    count: Int,
-    strings: Strings,
-) {
-    val scheme = MiuixTheme.colorScheme
-    val isToday = date == today
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = strings.weekdaysFull[date.mondayIndex],
-            style = MiuixTheme.textStyles.title4,
-            fontWeight = FontWeight.SemiBold,
-            color = if (isToday) scheme.primary else scheme.onSurface,
-            maxLines = 1,
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = strings.dayMonth(date),
-            style = MiuixTheme.textStyles.footnote1,
-            color = scheme.onSurfaceVariantSummary,
-            maxLines = 1,
-        )
-        if (isToday) {
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = strings.today,
-                style = MiuixTheme.textStyles.footnote1,
-                color = scheme.primary,
-            )
-        }
-        Spacer(Modifier.weight(1f))
-        if (count > 0) {
-            Text(
-                text = strings.eventsCount(count),
-                style = MiuixTheme.textStyles.footnote1,
-                color = scheme.onSurfaceVariantSummary,
-            )
         }
     }
 }

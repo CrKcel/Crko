@@ -87,3 +87,7 @@ fun Event.occursOn(date: LocalDate): Boolean {
         RepeatFrequency.Custom -> date.mondayIndex in rule.weekdays
     }
 }
+
+/** Events happening on [date], ordered by start time. */
+fun List<Event>.occurringOn(date: LocalDate): List<Event> =
+    filter { it.occursOn(date) }.sortedBy { it.startMinutes }
