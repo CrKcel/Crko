@@ -48,13 +48,11 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.ui.theme.LocalIsDark
@@ -79,6 +77,43 @@ import kotlin.math.roundToInt
 /** The selected bubble stays a subtle glass lens at rest (0..1 scale of the pressed bubble). */
 private const val RestBubbleProgress = 0.25f
 
+/** How far the bubble grows when pressed, as a scale of its rest box. */
+private const val RestBubblePressedScale = 78f / 56f
+
+/** Inset of the tab slots inside the capsule. */
+private val ContentPadding = 4.dp
+
+private val PillHeight = 56.dp
+
+/**
+ * The one corner radius both outlines use. A percent shape would curve each box with half of its own
+ * height, so the 64dp bar and the 56dp bubble read as two different curvatures.
+ */
+private val CornerRadius = PillHeight / 2
+
+/**
+ * The bubble's width as a fraction of its tab slot. Pressing scales it by [RestBubblePressedScale],
+ * so the bubble stays clear of its neighbours at rest and spills a little over the slot when pressed.
+ */
+private const val PillWidthRatio = 0.80f
+
+/**
+ * Share of the slot's leftover air the bubble gives up toward the nearer end of the bar. 1f would
+ * flush it with the capsule's inset, where its own cap crosses the bar's; 0.7f keeps a few dp between.
+ */
+private const val EdgeHug = 0.7f
+
+/**
+ * How far the bubble on [slot] shifts toward the nearer end of the bar, out of the air its slot
+ * leaves around it. Signed, because the two ends pull opposite ways, and it fades to zero before
+ * the middle slot so the bubble still travels smoothly.
+ */
+private fun edgeLean(slot: Float, tabCount: Int, slotInset: Dp): Dp {
+    val toTrailingEnd = (1f - (tabCount - 1 - slot)).coerceIn(0f, 1f)
+    val toLeadingEnd = (1f - slot).coerceIn(0f, 1f)
+    return slotInset * EdgeHug * (toTrailingEnd - toLeadingEnd)
+}
+
 @Immutable
 data class GlassNavigationBarItem(
     val icon: ImageVector,
@@ -87,17 +122,15 @@ data class GlassNavigationBarItem(
 
 object GlassNavigationBarDefaults {
     val Height: Dp = 64.dp
-    val HorizontalMargin: Dp = 20.dp
+    val HorizontalMargin: Dp = 36.dp
 
-    private val ContentPadding: Dp = 4.dp
-    private val PillHeight: Dp = 56.dp
+    /** Widest the capsule gets; past this the extra room stays empty on the sides. */
+    val MaxWidth: Dp = 380.dp
 
-    /** Space below the bar: the gesture area plus a breathing gap. */
+    /** Space below the bar; see [barBottomGap] for why each platform picks its own distance. */
     @Composable
-    fun bottomMargin(): Dp {
-        val systemInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        return maxOf(systemInset, 16.dp) + 12.dp
-    }
+    fun bottomMargin(): Dp =
+        barBottomGap(WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding())
 
     /** Height the bar occupies above the window bottom, for FAB/snackbar clearance. */
     @Composable
@@ -125,9 +158,7 @@ fun GlassNavigationBar(
     if (items.isEmpty()) return
 
     val isDark = LocalIsDark.current
-    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
-    val barShape = remember { AbsoluteRoundedCornerShape(percent = 50) }
-    val pillShape = remember { AbsoluteRoundedCornerShape(percent = 50) }
+    val glassShape = remember { AbsoluteRoundedCornerShape(CornerRadius) }
 
     val containerColor = if (isDark) {
         Color(0xFF121212).copy(alpha = 0.4f)
@@ -182,18 +213,20 @@ fun GlassNavigationBar(
             .padding(bottom = GlassNavigationBarDefaults.bottomMargin()),
         contentAlignment = Alignment.Center,
     ) {
-        val barWidth = minOf(maxWidth, 440.dp)
-        val innerWidth = barWidth - 8.dp
-        val tabWidth = innerWidth / tabCount
-        val pillOffset = if (isRtl) {
-            barWidth - 4.dp - tabWidth * (indicator + 1f)
-        } else {
-            4.dp + tabWidth * indicator
-        }
+        val barWidth = minOf(maxWidth, GlassNavigationBarDefaults.MaxWidth)
+        val tabWidth = (barWidth - ContentPadding * 2) / tabCount
+        val pillWidth = tabWidth * PillWidthRatio
+        val slotInset = (tabWidth - pillWidth) / 2
+        // On the outer tabs the bubble draws part of that leftover air back in, so it leans against
+        // the capsule's end instead of floating in the middle of its slot. The tab's own label leans
+        // by the same amount, which keeps each label inside its bubble.
+        // `Modifier.offset` mirrors its x for RTL, so one leading-edge formula covers both directions.
+        val pillOffset =
+            ContentPadding + tabWidth * indicator + slotInset + edgeLean(indicator, tabCount, slotInset)
         // The pill is already a (smaller) glass lens at rest, like the demo's selected bubble;
         // pressing grows it to the full 78/56 bubble.
         val bubbleProgress = RestBubbleProgress + (1f - RestBubbleProgress) * pressValue
-        val bubbleScale = 1f + (78f / 56f - 1f) * bubbleProgress
+        val bubbleScale = 1f + (RestBubblePressedScale - 1f) * bubbleProgress
 
         Box(
             modifier = Modifier
@@ -201,7 +234,7 @@ fun GlassNavigationBar(
                 .height(GlassNavigationBarDefaults.Height)
                 .drawBackdrop(
                     backdrop = backdrop,
-                    shape = { barShape },
+                    shape = { glassShape },
                     effects = {
                         vibrancy()
                         blur(8f.dp.toPx())
@@ -279,7 +312,7 @@ fun GlassNavigationBar(
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(4.dp)
+                    .padding(ContentPadding)
                     .selectableGroup(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -304,7 +337,11 @@ fun GlassNavigationBar(
                             ),
                         contentAlignment = Alignment.Center,
                     ) {
-                        GlassTabContent(item = item, color = contentColor)
+                        GlassTabContent(
+                            item = item,
+                            color = contentColor,
+                            modifier = Modifier.offset(x = edgeLean(index.toFloat(), tabCount, slotInset)),
+                        )
                     }
                 }
             }
@@ -314,7 +351,7 @@ fun GlassNavigationBar(
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(4.dp)
+                    .padding(ContentPadding)
                     .alpha(0f)
                     .layerBackdrop(barContentBackdrop)
                     .graphicsLayer {
@@ -323,13 +360,14 @@ fun GlassNavigationBar(
                     .clearAndSetSemantics { },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                items.forEach { item ->
+                items.forEachIndexed { index, item ->
                     GlassTabContent(
                         item = item,
                         color = contentColor,
                         modifier = Modifier
                             .weight(1f)
-                            .fillMaxHeight(),
+                            .fillMaxHeight()
+                            .offset(x = edgeLean(index.toFloat(), tabCount, slotInset)),
                     )
                 }
             }
@@ -337,12 +375,12 @@ fun GlassNavigationBar(
             // The selection bubble, drawn over the tabs like the demo.
             Box(
                 modifier = Modifier
-                    .offset(x = pillOffset, y = 4.dp)
-                    .width(tabWidth)
-                    .height(56.dp)
+                    .offset(x = pillOffset, y = (GlassNavigationBarDefaults.Height - PillHeight) / 2)
+                    .width(pillWidth)
+                    .height(PillHeight)
                     .drawBackdrop(
                         backdrop = pillBackdrop,
-                        shape = { pillShape },
+                        shape = { glassShape },
                         effects = {
                             lens(
                                 refractionHeight = 10.dp.toPx() * bubbleProgress,
