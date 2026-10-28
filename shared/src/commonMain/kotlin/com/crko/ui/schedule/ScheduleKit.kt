@@ -85,7 +85,9 @@ internal fun eventTones(): List<Pair<Color, Color>> {
     return listOf(
         scheme.primary to scheme.onPrimary,
         scheme.secondaryVariant to scheme.onSecondaryVariant,
-        scheme.tertiaryContainerVariant to scheme.onTertiaryContainer,
+        // Miuix maps tertiaryContainerVariant onto onTertiaryContainer under Monet, which would set the
+        // block background to the exact colour of its text; surface tiers stay paired in every palette.
+        scheme.surfaceContainerHighest to scheme.onSurfaceContainerHighest,
         scheme.primaryContainer to scheme.onPrimaryContainer,
         scheme.secondaryContainer to scheme.onSecondaryContainer,
         scheme.tertiaryContainer to scheme.onTertiaryContainer,
