@@ -18,12 +18,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -45,7 +44,6 @@ import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
 import com.crko.ui.components.PopupListLayout
 import com.crko.ui.components.PopupTitle
-import kotlinx.coroutines.launch
 import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Icon
@@ -72,7 +70,6 @@ fun ScheduleTab(
     var weekMode by rememberSaveable { mutableStateOf(false) }
     var showViewMenu by remember { mutableStateOf(false) }
     val layoutDirection = LocalLayoutDirection.current
-    val scope = rememberCoroutineScope()
 
     val selected = remember(selectedName) { LocalDate.parse(selectedName) }
     val weekAnchor = remember(anchorName) { LocalDate.parse(anchorName) }
@@ -250,17 +247,12 @@ fun ScheduleTab(
                 label = "schedule-content",
             ) { inWeekView ->
                 if (listMode) {
-                    // One day — or one week in the overview — per page. The vertical fling pages
-                    // along the date axis, and a sideways swipe moves the very same page.
-                    val pagerState = if (inWeekView) overviewPager.state else dayPager.state
-                    VerticalPager(
-                        state = pagerState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .horizontalPageSwipe { steps ->
-                                val target = (pagerState.currentPage + steps).coerceIn(0, pagerState.pageCount - 1)
-                                scope.launch { pagerState.animateScrollToPage(target) }
-                            },
+                    // One day — or one week in the overview — per page. A sideways swipe moves to
+                    // the adjacent date along the axis while the page itself scrolls vertically.
+                    HorizontalPager(
+                        state = if (inWeekView) overviewPager.state else dayPager.state,
+                        beyondViewportPageCount = 1,
+                        modifier = Modifier.fillMaxSize(),
                     ) { page ->
                         if (inWeekView) {
                             val weekStart = overviewPager.weekAt(page)
