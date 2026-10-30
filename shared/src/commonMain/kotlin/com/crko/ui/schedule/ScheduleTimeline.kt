@@ -65,8 +65,9 @@ internal fun ContinuousTimeline(
     val listState = rememberSaveable(inWeekView, saver = LazyListState.Saver) {
         LazyListState(
             firstVisibleItemIndex = initialBlock,
-            firstVisibleItemScrollOffset =
-                anchorOffsetPx(density, axis, initialBlock, inWeekView, today, now.value, defaultScrollHour),
+            firstVisibleItemScrollOffset = anchorOffsetPx(
+                density, axis, initialBlock, inWeekView, today, now.value, defaultScrollHour, events,
+            ),
         )
     }
 
@@ -75,6 +76,7 @@ internal fun ContinuousTimeline(
     val currentSelected by rememberUpdatedState(selected)
     val currentOnSelect by rememberUpdatedState(onSelect)
     val currentDefaultHour by rememberUpdatedState(defaultScrollHour)
+    val currentEvents by rememberUpdatedState(events)
 
     // Report the block on the falling edge of a scroll: mid-fling would retarget the jump below, and
     // the index alone also moves when unfolding the calendar shrinks this viewport. The weekday of
@@ -98,7 +100,9 @@ internal fun ContinuousTimeline(
         if (listState.firstVisibleItemIndex != target) {
             listState.scrollToItem(
                 target,
-                anchorOffsetPx(density, axis, target, inWeekView, today, now.value, currentDefaultHour),
+                anchorOffsetPx(
+                    density, axis, target, inWeekView, today, now.value, currentDefaultHour, currentEvents,
+                ),
             )
         }
     }
@@ -187,11 +191,17 @@ private fun anchorOffsetPx(
     today: LocalDate,
     now: LocalClock,
     defaultScrollHour: Int,
+    events: List<Event>,
 ): Int {
     val date = axis.dateAt(block)
     val hour = if (covers(date, today, if (weeks) 7 else 1)) now.time.hour else defaultScrollHour
     val heading = if (weeks) 0.dp else TimelineDayHeadingHeight
-    return with(density) { (HourHeight * hour + heading).roundToPx() }
+    val blockEvents = if (weeks) {
+        date.weekDates().flatMap { events.occurringOn(it) }
+    } else {
+        events.occurringOn(date)
+    }
+    return with(density) { (heading + hourLayoutOf(blockEvents).offset(hour)).roundToPx() }
 }
 
 /** Whether the block starting at [first] and running [days] long contains [day]. */

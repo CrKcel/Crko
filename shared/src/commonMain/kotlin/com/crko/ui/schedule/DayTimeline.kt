@@ -51,11 +51,9 @@ import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-private const val TimelineSlots = 24 * 60 / SlotMinutes
-
 /** Hour labels for a 24-hour grid, shared by the day and week timelines. */
 @Composable
-internal fun TimeGutterLabels(strings: Strings) {
+internal fun TimeGutterLabels(strings: Strings, layout: HourLayout) {
     val labels = remember(strings) { List(24) { strings.time(LocalTime(it, 0)) } }
     val style = MiuixTheme.textStyles.footnote2.copy(fontSize = 11.sp)
     val color = MiuixTheme.colorScheme.onSurfaceVariantSummary
@@ -77,15 +75,16 @@ internal fun TimeGutterLabels(strings: Strings) {
     Canvas(
         modifier = Modifier
             .width(TimeGutterWidth)
-            .height(HourHeight * 24)
+            .height(layout.totalHeight)
             .clipToBounds(),
     ) {
-        val hourPx = HourHeight.toPx()
         val lift = 7.dp.toPx()
-        layouts.forEachIndexed { hour, layout ->
-            // Centres each label on its hour line, clipped at the top edge of the grid.
-            val x = if (layoutDirection == LayoutDirection.Rtl) size.width - layout.size.width else 0f
-            drawText(layout, color = color, topLeft = Offset(x, hour * hourPx - lift))
+        layouts.forEachIndexed { hour, label ->
+            // Centres each label on its hour line. The first one would otherwise be lifted above
+            // the grid and clipped there, right against the day heading.
+            val x = if (layoutDirection == LayoutDirection.Rtl) size.width - label.size.width else 0f
+            val y = (layout.offset(hour).toPx() - lift).coerceAtLeast(0f)
+            drawText(label, color = color, topLeft = Offset(x, y))
         }
     }
 }
@@ -105,8 +104,7 @@ internal fun DayTimelineGrid(
     onAdd: (LocalDate, Int?) -> Unit,
     onOpen: (Event) -> Unit,
 ) {
-    val hourHeight = HourHeight
-    val primary = MiuixTheme.colorScheme.primary
+    val layout = remember(events) { hourLayoutOf(events) }
     val alarmColor = MiuixTheme.colorScheme.error
     val hourLineColor = hourDividerColor()
     val currentOnAdd by rememberUpdatedState(onAdd)
@@ -114,20 +112,20 @@ internal fun DayTimelineGrid(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(hourHeight * 24)
+            .height(layout.totalHeight)
             // The whole block — side margins and hour gutter included — is the create surface, so
             // a tap never lands in a dead strip at an edge. The event blocks sit deeper in the tree
             // and consume their own taps first, so tapping one still opens it instead of creating
             // a new event underneath.
-            .pointerInput(date) {
+            .pointerInput(date, layout) {
                 detectTapGestures { offset ->
-                    val slot = (offset.y / SlotHeight.toPx()).toInt().coerceIn(0, TimelineSlots - 1)
-                    currentOnAdd(date, slot * SlotMinutes)
+                    val minutes = layout.minutesAt(offset.y.toDp())
+                    currentOnAdd(date, minutes / SlotMinutes * SlotMinutes)
                 }
             }
             .padding(horizontal = ColumnHorizontalPadding),
     ) {
-        TimeGutterLabels(strings)
+        TimeGutterLabels(strings, layout)
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -135,10 +133,9 @@ internal fun DayTimelineGrid(
                 .clip(RoundedCornerShape(3.dp))
                 // Hour rules are drawn by a single modifier instead of 25 nested boxes.
                 .drawBehind {
-                    val hourPx = hourHeight.toPx()
                     val hourStroke = 1.dp.toPx()
                     for (hour in 0..24) {
-                        val y = (hour * hourPx).coerceIn(0f, size.height - 1f)
+                        val y = layout.offset(hour).toPx().coerceIn(0f, size.height - 1f)
                         drawLine(
                             color = hourLineColor,
                             start = Offset(0f, y),
@@ -152,7 +149,7 @@ internal fun DayTimelineGrid(
                 .drawWithContent {
                     drawContent()
                     if (date == today) {
-                        val y = hourHeight.toPx() * (now.value.time.minutesOfDay() / 60f)
+                        val y = layout.offsetOf(now.value.time.minutesOfDay()).toPx()
                         drawLine(
                             color = alarmColor,
                             start = Offset(0f, y),
@@ -163,15 +160,9 @@ internal fun DayTimelineGrid(
                     }
                 },
         ) {
-            if (date == today) {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .background(primary.copy(alpha = 0.06f)),
-                )
-            }
             EventBlocks(
                 events = events,
+                hours = layout,
                 onOpen = onOpen,
             )
         }
@@ -182,6 +173,7 @@ internal fun DayTimelineGrid(
 @Composable
 private fun EventBlocks(
     events: List<Event>,
+    hours: HourLayout,
     onOpen: (Event) -> Unit,
 ) {
     if (events.isEmpty()) return
@@ -197,7 +189,7 @@ private fun EventBlocks(
         content = {
             placed.forEach { item ->
                 val (container, content) = tones[eventToneIndex(item.event, tones.size)]
-                val compact = eventBlockHeight(item) < 44.dp
+                val compact = eventBlockHeight(item, hours) < 44.dp
                 Column(
                     modifier = Modifier
                         .padding(end = 1.dp)
@@ -236,7 +228,7 @@ private fun EventBlocks(
             measurable.measure(
                 Constraints.fixed(
                     width = columnWidth.roundToInt(),
-                    height = eventBlockHeight(placed[index]).roundToPx(),
+                    height = eventBlockHeight(placed[index], hours).roundToPx(),
                 ),
             )
         }
@@ -245,17 +237,16 @@ private fun EventBlocks(
                 val item = placed[index]
                 placeable.place(
                     x = (columnWidth * item.column).roundToInt(),
-                    y = (HourHeight * (item.startMinutes / 60f)).roundToPx(),
+                    y = hours.offsetOf(item.startMinutes).roundToPx(),
                 )
             }
         }
     }
 }
 
-/** Block height for [item]; fixed slot heights can be shorter than a readable one-line block. */
-private fun eventBlockHeight(item: PlacedEvent): Dp =
-    (HourHeight * ((item.endMinutes - item.startMinutes) / 60f).coerceAtLeast(20f / 56f))
-        .coerceAtLeast(20.dp)
+/** Block height for [item]; short slots can be thinner than a readable one-line block. */
+private fun eventBlockHeight(item: PlacedEvent, hours: HourLayout): Dp =
+    (hours.offsetOf(item.endMinutes) - hours.offsetOf(item.startMinutes)).coerceAtLeast(20.dp)
 
 
 internal class PlacedEvent(val event: Event, val column: Int, val totalColumns: Int) {

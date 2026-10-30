@@ -180,17 +180,21 @@ internal fun WeekTimelineGrid(
     onOpen: (Event) -> Unit,
 ) {
     val days = remember(weekStart) { weekStart.weekDates() }
+    // Rows are shared by the seven columns, so an hour only shrinks when none of the days has
+    // anything in it.
+    val layout = remember(eventsByDate) { hourLayoutOf(eventsByDate.values.flatten()) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(HourHeight * 24)
+            .height(layout.totalHeight)
             .padding(horizontal = ColumnHorizontalPadding),
     ) {
-        TimeGutterLabels(strings)
+        TimeGutterLabels(strings, layout)
         WeekColumns(
             days = days,
             today = today,
             now = now,
+            layout = layout,
             eventsByDate = eventsByDate,
             onOpen = onOpen,
             modifier = Modifier.weight(1f),
@@ -252,6 +256,7 @@ private fun WeekColumns(
     days: List<LocalDate>,
     today: LocalDate,
     now: State<LocalClock>,
+    layout: HourLayout,
     eventsByDate: Map<LocalDate, List<Event>>,
     onOpen: (Event) -> Unit,
     modifier: Modifier = Modifier,
@@ -263,10 +268,9 @@ private fun WeekColumns(
             .fillMaxHeight()
             .clipToBounds()
             .drawBehind {
-                val hourPx = HourHeight.toPx()
                 val hourStroke = 1.dp.toPx()
                 for (hour in 0..24) {
-                    val y = (hour * hourPx).coerceIn(0f, size.height - 1f)
+                    val y = layout.offset(hour).toPx().coerceIn(0f, size.height - 1f)
                     drawLine(hourLineColor, Offset(0f, y), Offset(size.width, y), hourStroke)
                 }
                 for (day in 1 until 7) {
@@ -280,6 +284,7 @@ private fun WeekColumns(
                 WeekDayColumn(
                     isToday = date == today,
                     now = now,
+                    hours = layout,
                     events = eventsByDate[date].orEmpty(),
                     onOpen = onOpen,
                     modifier = Modifier
@@ -296,6 +301,7 @@ private fun WeekColumns(
 private fun WeekDayColumn(
     isToday: Boolean,
     now: State<LocalClock>,
+    hours: HourLayout,
     events: List<Event>,
     onOpen: (Event) -> Unit,
     modifier: Modifier = Modifier,
@@ -309,7 +315,7 @@ private fun WeekDayColumn(
             // Read in the draw phase so a clock tick only repaints the marker, never recomposes
             // the seven columns or the week block around them.
             if (isToday) {
-                val y = HourHeight.toPx() * (now.value.time.minutesOfDay() / 60f)
+                val y = hours.offsetOf(now.value.time.minutesOfDay()).toPx()
                 drawLine(
                     color = scheme.error,
                     start = Offset(0f, y),
@@ -319,13 +325,6 @@ private fun WeekDayColumn(
             }
         },
     ) {
-        if (isToday) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(scheme.primary.copy(alpha = 0.06f)),
-            )
-        }
         // Width and position are resolved while measuring: the calendar above animates its height,
         // and a BoxWithConstraints here would recompose the column whenever the viewport changes.
         Layout(
@@ -347,7 +346,7 @@ private fun WeekDayColumn(
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Medium,
                             color = content,
-                            maxLines = if (weekBlockHeight(item) >= 34.dp) 2 else 1,
+                            maxLines = if (weekBlockHeight(item, hours) >= 34.dp) 2 else 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
@@ -360,7 +359,7 @@ private fun WeekDayColumn(
                 measurable.measure(
                     Constraints.fixed(
                         width = (dayWidth / item.totalColumns.toFloat()).roundToInt(),
-                        height = weekBlockHeight(item).roundToPx(),
+                        height = weekBlockHeight(item, hours).roundToPx(),
                     ),
                 )
             }
@@ -370,7 +369,7 @@ private fun WeekDayColumn(
                     val columnWidth = dayWidth / item.totalColumns.toFloat()
                     placeable.place(
                         x = (columnWidth * item.column).roundToInt(),
-                        y = (HourHeight * (item.startMinutes / 60f)).roundToPx(),
+                        y = hours.offsetOf(item.startMinutes).roundToPx(),
                     )
                 }
             }
@@ -378,8 +377,8 @@ private fun WeekDayColumn(
     }
 }
 
-private fun weekBlockHeight(item: PlacedEvent): Dp =
-    (HourHeight * ((item.endMinutes - item.startMinutes) / 60f)).coerceAtLeast(18.dp)
+private fun weekBlockHeight(item: PlacedEvent, hours: HourLayout): Dp =
+    (hours.offsetOf(item.endMinutes) - hours.offsetOf(item.startMinutes)).coerceAtLeast(18.dp)
 
 /** Whole-week overview grouped by day, ordered by start time within each day. */
 @Composable
