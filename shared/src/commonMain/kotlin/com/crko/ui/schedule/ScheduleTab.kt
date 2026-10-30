@@ -141,6 +141,14 @@ fun ScheduleTab(
 
     val dayPager = rememberDayPager(selected = selected, today = today, onSelect = onSelectDate)
     val overviewPager = rememberWeekPager(selected = selected, onSelect = onSelectDate)
+    // The calendar strip above follows the list's sideways drag; the timeline has no such pager.
+    val weekStrip = remember(listMode, weekMode, dayPager, overviewPager) {
+        when {
+            !listMode -> null
+            weekMode -> WeekStrip(overviewPager.state, overviewPager::weekAt, pageIsWeek = true)
+            else -> WeekStrip(dayPager.state, dayPager::dateAt, pageIsWeek = false)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -233,6 +241,7 @@ fun ScheduleTab(
                 showWeekSelection = expanded || !weekMode,
                 onSelect = onSelectDate,
                 onMonthChange = onMonthChange,
+                listStrip = weekStrip,
             )
         }
 

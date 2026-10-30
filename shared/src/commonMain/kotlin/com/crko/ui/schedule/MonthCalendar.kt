@@ -40,6 +40,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,9 +48,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -161,6 +164,8 @@ internal fun Modifier.calendarFoldDrag(
  * pager takes over that row, so a horizontal swipe switches to the adjacent week.
  *
  * [expanded] is the settled state; while dragging, the revealed height follows the finger directly.
+ * [listStrip] is the list pager below, when one is showing: the collapsed week row then slides with
+ * it so a swipe across a week edge carries the calendar above along.
  */
 @Composable
 internal fun WeekMonthCalendar(
@@ -174,6 +179,7 @@ internal fun WeekMonthCalendar(
     showWeekSelection: Boolean,
     onSelect: (LocalDate) -> Unit,
     onMonthChange: (LocalDate) -> Unit,
+    listStrip: WeekStrip?,
 ) {
     val density = LocalDensity.current
     val rowHeightPx = with(density) { MonthRowHeight.toPx() }
@@ -187,6 +193,46 @@ internal fun WeekMonthCalendar(
     val anchorMonth = monthAnchor.startOfMonth()
     val pager = rememberMonthPager(anchorMonth, onMonthChange)
     val weekPager = rememberWeekPager(selected, onSelect)
+
+    // The collapsed row can be moved from two sides: its own pager when swiped directly, and the
+    // list pager below while a list swipe crosses a week edge. The latter draws both weeks and
+    // slides between them, staying on screen until the week pager has caught up with the
+    // selection; dropping it at the page edge would flash the old week for a frame.
+    val stripPair by remember(listStrip) {
+        derivedStateOf {
+            val strip = listStrip ?: return@derivedStateOf null
+            strip.pairAt(strip.state.currentPage, strip.state.currentPageOffsetFraction)
+        }
+    }
+    val stripCrossing by remember(listStrip) {
+        derivedStateOf {
+            val strip = listStrip ?: return@derivedStateOf false
+            strip.isCrossing(strip.state.currentPage, strip.state.currentPageOffsetFraction)
+        }
+    }
+    var pendingWeek by remember { mutableStateOf<LocalDate?>(null) }
+    LaunchedEffect(listStrip, weekPager) {
+        pendingWeek = null
+        val strip = listStrip ?: return@LaunchedEffect
+        snapshotFlow {
+            Triple(
+                strip.state.currentPage,
+                strip.state.currentPageOffsetFraction,
+                weekPager.state.currentPage,
+            )
+        }.collect { (page, fraction, weekPage) ->
+            val driveWeek = strip.weekOf(page)
+            pendingWeek = when {
+                strip.isCrossing(page, fraction) -> driveWeek
+                pendingWeek == null -> null
+                weekPager.weekAt(weekPage) == driveWeek -> null
+                else -> driveWeek
+            }
+        }
+    }
+    val stripProgress: () -> Float = remember(listStrip) {
+        { listStrip?.progressAt(listStrip.state.currentPageOffsetFraction) ?: 0f }
+    }
 
     // Progress changes on every animation frame, so it is only read in the layout/draw passes or
     // through a derived state that flips at most twice per fold. Reading it during composition
@@ -296,14 +342,31 @@ internal fun WeekMonthCalendar(
             // The week pager draws the same row the month grid would, so the switch as the
             // calendar folds open is invisible.
             if (!showMonthGrid) {
-                HorizontalPager(
-                    state = weekPager.state,
-                    beyondViewportPageCount = 1,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(MonthRowHeight),
-                    pageContent = weekPage,
-                )
+                // Read the pair only while a swipe is carrying it; a plain day-to-day swipe must not
+                // recompose the header each time its page flips.
+                val pair = if (stripCrossing || pendingWeek != null) stripPair else null
+                if (pair != null) {
+                    WeekStripRow(
+                        left = pair.first,
+                        right = pair.second,
+                        progress = stripProgress,
+                        month = currentSelected.startOfMonth(),
+                        selected = currentSelected,
+                        today = currentToday,
+                        hasEvents = currentHasEvents,
+                        showSelection = currentShowWeekSelection,
+                        onSelect = { currentOnSelect(it) },
+                    )
+                } else {
+                    HorizontalPager(
+                        state = weekPager.state,
+                        beyondViewportPageCount = 1,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(MonthRowHeight),
+                        pageContent = weekPage,
+                    )
+                }
             }
         }
     }
@@ -414,6 +477,56 @@ private fun WeekRow(
                     .weight(1f)
                     .fillMaxHeight(),
             )
+        }
+    }
+}
+
+/**
+ * Two weeks drawn side by side and slid between as the list pager crosses the edge of a week. The
+ * translation is read while placing the row, so dragging only re-lays it out, never recomposes it.
+ */
+@Composable
+private fun WeekStripRow(
+    left: LocalDate,
+    right: LocalDate,
+    progress: () -> Float,
+    month: LocalDate,
+    selected: LocalDate,
+    today: LocalDate,
+    hasEvents: (LocalDate) -> Boolean,
+    showSelection: Boolean,
+    onSelect: (LocalDate) -> Unit,
+) {
+    // Both weeks are measured at exactly the viewport width and placed side by side, so the offset
+    // can slide them by whole pages without depending on how a Row would distribute a wider child.
+    Layout(
+        content = {
+            listOf(left, right).forEach { weekStart ->
+                WeekRow(
+                    weekStart = weekStart,
+                    month = month,
+                    selected = selected,
+                    today = today,
+                    hasEvents = hasEvents,
+                    showSelection = showSelection,
+                    onSelect = onSelect,
+                )
+            }
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(MonthRowHeight)
+            .clipToBounds(),
+    ) { measurables, constraints ->
+        val pageWidth = constraints.maxWidth
+        val pageHeight = constraints.maxHeight
+        val placeables = measurables.map { it.measure(Constraints.fixed(pageWidth, pageHeight)) }
+        layout(pageWidth, pageHeight) {
+            // Read at placement time so a drag re-lays out the row's position without recomposing it.
+            val shift = (-progress() * pageWidth).roundToInt()
+            placeables.forEachIndexed { index, placeable ->
+                placeable.place(index * pageWidth + shift, 0)
+            }
         }
     }
 }
