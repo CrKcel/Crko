@@ -30,9 +30,6 @@ import com.crko.domain.weekDates
 import com.crko.i18n.Strings
 import com.crko.ui.components.GlassNavigationBarDefaults
 import kotlinx.datetime.LocalDate
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.first
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val DayContentType = "timeline-day"
@@ -79,38 +76,46 @@ internal fun ContinuousTimeline(
     // rather than the one captured when they started.
     val currentSelected by rememberUpdatedState(selected)
     val currentOnSelect by rememberUpdatedState(onSelect)
+    val currentToday by rememberUpdatedState(today)
     val currentDefaultHour by rememberUpdatedState(defaultScrollHour)
     val currentEvents by rememberUpdatedState(events)
 
-    // Report the block on the falling edge of a scroll: mid-fling would retarget the jump below, and
-    // the index alone also moves when unfolding the calendar shrinks this viewport. The weekday of
-    // the current selection is kept, so scrolling weeks move the whole week instead of Monday.
+    // The block under the top edge feeds the selection and the selection drives the scroller, so one
+    // collector tells the two apart instead of letting them chase each other: a block the scroll
+    // crosses is reported at once, so the pinned day heading and the week calendar above name the
+    // same day while the finger is still moving; a date picked elsewhere (a calendar cell, the week
+    // strip, the list view) moves the scroller there once it comes to rest. The weekday of the
+    // current selection is kept, so scrolling weeks move the whole week instead of Monday.
     LaunchedEffect(listState, axis, inWeekView) {
-        snapshotFlow { listState.isScrollInProgress }
-            .distinctUntilChanged()
-            .drop(1)
-            .collect { scrolling ->
-                if (scrolling) return@collect
-                val date = axis.restingDateAt(
-                    blockOfItem(listState.firstVisibleItemIndex, inWeekView),
-                    currentSelected,
-                )
-                if (date != currentSelected) currentOnSelect(date)
-            }
-    }
-
-    // A date picked outside the timeline (a calendar cell, the week strip) moves it there. Blocks
-    // that come from scrolling already sit under the top edge, so nothing moves.
-    LaunchedEffect(selected, axis, inWeekView) {
-        val target = axis.indexOf(selected)
-        snapshotFlow { listState.isScrollInProgress }.first { scrolling -> !scrolling }
-        if (blockOfItem(listState.firstVisibleItemIndex, inWeekView) != target) {
-            listState.scrollToItem(
-                itemIndexOfBlock(target, inWeekView),
-                anchorOffsetPx(
-                    density, axis, target, inWeekView, today, now.value, currentDefaultHour, currentEvents,
-                ),
+        // Block the scroller last reported as its own selection. A selection that maps to another
+        // block came from outside; a selection that still maps to this one is the scroll's own, and
+        // the report for the block now under the top edge is on its way.
+        var reportedBlock = -1
+        snapshotFlow {
+            Triple(
+                blockOfItem(listState.firstVisibleItemIndex, inWeekView),
+                axis.indexOf(currentSelected),
+                !listState.isScrollInProgress,
             )
+        }.collect { (block, selectedBlock, idle) ->
+            when {
+                block == selectedBlock -> Unit
+                idle && selectedBlock != reportedBlock -> {
+                    reportedBlock = selectedBlock
+                    listState.scrollToItem(
+                        itemIndexOfBlock(selectedBlock, inWeekView),
+                        anchorOffsetPx(
+                            density, axis, selectedBlock, inWeekView, currentToday, now.value,
+                            currentDefaultHour, currentEvents,
+                        ),
+                    )
+                }
+                else -> {
+                    reportedBlock = block
+                    val date = axis.restingDateAt(block, currentSelected)
+                    if (date != currentSelected) currentOnSelect(date)
+                }
+            }
         }
     }
 

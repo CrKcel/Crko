@@ -148,19 +148,37 @@ internal fun rememberWeekPager(
     val currentSelected by rememberUpdatedState(selected)
     val currentOnSelect by rememberUpdatedState(onSelect)
 
-    // A week picked outside the pager (a cell tap, the day pager, the other week pager) moves it
-    // there; weeks that come from paging already sit under the settled page, so nothing moves.
-    LaunchedEffect(selected) {
-        val page = pager.pageOf(selected)
-        if (page != pagerState.currentPage) pagerState.scrollToPage(page)
-    }
-
-    // Report the week once the pager has come to rest. A page reported mid-gesture would retarget
-    // the selection above and interrupt the fling that is still in flight.
-    LaunchedEffect(pagerState) {
-        snapshotFlow { pagerState.settledPage }.collect { page ->
-            val target = pager.weekAt(page).plusDays(currentSelected.mondayIndex)
-            if (target != currentSelected) currentOnSelect(target)
+    // The pager and the selection feed each other, so one collector tells the two apart instead of
+    // letting them chase each other: settling on a week reports its day (keeping the weekday the
+    // selection had), while a date picked elsewhere (a cell tap, the day pager, the other week
+    // pager) moves this one there. The page last answered by either side marks a report as the
+    // pager's own, so a pick still wins over a report it races.
+    LaunchedEffect(pagerState, pager) {
+        var answeredPage = -1
+        snapshotFlow {
+            Triple(
+                pagerState.settledPage,
+                pager.pageOf(currentSelected),
+                !pagerState.isScrollInProgress,
+            )
+        }.collect { (settled, selectedPage, idle) ->
+            when {
+                // A gesture is still running: let it settle instead of fighting it for the page.
+                !idle -> Unit
+                // The selection left the page this pager last answered — a pick elsewhere. Follow
+                // it, so the pick wins over a page that settled while it was being made.
+                selectedPage != answeredPage -> {
+                    answeredPage = selectedPage
+                    if (pagerState.currentPage != selectedPage) pagerState.scrollToPage(selectedPage)
+                }
+                // The pager settled on a page the selection has not caught up with yet: report it.
+                settled != selectedPage -> {
+                    answeredPage = settled
+                    val target = pager.weekAt(settled).plusDays(currentSelected.mondayIndex)
+                    if (target != currentSelected) currentOnSelect(target)
+                }
+                else -> Unit
+            }
         }
     }
     return pager
