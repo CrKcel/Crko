@@ -4,18 +4,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -30,7 +26,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
@@ -186,12 +181,11 @@ internal fun rememberWeekPager(
 
 /**
  * Whole-week overview drawn as seven day columns on a shared 24-hour grid. One of these is the
- * content of each page of [ContinuousTimeline]'s week overview, which pins [WeekDayHeaderRow] above
- * it and owns the paging; the page also uses [layout] to open on the right hour.
+ * content of each page of [ContinuousTimeline]'s week overview; the page also uses [layout] to open
+ * on the right hour.
  */
 @Composable
 internal fun WeekTimelineGrid(
-    strings: Strings,
     today: LocalDate,
     now: State<LocalClock>,
     weekStart: LocalDate,
@@ -200,72 +194,18 @@ internal fun WeekTimelineGrid(
     onOpen: (Event) -> Unit,
 ) {
     val days = remember(weekStart) { weekStart.weekDates() }
-    Row(
+    WeekColumns(
+        days = days,
+        today = today,
+        now = now,
+        layout = layout,
+        eventsByDate = eventsByDate,
+        onOpen = onOpen,
         modifier = Modifier
             .fillMaxWidth()
             .height(layout.totalHeight)
             .padding(horizontal = ColumnHorizontalPadding),
-    ) {
-        TimeGutterLabels(strings, layout)
-        WeekColumns(
-            days = days,
-            today = today,
-            now = now,
-            layout = layout,
-            eventsByDate = eventsByDate,
-            onOpen = onOpen,
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-/** Weekday and date strip of one week page; pinned above the week pager. */
-@Composable
-internal fun WeekDayHeaderRow(
-    days: List<LocalDate>,
-    today: LocalDate,
-    strings: Strings,
-) {
-    val scheme = MiuixTheme.colorScheme
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(WeekDayHeaderHeight)
-            .padding(horizontal = ColumnHorizontalPadding),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Spacer(Modifier.width(TimeGutterWidth))
-        days.forEachIndexed { index, date ->
-            val isToday = date == today
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Text(
-                    text = strings.weekdaysShort[index],
-                    style = MiuixTheme.textStyles.footnote2,
-                    fontSize = 10.sp,
-                    color = if (isToday) {
-                        scheme.primary
-                    } else {
-                        scheme.onSurfaceVariantSummary.copy(alpha = if (index >= 5) 0.6f else 1f)
-                    },
-                    maxLines = 1,
-                )
-                Text(
-                    text = date.day.toString(),
-                    style = MiuixTheme.textStyles.footnote1,
-                    fontSize = 13.sp,
-                    fontWeight = if (isToday) FontWeight.Bold else FontWeight.Medium,
-                    color = if (isToday) scheme.primary else scheme.onSurface,
-                    maxLines = 1,
-                )
-            }
-        }
-    }
+    )
 }
 
 @Composable

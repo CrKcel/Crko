@@ -22,7 +22,6 @@ internal const val SlotMinutes = 60
 internal val TimeGutterWidth = 40.dp
 internal val ColumnHorizontalPadding = 6.dp
 internal val MonthRowHeight = 54.dp
-internal val WeekDayHeaderHeight = 38.dp
 
 /** Heading that opens a day inside the scrolling timeline. */
 internal val TimelineDayHeadingHeight = 34.dp

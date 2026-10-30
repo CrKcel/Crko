@@ -241,10 +241,10 @@ fun ScheduleTab(
                 onMonthChange = onMonthChange,
             )
 
-            // The day timeline pins a date heading of its own at the top of the scroller, so the
-            // summary would only repeat that heading. The list and the week overview still need it:
-            // their headers name the days but not the one the rest of the screen follows.
-            if (listMode || weekMode) {
+            // The day timeline pins a date heading of its own at the top of the scroller, and the
+            // week overview has no header to name the day the rest of the screen follows either, so
+            // only the list keeps the summary.
+            if (listMode) {
                 DaySummary(
                     date = selected,
                     today = today,

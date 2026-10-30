@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -15,7 +14,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -53,7 +51,6 @@ internal fun ContinuousTimeline(
 ) {
     if (inWeekView) {
         PagedWeekTimeline(
-            strings = strings,
             today = today,
             now = now,
             events = events,
@@ -85,7 +82,6 @@ internal fun ContinuousTimeline(
  */
 @Composable
 private fun PagedWeekTimeline(
-    strings: Strings,
     today: LocalDate,
     now: State<LocalClock>,
     events: List<Event>,
@@ -95,56 +91,31 @@ private fun PagedWeekTimeline(
     onOpen: (Event) -> Unit,
 ) {
     val pager = rememberWeekPager(selected = selected, onSelect = onSelect)
-    Column(modifier = Modifier.fillMaxSize()) {
-        PagedWeekHeader(pager = pager, today = today, strings = strings)
-        VerticalPager(
-            state = pager.state,
-            // Laid out ahead of time, so the neighbour already opens at the edge it will be
-            // revealed from instead of at midnight.
-            beyondViewportPageCount = 1,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-        ) { page ->
-            val weekStart = pager.weekAt(page)
-            val days = remember(weekStart) { weekStart.weekDates() }
-            val eventsByDate = remember(days, events) { days.associateWith { events.occurringOn(it) } }
-            val openAt = when {
-                page > pager.state.currentPage -> WeekOpenAt.Top
-                page < pager.state.currentPage -> WeekOpenAt.Bottom
-                else -> WeekOpenAt.AnchorHour
-            }
-            WeekTimelinePage(
-                strings = strings,
-                today = today,
-                now = now,
-                weekStart = weekStart,
-                eventsByDate = eventsByDate,
-                defaultScrollHour = defaultScrollHour,
-                openAt = openAt,
-                onOpen = onOpen,
-            )
+    VerticalPager(
+        state = pager.state,
+        // Laid out ahead of time, so the neighbour already opens at the edge it will be
+        // revealed from instead of at midnight.
+        beyondViewportPageCount = 1,
+        modifier = Modifier.fillMaxSize(),
+    ) { page ->
+        val weekStart = pager.weekAt(page)
+        val days = remember(weekStart) { weekStart.weekDates() }
+        val eventsByDate = remember(days, events) { days.associateWith { events.occurringOn(it) } }
+        val openAt = when {
+            page > pager.state.currentPage -> WeekOpenAt.Top
+            page < pager.state.currentPage -> WeekOpenAt.Bottom
+            else -> WeekOpenAt.AnchorHour
         }
+        WeekTimelinePage(
+            today = today,
+            now = now,
+            weekStart = weekStart,
+            eventsByDate = eventsByDate,
+            defaultScrollHour = defaultScrollHour,
+            openAt = openAt,
+            onOpen = onOpen,
+        )
     }
-}
-
-/** Weekday and date strip of the page the pager is showing. */
-@Composable
-private fun PagedWeekHeader(
-    pager: WeekPager,
-    today: LocalDate,
-    strings: Strings,
-) {
-    // Read through a derived state: the week changes once per flip, while reading the page
-    // directly would recompose this header, and its parent, on every frame of a drag.
-    val weekStart by remember(pager) {
-        derivedStateOf { pager.weekAt(pager.state.currentPage) }
-    }
-    WeekDayHeaderRow(
-        days = remember(weekStart) { weekStart.weekDates() },
-        today = today,
-        strings = strings,
-    )
 }
 
 /** Edge of the week a page opens on when it is first composed. */
@@ -152,7 +123,6 @@ private enum class WeekOpenAt { Top, Bottom, AnchorHour }
 
 @Composable
 private fun WeekTimelinePage(
-    strings: Strings,
     today: LocalDate,
     now: State<LocalClock>,
     weekStart: LocalDate,
@@ -183,7 +153,6 @@ private fun WeekTimelinePage(
             .verticalScroll(scrollState),
     ) {
         WeekTimelineGrid(
-            strings = strings,
             today = today,
             now = now,
             weekStart = weekStart,
