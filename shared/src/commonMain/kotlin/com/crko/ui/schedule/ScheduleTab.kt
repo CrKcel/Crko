@@ -258,7 +258,7 @@ fun ScheduleTab(
         }
 
         // The overview and the day view share this area; the upper calendar stays untouched.
-        // A two-finger spread opens the week overview and a pinch closes it, while one finger runs
+        // A two-finger pinch opens the week overview and a spread closes it, while one finger runs
         // the date axis: on and on through the days in the timeline, one page at a time in the list.
         // Each view also yields to the other along the axis it does not use: sideways over the
         // timeline opens the list, and a pull past the list's edge returns to the timeline.

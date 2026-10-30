@@ -61,11 +61,11 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.roundToInt
 
 // Finger span change that switches between the day pager and the week overview.
-private const val ExpandTriggerRatio = 1.3f
-private const val CollapseTriggerRatio = 0.72f
+private const val SpreadTriggerRatio = 1.3f
+private const val PinchTriggerRatio = 0.72f
 
 /**
- * Two-finger pinch that opens the week overview (spread) and closes it (pinch). Single-pointer
+ * Two-finger pinch that opens the week overview (pinch) and closes it (spread). Single-pointer
  * events are left untouched so the timeline scroll and the list pagers keep working; once a
  * second finger lands the events are consumed so nothing underneath scrolls mid-pinch.
  */
@@ -95,13 +95,13 @@ internal fun Modifier.weekOverviewGesture(
                     if (!triggered && startDistance > 0f) {
                         val ratio = distance / startDistance
                         when {
-                            ratio >= ExpandTriggerRatio && !currentInWeekView -> {
-                                triggered = true
-                                currentOnEnter()
-                            }
-                            ratio <= CollapseTriggerRatio && currentInWeekView -> {
+                            ratio >= SpreadTriggerRatio && currentInWeekView -> {
                                 triggered = true
                                 currentOnExit()
+                            }
+                            ratio <= PinchTriggerRatio && !currentInWeekView -> {
+                                triggered = true
+                                currentOnEnter()
                             }
                         }
                     }
