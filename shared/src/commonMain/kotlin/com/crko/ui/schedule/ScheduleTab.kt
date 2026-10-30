@@ -24,10 +24,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -61,7 +63,7 @@ import com.crko.ui.icons.AppIcons
 @Composable
 fun ScheduleTab(
     state: AppStateHolder,
-    now: LocalClock,
+    now: State<LocalClock>,
     strings: Strings,
     contentPadding: PaddingValues,
     onOpenEvent: (Event?) -> Unit,
@@ -108,27 +110,46 @@ fun ScheduleTab(
         state.setAgendaView(if (show) "list" else "timeline")
     }
 
-    fun createAt(date: LocalDate, slotMinutes: Int?) {
-        val start = when {
-            slotMinutes != null -> slotMinutes
-            date == today -> ((now.time.minutesOfDay() / SlotMinutes) + 1) * SlotMinutes
-            else -> state.settings.agendaScrollHour * 60
+    // Handlers are remembered so their identity survives recomposition. A fresh function reference
+    // per recomposition would count as a changed argument all the way down, recomposing the calendar
+    // and rebuilding the timeline's lazy item provider whenever anything above merely re-executes.
+    val currentToday by rememberUpdatedState(today)
+    val currentOnOpenEvent by rememberUpdatedState(onOpenEvent)
+    // The reference wraps a local function that closes over the parsed week/month anchors, so it
+    // must be routed through the latest value rather than captured once by the remembered wrapper.
+    val currentSelect by rememberUpdatedState<(LocalDate) -> Unit>(::select)
+    val onSelectDate: (LocalDate) -> Unit = remember { { currentSelect(it) } }
+    val onOpenStable: (Event) -> Unit = remember { { currentOnOpenEvent(it) } }
+    val onAddAt: (LocalDate, Int?) -> Unit = remember {
+        { date, slotMinutes ->
+            val start = when {
+                slotMinutes != null -> slotMinutes
+                date == currentToday -> ((now.value.time.minutesOfDay() / SlotMinutes) + 1) * SlotMinutes
+                else -> state.settings.agendaScrollHour * 60
+            }
+            val startMinutes = start.coerceAtMost(23 * 60 + 30)
+            currentOnOpenEvent(
+                Event(
+                    id = null,
+                    title = "",
+                    date = date.toString(),
+                    startMinutes = startMinutes,
+                    endMinutes = (startMinutes + 60).coerceAtMost(MaxEndMinutes),
+                ),
+            )
         }
-        val startMinutes = start.coerceAtMost(23 * 60 + 30)
-        onOpenEvent(
-            Event(
-                id = null,
-                title = "",
-                date = date.toString(),
-                startMinutes = startMinutes,
-                endMinutes = (startMinutes + 60).coerceAtMost(MaxEndMinutes),
-            ),
-        )
+    }
+    val onMonthChange: (LocalDate) -> Unit = remember { { monthAnchorName = it.toString() } }
+    val onDeleteDay: () -> Unit = remember(selected) {
+        {
+            state.deleteEventsOn(selected)
+            state.notify(AppMessage.Deleted)
+        }
     }
 
     val dayEvents = remember(selected, state.appState.events) { state.eventsOn(selected) }
-    val dayPager = rememberDayPager(selected = selected, today = today, onSelect = ::select)
-    val overviewPager = rememberWeekPager(selected = selected, onSelect = ::select)
+    val dayPager = rememberDayPager(selected = selected, today = today, onSelect = onSelectDate)
+    val overviewPager = rememberWeekPager(selected = selected, onSelect = onSelectDate)
 
     Column(
         modifier = Modifier
@@ -216,8 +237,8 @@ fun ScheduleTab(
                 hasEvents = hasEvents,
                 fold = fold,
                 expanded = expanded,
-                onSelect = ::select,
-                onMonthChange = { target -> monthAnchorName = target.toString() },
+                onSelect = onSelectDate,
+                onMonthChange = onMonthChange,
             )
 
             DaySummary(
@@ -225,10 +246,7 @@ fun ScheduleTab(
                 today = today,
                 events = dayEvents,
                 strings = strings,
-                onDeleteDay = {
-                    state.deleteEventsOn(selected)
-                    state.notify(AppMessage.Deleted)
-                },
+                onDeleteDay = onDeleteDay,
                 modifier = Modifier
                     .clickable(
                         interactionSource = summaryInteraction,
@@ -312,7 +330,7 @@ fun ScheduleTab(
                                     today = today,
                                     weekStart = weekStart,
                                     eventsByDate = weekEvents,
-                                    onOpen = onOpenEvent,
+                                    onOpen = onOpenStable,
                                     onSwipeToTimeline = { travel -> showListView(false, travel) },
                                 )
                             } else {
@@ -321,7 +339,7 @@ fun ScheduleTab(
                                 DayAgendaList(
                                     events = pageEvents,
                                     strings = strings,
-                                    onOpen = onOpenEvent,
+                                    onOpen = onOpenStable,
                                     onSwipeToTimeline = { travel -> showListView(false, travel) },
                                 )
                             }
@@ -337,9 +355,9 @@ fun ScheduleTab(
                             selected = selected,
                             inWeekView = inWeekView,
                             defaultScrollHour = state.settings.agendaScrollHour,
-                            onSelect = ::select,
-                            onAdd = ::createAt,
-                            onOpen = onOpenEvent,
+                            onSelect = onSelectDate,
+                            onAdd = onAddAt,
+                            onOpen = onOpenStable,
                         )
                     }
                 }

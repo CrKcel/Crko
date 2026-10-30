@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -46,7 +47,7 @@ private const val WeekContentType = "timeline-week"
 internal fun ContinuousTimeline(
     strings: Strings,
     today: LocalDate,
-    now: LocalClock,
+    now: State<LocalClock>,
     events: List<Event>,
     selected: LocalDate,
     inWeekView: Boolean,
@@ -65,7 +66,7 @@ internal fun ContinuousTimeline(
         LazyListState(
             firstVisibleItemIndex = initialBlock,
             firstVisibleItemScrollOffset =
-                anchorOffsetPx(density, axis, initialBlock, inWeekView, today, now, defaultScrollHour),
+                anchorOffsetPx(density, axis, initialBlock, inWeekView, today, now.value, defaultScrollHour),
         )
     }
 
@@ -73,7 +74,6 @@ internal fun ContinuousTimeline(
     // rather than the one captured when they started.
     val currentSelected by rememberUpdatedState(selected)
     val currentOnSelect by rememberUpdatedState(onSelect)
-    val currentNow by rememberUpdatedState(now)
     val currentDefaultHour by rememberUpdatedState(defaultScrollHour)
 
     // Report the block on the falling edge of a scroll: mid-fling would retarget the jump below, and
@@ -98,7 +98,7 @@ internal fun ContinuousTimeline(
         if (listState.firstVisibleItemIndex != target) {
             listState.scrollToItem(
                 target,
-                anchorOffsetPx(density, axis, target, inWeekView, today, currentNow, currentDefaultHour),
+                anchorOffsetPx(density, axis, target, inWeekView, today, now.value, currentDefaultHour),
             )
         }
     }
@@ -127,7 +127,7 @@ internal fun ContinuousTimeline(
                     WeekTimelineGrid(
                         strings = strings,
                         today = today,
-                        now = currentNow,
+                        now = now,
                         weekStart = blockDate,
                         eventsByDate = eventsByDate,
                         onOpen = onOpen,
@@ -145,7 +145,7 @@ internal fun ContinuousTimeline(
                         DayTimelineGrid(
                             strings = strings,
                             today = today,
-                            now = currentNow,
+                            now = now,
                             date = blockDate,
                             events = dayEvents,
                             onAdd = onAdd,

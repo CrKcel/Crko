@@ -196,8 +196,15 @@ internal fun WeekMonthCalendar(
     // Height follows the month on screen, not the selected week's month: a six-week month opened
     // from a five-week one must grow instead of clipping its last row. Animated so paging between
     // months of different lengths does not snap.
-    val shownMonth = pager.monthAt(pager.state.currentPage)
-    val monthRows = remember(shownMonth) { shownMonth.monthGrid().size / 7 }
+    //
+    // Resolved through a derived state: the header only cares about the row count, which is the
+    // same across most page settles, so paging must not recompose the header and its pagers.
+    val monthRows by remember(pager) {
+        derivedStateOf {
+            val shownMonth = pager.monthAt(pager.state.currentPage)
+            shownMonth.monthGrid().size / 7
+        }
+    }
     val foldPx by animateFloatAsState(
         targetValue = (monthRows - 1) * rowHeightPx,
         animationSpec = tween(200),
@@ -384,14 +391,18 @@ private fun WeekRow(
     hasEvents: (LocalDate) -> Boolean,
     onSelect: (LocalDate) -> Unit,
 ) {
+    // The dates and their event dots only depend on the week and the event list, so a selection or
+    // a day rollover inside the same week does not rescan every event for all seven cells.
+    val dates = remember(weekStart) { weekStart.weekDates() }
+    val daysWithEvents = remember(dates, hasEvents) { dates.associateWith(hasEvents) }
     Row(modifier = Modifier.fillMaxWidth().height(MonthRowHeight)) {
-        weekStart.weekDates().forEach { date ->
+        dates.forEach { date ->
             MonthCell(
                 date = date,
                 inMonth = date.month == month.month && date.year == month.year,
                 selected = date == selected,
                 isToday = date == today,
-                hasEvents = hasEvents(date),
+                hasEvents = daysWithEvents[date] == true,
                 onClick = { onSelect(date) },
                 modifier = Modifier
                     .weight(1f)

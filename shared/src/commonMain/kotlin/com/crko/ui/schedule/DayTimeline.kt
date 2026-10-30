@@ -1,7 +1,9 @@
 package com.crko.ui.schedule
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,23 +12,32 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -45,18 +56,36 @@ private const val TimelineSlots = 24 * 60 / SlotMinutes
 /** Hour labels for a 24-hour grid, shared by the day and week timelines. */
 @Composable
 internal fun TimeGutterLabels(strings: Strings) {
-    Column(modifier = Modifier.width(TimeGutterWidth).clipToBounds()) {
-        repeat(24) { hour ->
-            Text(
-                text = strings.time(LocalTime(hour, 0)),
-                style = MiuixTheme.textStyles.footnote2,
-                fontSize = 11.sp,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                // Centres each label on its hour line, clipped at the top edge of the grid.
-                modifier = Modifier
-                    .height(HourHeight)
-                    .offset(y = (-7).dp),
+    val labels = remember(strings) { List(24) { strings.time(LocalTime(it, 0)) } }
+    val style = MiuixTheme.textStyles.footnote2.copy(fontSize = 11.sp)
+    val color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+    val layoutDirection = LocalLayoutDirection.current
+    val gutterPx = with(LocalDensity.current) { TimeGutterWidth.roundToPx() }
+    val measurer = rememberTextMeasurer()
+    // One canvas instead of 24 text nodes per day and week block. The layouts are measured once per
+    // theme, locale and width, then only drawn.
+    val layouts = remember(labels, style, layoutDirection, gutterPx, measurer) {
+        labels.map { label ->
+            measurer.measure(
+                text = AnnotatedString(label),
+                style = style,
+                constraints = Constraints(maxWidth = gutterPx),
+                layoutDirection = layoutDirection,
             )
+        }
+    }
+    Canvas(
+        modifier = Modifier
+            .width(TimeGutterWidth)
+            .height(HourHeight * 24)
+            .clipToBounds(),
+    ) {
+        val hourPx = HourHeight.toPx()
+        val lift = 7.dp.toPx()
+        layouts.forEachIndexed { hour, layout ->
+            // Centres each label on its hour line, clipped at the top edge of the grid.
+            val x = if (layoutDirection == LayoutDirection.Rtl) size.width - layout.size.width else 0f
+            drawText(layout, color = color, topLeft = Offset(x, hour * hourPx - lift))
         }
     }
 }
@@ -70,23 +99,33 @@ internal fun TimeGutterLabels(strings: Strings) {
 internal fun DayTimelineGrid(
     strings: Strings,
     today: LocalDate,
-    now: LocalClock,
+    now: State<LocalClock>,
     date: LocalDate,
     events: List<Event>,
     onAdd: (LocalDate, Int?) -> Unit,
     onOpen: (Event) -> Unit,
 ) {
     val hourHeight = HourHeight
-    val nowMinutes = now.time.minutesOfDay()
     val primary = MiuixTheme.colorScheme.primary
     val alarmColor = MiuixTheme.colorScheme.error
     val halfHourColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.08f)
     val hourLineColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.06f)
+    val currentOnAdd by rememberUpdatedState(onAdd)
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(hourHeight * 24)
+            // The whole block — side margins and hour gutter included — is the create surface, so
+            // a tap never lands in a dead strip at an edge. The event blocks sit deeper in the tree
+            // and consume their own taps first, so tapping one still opens it instead of creating
+            // a new event underneath.
+            .pointerInput(date) {
+                detectTapGestures { offset ->
+                    val slot = (offset.y / SlotHeight.toPx()).toInt().coerceIn(0, TimelineSlots - 1)
+                    currentOnAdd(date, slot * SlotMinutes)
+                }
+            }
             .padding(horizontal = ColumnHorizontalPadding),
     ) {
         TimeGutterLabels(strings)
@@ -118,10 +157,11 @@ internal fun DayTimelineGrid(
                     }
                 }
                 // Drawn on top of the content so the marker is never covered by event blocks.
+                // The minute is read in the draw phase: a clock tick repaints the marker only.
                 .drawWithContent {
                     drawContent()
                     if (date == today) {
-                        val y = hourHeight.toPx() * (nowMinutes / 60f)
+                        val y = hourHeight.toPx() * (now.value.time.minutesOfDay() / 60f)
                         drawLine(
                             color = alarmColor,
                             start = Offset(0f, y),
@@ -138,16 +178,6 @@ internal fun DayTimelineGrid(
                         .fillMaxSize()
                         .background(primary.copy(alpha = 0.06f)),
                 )
-            }
-            Column(modifier = Modifier.fillMaxSize()) {
-                repeat(TimelineSlots) { slot ->
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(SlotHeight)
-                            .clickable { onAdd(date, slot * SlotMinutes) },
-                    )
-                }
             }
             EventBlocks(
                 events = events,

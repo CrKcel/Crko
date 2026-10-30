@@ -82,18 +82,30 @@ internal fun isOverdue(todo: Todo, today: LocalDate): Boolean =
 @Composable
 internal fun eventTones(): List<Pair<Color, Color>> {
     val scheme = MiuixTheme.colorScheme
-    return listOf(
-        scheme.primary to scheme.onPrimary,
-        scheme.secondaryVariant to scheme.onSecondaryVariant,
-        // Miuix maps tertiaryContainerVariant onto onTertiaryContainer under Monet, which would set the
-        // block background to the exact colour of its text; surface tiers stay paired in every palette.
-        scheme.surfaceContainerHighest to scheme.onSurfaceContainerHighest,
-        scheme.primaryContainer to scheme.onPrimaryContainer,
-        // miuix's static scheme paints onSecondaryContainer as a muted label, not as text on its
-        // own container; onSurfaceContainer is a foreground in both the static and Monet mappings.
-        scheme.secondaryContainer to scheme.onSurfaceContainer,
-        scheme.tertiaryContainer to scheme.onTertiaryContainer,
-    )
+    // Keyed on the colors, not the scheme: miuix mutates one Colors instance in place, so its
+    // identity never changes. Caching keeps every event block and week column from allocating the
+    // same six pairs again, and gives the rows one stable list instance to compare against.
+    return remember(
+        scheme.primary, scheme.onPrimary,
+        scheme.secondaryVariant, scheme.onSecondaryVariant,
+        scheme.surfaceContainerHighest, scheme.onSurfaceContainerHighest,
+        scheme.primaryContainer, scheme.onPrimaryContainer,
+        scheme.secondaryContainer, scheme.onSurfaceContainer,
+        scheme.tertiaryContainer, scheme.onTertiaryContainer,
+    ) {
+        listOf(
+            scheme.primary to scheme.onPrimary,
+            scheme.secondaryVariant to scheme.onSecondaryVariant,
+            // Miuix maps tertiaryContainerVariant onto onTertiaryContainer under Monet, which would set the
+            // block background to the exact colour of its text; surface tiers stay paired in every palette.
+            scheme.surfaceContainerHighest to scheme.onSurfaceContainerHighest,
+            scheme.primaryContainer to scheme.onPrimaryContainer,
+            // miuix's static scheme paints onSecondaryContainer as a muted label, not as text on its
+            // own container; onSurfaceContainer is a foreground in both the static and Monet mappings.
+            scheme.secondaryContainer to scheme.onSurfaceContainer,
+            scheme.tertiaryContainer to scheme.onTertiaryContainer,
+        )
+    }
 }
 
 /** Stable per-event tone assignment so colors do not shift when other events change. */

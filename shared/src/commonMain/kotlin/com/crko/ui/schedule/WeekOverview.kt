@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,6 +24,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -173,7 +174,7 @@ internal fun rememberWeekPager(
 internal fun WeekTimelineGrid(
     strings: Strings,
     today: LocalDate,
-    now: LocalClock,
+    now: State<LocalClock>,
     weekStart: LocalDate,
     eventsByDate: Map<LocalDate, List<Event>>,
     onOpen: (Event) -> Unit,
@@ -189,7 +190,7 @@ internal fun WeekTimelineGrid(
         WeekColumns(
             days = days,
             today = today,
-            nowMinutes = now.time.minutesOfDay(),
+            now = now,
             eventsByDate = eventsByDate,
             onOpen = onOpen,
             modifier = Modifier.weight(1f),
@@ -250,7 +251,7 @@ internal fun WeekDayHeaderRow(
 private fun WeekColumns(
     days: List<LocalDate>,
     today: LocalDate,
-    nowMinutes: Int,
+    now: State<LocalClock>,
     eventsByDate: Map<LocalDate, List<Event>>,
     onOpen: (Event) -> Unit,
     modifier: Modifier = Modifier,
@@ -282,7 +283,7 @@ private fun WeekColumns(
             days.forEach { date ->
                 WeekDayColumn(
                     isToday = date == today,
-                    nowMinutes = nowMinutes,
+                    now = now,
                     events = eventsByDate[date].orEmpty(),
                     onOpen = onOpen,
                     modifier = Modifier
@@ -298,7 +299,7 @@ private fun WeekColumns(
 @Composable
 private fun WeekDayColumn(
     isToday: Boolean,
-    nowMinutes: Int,
+    now: State<LocalClock>,
     events: List<Event>,
     onOpen: (Event) -> Unit,
     modifier: Modifier = Modifier,
@@ -306,7 +307,22 @@ private fun WeekDayColumn(
     val scheme = MiuixTheme.colorScheme
     val tones = eventTones()
     val placed = remember(events) { layoutEvents(events) }
-    Box(modifier = modifier) {
+    Box(
+        modifier = modifier.drawWithContent {
+            drawContent()
+            // Read in the draw phase so a clock tick only repaints the marker, never recomposes
+            // the seven columns or the week block around them.
+            if (isToday) {
+                val y = HourHeight.toPx() * (now.value.time.minutesOfDay() / 60f)
+                drawLine(
+                    color = scheme.error,
+                    start = Offset(0f, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = 1.5.dp.toPx(),
+                )
+            }
+        },
+    ) {
         if (isToday) {
             Box(
                 modifier = Modifier
@@ -362,15 +378,6 @@ private fun WeekDayColumn(
                     )
                 }
             }
-        }
-        if (isToday) {
-            Box(
-                modifier = Modifier
-                    .offset(y = HourHeight * (nowMinutes / 60f))
-                    .fillMaxWidth()
-                    .height(1.5.dp)
-                    .background(scheme.error),
-            )
         }
     }
 }

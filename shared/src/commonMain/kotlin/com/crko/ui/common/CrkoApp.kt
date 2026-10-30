@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -151,7 +152,7 @@ fun CrkoApp(state: AppStateHolder) {
                 onClick = {
                     when (tab) {
                         0 -> showTodoEditor = true
-                        1 -> eventEditor = newEvent(state, now)
+                        1 -> eventEditor = newEvent(state, now.value)
                         else -> showSettings = true
                     }
                 },
@@ -261,15 +262,21 @@ private fun newEvent(state: AppStateHolder, now: LocalClock): Event {
     )
 }
 
-/** Ticks once a minute, on the minute boundary, and rolls the day over at midnight. */
+/**
+ * Ticks once a minute, on the minute boundary, and rolls the day over at midnight.
+ *
+ * The clock is exposed as a [State] rather than a value: the screens only read it where the time is
+ * actually drawn or a tap needs it, so a tick repaints the time marker without recomposing the
+ * schedule, its calendar or its timelines.
+ */
 @Composable
-private fun rememberClock(state: AppStateHolder): LocalClock {
-    var clock by remember { mutableStateOf(localClockNow()) }
+private fun rememberClock(state: AppStateHolder): State<LocalClock> {
+    val clock = remember { mutableStateOf(localClockNow()) }
     LaunchedEffect(Unit) {
         while (true) {
             val instant = Clock.System.now()
             delay((60 - (instant.epochSeconds % 60)).seconds)
-            clock = localClockNow()
+            clock.value = localClockNow()
             state.refreshToday()
         }
     }
