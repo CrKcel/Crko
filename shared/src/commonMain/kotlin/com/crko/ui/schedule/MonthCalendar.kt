@@ -171,6 +171,7 @@ internal fun WeekMonthCalendar(
     hasEvents: (LocalDate) -> Boolean,
     fold: CalendarFoldState,
     expanded: Boolean,
+    showWeekSelection: Boolean,
     onSelect: (LocalDate) -> Unit,
     onMonthChange: (LocalDate) -> Unit,
 ) {
@@ -230,6 +231,7 @@ internal fun WeekMonthCalendar(
     val currentToday by rememberUpdatedState(today)
     val currentHasEvents by rememberUpdatedState(hasEvents)
     val currentOnSelect by rememberUpdatedState(onSelect)
+    val currentShowWeekSelection by rememberUpdatedState(showWeekSelection)
 
     val monthPage: @Composable PagerScope.(Int) -> Unit = remember(pager) {
         { page ->
@@ -252,6 +254,7 @@ internal fun WeekMonthCalendar(
                 selected = currentSelected,
                 today = currentToday,
                 hasEvents = currentHasEvents,
+                showSelection = currentShowWeekSelection,
                 onSelect = { currentOnSelect(it) },
             )
         }
@@ -389,6 +392,7 @@ private fun WeekRow(
     selected: LocalDate,
     today: LocalDate,
     hasEvents: (LocalDate) -> Boolean,
+    showSelection: Boolean,
     onSelect: (LocalDate) -> Unit,
 ) {
     // The dates and their event dots only depend on the week and the event list, so a selection or
@@ -400,7 +404,9 @@ private fun WeekRow(
             MonthCell(
                 date = date,
                 inMonth = date.month == month.month && date.year == month.year,
-                selected = date == selected,
+                // In the week overview the whole week is on screen, so a single selected day means
+                // nothing there; the row keeps only the today marker.
+                selected = showSelection && date == selected,
                 isToday = date == today,
                 hasEvents = daysWithEvents[date] == true,
                 onClick = { onSelect(date) },

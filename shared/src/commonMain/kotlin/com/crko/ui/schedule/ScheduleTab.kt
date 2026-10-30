@@ -237,6 +237,9 @@ fun ScheduleTab(
                 hasEvents = hasEvents,
                 fold = fold,
                 expanded = expanded,
+                // The week overview shows the whole week already, so the collapsed strip drops the
+                // selected-day box; unfolding the calendar brings the selection back.
+                showWeekSelection = expanded || !weekMode,
                 onSelect = onSelectDate,
                 onMonthChange = onMonthChange,
             )
