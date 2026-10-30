@@ -45,7 +45,7 @@ internal fun rememberDayPager(
 
     // The pager and the selection feed each other, so one collector tells the two apart instead of
     // letting them chase each other: settling on a page reports its day, while a day picked
-    // elsewhere (the calendar, the day summary) moves the pager there. The page last answered by
+    // elsewhere (the calendar, the week strip) moves the pager there. The page last answered by
     // either side marks a report as the pager's own, so a pick still wins over a report it races.
     LaunchedEffect(pagerState, pager) {
         var answeredPage = -1

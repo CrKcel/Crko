@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -27,62 +26,9 @@ import com.crko.domain.Event
 import com.crko.domain.mondayIndex
 import com.crko.i18n.Strings
 import com.crko.ui.components.GlassNavigationBarDefaults
-import com.crko.ui.icons.AppIcons
 import kotlinx.datetime.LocalDate
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-
-/** Header for the selected day: date, relative label, event count. */
-@Composable
-internal fun DaySummary(
-    date: LocalDate,
-    today: LocalDate,
-    events: List<Event>,
-    strings: Strings,
-    onDeleteDay: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(top = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = strings.dayMonth(date),
-            style = MiuixTheme.textStyles.title4,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-        )
-        if (date == today) {
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = strings.today,
-                style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.primary,
-            )
-        }
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = strings.eventsCount(events.size),
-            style = MiuixTheme.textStyles.footnote1,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-        if (events.isNotEmpty()) {
-            Spacer(Modifier.width(4.dp))
-            IconButton(onClick = onDeleteDay, backgroundColor = Color.Transparent) {
-                Icon(
-                    imageVector = AppIcons.Delete,
-                    contentDescription = strings.delete,
-                    tint = MiuixTheme.colorScheme.error,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-        }
-    }
-}
 
 /** Event row shared by the day list and the week list. */
 @Composable

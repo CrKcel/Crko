@@ -76,7 +76,7 @@ private val FoldFlingVelocity = 400.dp
 
 /**
  * Fold progress of the week/month calendar. It is owned above the grid so the drag surface can
- * span the title row and the day summary as well as the calendar itself.
+ * span the title row as well as the calendar itself.
  */
 @Stable
 internal class CalendarFoldState internal constructor(
@@ -129,7 +129,7 @@ internal fun rememberCalendarFold(): CalendarFoldState {
 
 /**
  * Vertical drag that folds and unfolds the calendar. Applied to the whole header block, so the
- * title row and the day summary respond to the fold gesture as well as the grid.
+ * title row responds to the fold gesture as well as the grid.
  */
 @Composable
 internal fun Modifier.calendarFoldDrag(

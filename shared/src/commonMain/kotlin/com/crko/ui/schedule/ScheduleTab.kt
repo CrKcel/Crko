@@ -47,7 +47,6 @@ import com.crko.domain.startOfWeek
 import com.crko.domain.weekDates
 import com.crko.i18n.Strings
 import com.crko.i18n.ZhStrings
-import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
 import com.crko.ui.components.PopupListLayout
 import com.crko.ui.components.PopupTitle
@@ -87,10 +86,9 @@ fun ScheduleTab(
     val events = state.appState.events
     val hasEvents = remember(events) { { date: LocalDate -> events.any { it.occursOn(date) } } }
     val fold = rememberCalendarFold()
-    // The calendar toggles from the header blocks without a ripple: the movement of the calendar
+    // The calendar toggles from the header block without a ripple: the movement of the calendar
     // itself is the feedback.
     val titleInteraction = remember { MutableInteractionSource() }
-    val summaryInteraction = remember { MutableInteractionSource() }
 
     fun select(date: LocalDate) {
         selectedName = date.toString()
@@ -140,14 +138,7 @@ fun ScheduleTab(
         }
     }
     val onMonthChange: (LocalDate) -> Unit = remember { { monthAnchorName = it.toString() } }
-    val onDeleteDay: () -> Unit = remember(selected) {
-        {
-            state.deleteEventsOn(selected)
-            state.notify(AppMessage.Deleted)
-        }
-    }
 
-    val dayEvents = remember(selected, state.appState.events) { state.eventsOn(selected) }
     val dayPager = rememberDayPager(selected = selected, today = today, onSelect = onSelectDate)
     val overviewPager = rememberWeekPager(selected = selected, onSelect = onSelectDate)
 
@@ -161,8 +152,8 @@ fun ScheduleTab(
                 end = contentPadding.calculateEndPadding(layoutDirection),
             ),
     ) {
-        // The fold gesture covers the title row and the day summary as well, so the calendar can be
-        // pulled open or pushed away from anywhere in the header block, not only over the grid.
+        // The fold gesture covers the title row as well, so the calendar can be pulled open or
+        // pushed away from anywhere in the header block, not only over the grid.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -243,26 +234,6 @@ fun ScheduleTab(
                 onSelect = onSelectDate,
                 onMonthChange = onMonthChange,
             )
-
-            // The day timeline pins a date heading of its own at the top of the scroller, and the
-            // week overview has no header to name the day the rest of the screen follows either, so
-            // only the list keeps the summary.
-            if (listMode) {
-                DaySummary(
-                    date = selected,
-                    today = today,
-                    events = dayEvents,
-                    strings = strings,
-                    onDeleteDay = onDeleteDay,
-                    modifier = Modifier
-                        .clickable(
-                            interactionSource = summaryInteraction,
-                            indication = null,
-                            onClickLabel = if (expanded) strings.collapseCalendar else strings.expandCalendar,
-                        ) { expanded = !expanded }
-                        .padding(horizontal = 16.dp),
-                )
-            }
         }
 
         // The overview and the day view share this area; the upper calendar stays untouched.
