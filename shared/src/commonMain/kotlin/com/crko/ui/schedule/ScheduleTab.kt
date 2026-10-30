@@ -5,6 +5,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -21,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -69,6 +74,9 @@ fun ScheduleTab(
     var listMode by rememberSaveable { mutableStateOf(state.settings.agendaView == "list") }
     var weekMode by rememberSaveable { mutableStateOf(false) }
     var showViewMenu by remember { mutableStateOf(false) }
+    // Signed finger travel of the swipe that opened the current view; the switch animation enters
+    // from the opposite side so the new view follows the finger.
+    var switchTravel by remember { mutableFloatStateOf(0f) }
     val layoutDirection = LocalLayoutDirection.current
 
     val selected = remember(selectedName) { LocalDate.parse(selectedName) }
@@ -88,6 +96,16 @@ fun ScheduleTab(
         if (week != weekAnchor) anchorName = week.toString()
         val month = date.startOfMonth()
         if (month != monthAnchor) monthAnchorName = month.toString()
+    }
+
+    // The view menu and the view-switch swipes share one path so a gesture keeps the chosen view
+    // across restarts just like the menu does. [travel] is the signed swipe that opened the view;
+    // a leftward or upward swipe pushes the old view that way and brings the new one in from the
+    // right or below. The menu has no finger to follow, so it pushes the new view in the same way.
+    fun showListView(show: Boolean, travel: Float? = null) {
+        switchTravel = travel ?: -1f
+        listMode = show
+        state.setAgendaView(if (show) "list" else "timeline")
     }
 
     fun createAt(date: LocalDate, slotMinutes: Int?) {
@@ -170,13 +188,11 @@ fun ScheduleTab(
                         PopupListLayout {
                             PopupTitle(strings.tabSchedule)
                             ViewOption(strings.viewTimeline, !listMode) {
-                                listMode = false
-                                state.setAgendaView("timeline")
+                                showListView(false)
                                 showViewMenu = false
                             }
                             ViewOption(strings.viewList, listMode) {
-                                listMode = true
-                                state.setAgendaView("list")
+                                showListView(true)
                                 showViewMenu = false
                             }
                             ViewOption(strings.dayView, !weekMode) {
@@ -226,6 +242,8 @@ fun ScheduleTab(
         // The overview and the day view share this area; the upper calendar stays untouched.
         // A two-finger spread opens the week overview and a pinch closes it, while one finger runs
         // the date axis: on and on through the days in the timeline, one page at a time in the list.
+        // Each view also yields to the other along the axis it does not use: sideways over the
+        // timeline opens the list, and a pull past the list's edge returns to the timeline.
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -234,7 +252,9 @@ fun ScheduleTab(
                     inWeekView = weekMode,
                     onEnter = { weekMode = true },
                     onExit = { weekMode = false },
-                ),
+                )
+                // The timeline scrolls vertically, so a sideways swipe is free to open the list.
+                .timelineSwipeToList(enabled = !listMode) { travel -> showListView(true, travel) },
         ) {
             AnimatedContent(
                 targetState = weekMode,
@@ -246,52 +266,82 @@ fun ScheduleTab(
                 modifier = Modifier.fillMaxSize(),
                 label = "schedule-content",
             ) { inWeekView ->
-                if (listMode) {
-                    // One day — or one week in the overview — per page. A sideways swipe moves to
-                    // the adjacent date along the axis while the page itself scrolls vertically.
-                    HorizontalPager(
-                        state = if (inWeekView) overviewPager.state else dayPager.state,
-                        beyondViewportPageCount = 1,
-                        modifier = Modifier.fillMaxSize(),
-                    ) { page ->
-                        if (inWeekView) {
-                            val weekStart = overviewPager.weekAt(page)
-                            val weekDays = remember(weekStart) { weekStart.weekDates() }
-                            val weekEvents = remember(weekDays, events) {
-                                weekDays.associateWith { date -> state.eventsOn(date) }
-                            }
-                            WeekAgendaList(
-                                strings = strings,
-                                today = today,
-                                weekStart = weekStart,
-                                eventsByDate = weekEvents,
-                                onOpen = onOpenEvent,
-                            )
+                // The list is a horizontal surface and the timeline a vertical one, so each view
+                // arrives along its own axis. The side it comes in from follows the swipe: the
+                // outgoing view leaves the way the finger went and the incoming one follows behind.
+                AnimatedContent(
+                    targetState = listMode,
+                    transitionSpec = {
+                        val enterSign = if (switchTravel > 0f) -1 else 1
+                        val enter = if (targetState) {
+                            slideInHorizontally(tween(220)) { width -> width * enterSign / 4 } +
+                                fadeIn(tween(180))
                         } else {
-                            val date = dayPager.dateAt(page)
-                            val pageEvents = remember(date, events) { state.eventsOn(date) }
-                            DayAgendaList(
-                                events = pageEvents,
-                                strings = strings,
-                                onOpen = onOpenEvent,
-                            )
+                            slideInVertically(tween(220)) { height -> height * enterSign / 4 } +
+                                fadeIn(tween(180))
                         }
+                        val exit = if (targetState) {
+                            slideOutHorizontally(tween(160)) { width -> -width * enterSign / 4 } +
+                                fadeOut(tween(140))
+                        } else {
+                            slideOutVertically(tween(160)) { height -> -height * enterSign / 4 } +
+                                fadeOut(tween(140))
+                        }
+                        enter togetherWith exit
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    label = "schedule-view",
+                ) { asList ->
+                    if (asList) {
+                        // One day — or one week in the overview — per page. A sideways swipe moves
+                        // to the adjacent date along the axis while the page itself scrolls
+                        // vertically.
+                        HorizontalPager(
+                            state = if (inWeekView) overviewPager.state else dayPager.state,
+                            beyondViewportPageCount = 1,
+                            modifier = Modifier.fillMaxSize(),
+                        ) { page ->
+                            if (inWeekView) {
+                                val weekStart = overviewPager.weekAt(page)
+                                val weekDays = remember(weekStart) { weekStart.weekDates() }
+                                val weekEvents = remember(weekDays, events) {
+                                    weekDays.associateWith { date -> state.eventsOn(date) }
+                                }
+                                WeekAgendaList(
+                                    strings = strings,
+                                    today = today,
+                                    weekStart = weekStart,
+                                    eventsByDate = weekEvents,
+                                    onOpen = onOpenEvent,
+                                    onSwipeToTimeline = { travel -> showListView(false, travel) },
+                                )
+                            } else {
+                                val date = dayPager.dateAt(page)
+                                val pageEvents = remember(date, events) { state.eventsOn(date) }
+                                DayAgendaList(
+                                    events = pageEvents,
+                                    strings = strings,
+                                    onOpen = onOpenEvent,
+                                    onSwipeToTimeline = { travel -> showListView(false, travel) },
+                                )
+                            }
+                        }
+                    } else {
+                        // No page boundary: the days run into each other and the scroll simply
+                        // carries on into the next one.
+                        ContinuousTimeline(
+                            strings = strings,
+                            today = today,
+                            now = now,
+                            events = events,
+                            selected = selected,
+                            inWeekView = inWeekView,
+                            defaultScrollHour = state.settings.agendaScrollHour,
+                            onSelect = ::select,
+                            onAdd = ::createAt,
+                            onOpen = onOpenEvent,
+                        )
                     }
-                } else {
-                    // No page boundary: the days run into each other and the scroll simply carries
-                    // on into the next one.
-                    ContinuousTimeline(
-                        strings = strings,
-                        today = today,
-                        now = now,
-                        events = events,
-                        selected = selected,
-                        inWeekView = inWeekView,
-                        defaultScrollHour = state.settings.agendaScrollHour,
-                        onSelect = ::select,
-                        onAdd = ::createAt,
-                        onOpen = onOpenEvent,
-                    )
                 }
             }
         }

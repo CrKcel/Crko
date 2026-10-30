@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -181,12 +182,17 @@ internal fun DayAgendaList(
     events: List<Event>,
     strings: Strings,
     onOpen: (Event) -> Unit,
+    onSwipeToTimeline: (travel: Float) -> Unit,
 ) {
     val tones = eventTones()
+    val listState = rememberLazyListState()
     // Fills the page height: a pager centres a shorter page on the cross axis, which would leave a
     // band of empty screen above the first row.
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        state = listState,
+        modifier = Modifier
+            .fillMaxSize()
+            .listSwipeToTimeline(listState, onSwipeToTimeline),
         // The page runs to the window bottom behind the glass bar, so the last row needs its own
         // clearance to be reachable.
         contentPadding = PaddingValues(bottom = GlassNavigationBarDefaults.clearance()),

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -385,11 +386,16 @@ internal fun WeekAgendaList(
     weekStart: LocalDate,
     eventsByDate: Map<LocalDate, List<Event>>,
     onOpen: (Event) -> Unit,
+    onSwipeToTimeline: (travel: Float) -> Unit,
 ) {
     val days = remember(weekStart) { weekStart.weekDates() }
     val tones = eventTones()
+    val listState = rememberLazyListState()
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        state = listState,
+        modifier = Modifier
+            .fillMaxSize()
+            .listSwipeToTimeline(listState, onSwipeToTimeline),
         contentPadding = PaddingValues(bottom = GlassNavigationBarDefaults.clearance()),
     ) {
         days.forEach { date ->
