@@ -1,13 +1,17 @@
 package com.crko.ui.schedule
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
@@ -24,8 +28,6 @@ import androidx.compose.ui.unit.dp
 import com.crko.domain.Event
 import com.crko.domain.LocalClock
 import com.crko.domain.occurringOn
-import com.crko.domain.plusDays
-import com.crko.domain.startOfWeek
 import com.crko.domain.weekDates
 import com.crko.i18n.Strings
 import com.crko.ui.components.GlassNavigationBarDefaults
@@ -34,16 +36,8 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val DayContentType = "timeline-day"
 private const val DayHeadingContentType = "timeline-day-heading"
-private const val WeekContentType = "timeline-week"
 
-/**
- * The timeline as one continuous vertical scroller: a 24-hour block per day, or per week in the
- * overview, running on without end in either direction. Crossing midnight simply keeps scrolling
- * into the neighbouring block — day headings stick to the top of the scroller and hand over to the
- * next day's heading, week blocks carry the pinned strip of dates — so the schedule reads as one
- * long ribbon rather than one page at a time. The block under the top edge is the one the rest of
- * the screen follows.
- */
+/** The timeline as one continuous vertical scroller in the day view; a page per week in the overview. */
 @Composable
 internal fun ContinuousTimeline(
     strings: Strings,
@@ -57,17 +51,180 @@ internal fun ContinuousTimeline(
     onAdd: (LocalDate, Int?) -> Unit,
     onOpen: (Event) -> Unit,
 ) {
-    val axis = rememberBlockAxis(if (inWeekView) selected.startOfWeek() else selected, inWeekView)
+    if (inWeekView) {
+        PagedWeekTimeline(
+            strings = strings,
+            today = today,
+            now = now,
+            events = events,
+            selected = selected,
+            defaultScrollHour = defaultScrollHour,
+            onSelect = onSelect,
+            onOpen = onOpen,
+        )
+    } else {
+        ContinuousDayTimeline(
+            strings = strings,
+            today = today,
+            now = now,
+            events = events,
+            selected = selected,
+            defaultScrollHour = defaultScrollHour,
+            onSelect = onSelect,
+            onAdd = onAdd,
+            onOpen = onOpen,
+        )
+    }
+}
+
+/**
+ * Week overview as one page per week: a page keeps the natural hour heights and scrolls inside
+ * itself, and the drag left over when it reaches its top or bottom flips the pager to the
+ * neighbouring week. A page arriving from above opens at its top and one arriving from below at its
+ * bottom, so the hours keep running across a flip instead of snapping back to midnight.
+ */
+@Composable
+private fun PagedWeekTimeline(
+    strings: Strings,
+    today: LocalDate,
+    now: State<LocalClock>,
+    events: List<Event>,
+    selected: LocalDate,
+    defaultScrollHour: Int,
+    onSelect: (LocalDate) -> Unit,
+    onOpen: (Event) -> Unit,
+) {
+    val pager = rememberWeekPager(selected = selected, onSelect = onSelect)
+    Column(modifier = Modifier.fillMaxSize()) {
+        PagedWeekHeader(pager = pager, today = today, strings = strings)
+        VerticalPager(
+            state = pager.state,
+            // Laid out ahead of time, so the neighbour already opens at the edge it will be
+            // revealed from instead of at midnight.
+            beyondViewportPageCount = 1,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+        ) { page ->
+            val weekStart = pager.weekAt(page)
+            val days = remember(weekStart) { weekStart.weekDates() }
+            val eventsByDate = remember(days, events) { days.associateWith { events.occurringOn(it) } }
+            val openAt = when {
+                page > pager.state.currentPage -> WeekOpenAt.Top
+                page < pager.state.currentPage -> WeekOpenAt.Bottom
+                else -> WeekOpenAt.AnchorHour
+            }
+            WeekTimelinePage(
+                strings = strings,
+                today = today,
+                now = now,
+                weekStart = weekStart,
+                eventsByDate = eventsByDate,
+                defaultScrollHour = defaultScrollHour,
+                openAt = openAt,
+                onOpen = onOpen,
+            )
+        }
+    }
+}
+
+/** Weekday and date strip of the page the pager is showing. */
+@Composable
+private fun PagedWeekHeader(
+    pager: WeekPager,
+    today: LocalDate,
+    strings: Strings,
+) {
+    // Read through a derived state: the week changes once per flip, while reading the page
+    // directly would recompose this header, and its parent, on every frame of a drag.
+    val weekStart by remember(pager) {
+        derivedStateOf { pager.weekAt(pager.state.currentPage) }
+    }
+    WeekDayHeaderRow(
+        days = remember(weekStart) { weekStart.weekDates() },
+        today = today,
+        strings = strings,
+    )
+}
+
+/** Edge of the week a page opens on when it is first composed. */
+private enum class WeekOpenAt { Top, Bottom, AnchorHour }
+
+@Composable
+private fun WeekTimelinePage(
+    strings: Strings,
+    today: LocalDate,
+    now: State<LocalClock>,
+    weekStart: LocalDate,
+    eventsByDate: Map<LocalDate, List<Event>>,
+    defaultScrollHour: Int,
+    openAt: WeekOpenAt,
+    onOpen: (Event) -> Unit,
+) {
+    val layout = remember(eventsByDate) { hourLayoutOf(eventsByDate.values.flatten()) }
+    val density = LocalDensity.current
+    // Saved with the page, so flipping away and back returns to the hours left behind. ScrollState
+    // clamps the seeded value once the grid has been measured.
+    val scrollState = rememberSaveable(saver = ScrollState.Saver) {
+        val offset = when (openAt) {
+            WeekOpenAt.Top -> 0
+            WeekOpenAt.Bottom -> Int.MAX_VALUE
+            WeekOpenAt.AnchorHour -> {
+                val days = weekStart.weekDates()
+                val hour = if (today in days) now.value.time.hour else defaultScrollHour
+                with(density) { layout.offset(hour).roundToPx() }
+            }
+        }
+        ScrollState(offset)
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState),
+    ) {
+        WeekTimelineGrid(
+            strings = strings,
+            today = today,
+            now = now,
+            weekStart = weekStart,
+            layout = layout,
+            eventsByDate = eventsByDate,
+            onOpen = onOpen,
+        )
+        // Runs behind the glass bar, so the last hours of the week stay reachable.
+        Spacer(Modifier.height(GlassNavigationBarDefaults.clearance()))
+    }
+}
+
+/**
+ * The day timeline as one vertical scroller: a 24-hour block per day running on without end in
+ * either direction. Crossing midnight simply keeps scrolling into the neighbouring block — day
+ * headings stick to the top of the scroller and hand over to the next day's heading — so the
+ * schedule reads as one long ribbon rather than one page at a time. The block under the top edge is
+ * the one the rest of the screen follows.
+ */
+@Composable
+private fun ContinuousDayTimeline(
+    strings: Strings,
+    today: LocalDate,
+    now: State<LocalClock>,
+    events: List<Event>,
+    selected: LocalDate,
+    defaultScrollHour: Int,
+    onSelect: (LocalDate) -> Unit,
+    onAdd: (LocalDate, Int?) -> Unit,
+    onOpen: (Event) -> Unit,
+) {
+    val axis = rememberBlockAxis(selected, weeks = false)
     val density = LocalDensity.current
     val initialBlock = axis.indexOf(selected)
     // Seeded on first composition: the opening frame must already sit on the anchor hour, since a
-    // block drawn at midnight and scrolled afterwards would flash the wrong window first. Re-seeded
-    // when the axis changes shape, because a day index carried into the week axis lands past its end.
-    val listState = rememberSaveable(inWeekView, saver = LazyListState.Saver) {
+    // block drawn at midnight and scrolled afterwards would flash the wrong window first.
+    val listState = rememberSaveable(saver = LazyListState.Saver) {
         LazyListState(
-            firstVisibleItemIndex = itemIndexOfBlock(initialBlock, inWeekView),
+            firstVisibleItemIndex = itemIndexOfBlock(initialBlock),
             firstVisibleItemScrollOffset = anchorOffsetPx(
-                density, axis, initialBlock, inWeekView, today, now.value, defaultScrollHour, events,
+                density, axis, initialBlock, today, now.value, defaultScrollHour, events,
             ),
         )
     }
@@ -84,16 +241,15 @@ internal fun ContinuousTimeline(
     // collector tells the two apart instead of letting them chase each other: a block the scroll
     // crosses is reported at once, so the pinned day heading and the week calendar above name the
     // same day while the finger is still moving; a date picked elsewhere (a calendar cell, the week
-    // strip, the list view) moves the scroller there once it comes to rest. The weekday of the
-    // current selection is kept, so scrolling weeks move the whole week instead of Monday.
-    LaunchedEffect(listState, axis, inWeekView) {
+    // strip, the list view) moves the scroller there once it comes to rest.
+    LaunchedEffect(listState, axis) {
         // Block the scroller last reported as its own selection. A selection that maps to another
         // block came from outside; a selection that still maps to this one is the scroll's own, and
         // the report for the block now under the top edge is on its way.
         var reportedBlock = -1
         snapshotFlow {
             Triple(
-                blockOfItem(listState.firstVisibleItemIndex, inWeekView),
+                blockOfItem(listState.firstVisibleItemIndex),
                 axis.indexOf(currentSelected),
                 !listState.isScrollInProgress,
             )
@@ -103,113 +259,67 @@ internal fun ContinuousTimeline(
                 idle && selectedBlock != reportedBlock -> {
                     reportedBlock = selectedBlock
                     listState.scrollToItem(
-                        itemIndexOfBlock(selectedBlock, inWeekView),
+                        itemIndexOfBlock(selectedBlock),
                         anchorOffsetPx(
-                            density, axis, selectedBlock, inWeekView, currentToday, now.value,
+                            density, axis, selectedBlock, currentToday, now.value,
                             currentDefaultHour, currentEvents,
                         ),
                     )
                 }
                 else -> {
                     reportedBlock = block
-                    val date = axis.restingDateAt(block, currentSelected)
+                    val date = axis.dateAt(block)
                     if (date != currentSelected) currentOnSelect(date)
                 }
             }
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // Pinned in the week overview, where the strip of dates is the only thing naming the days
-        // the seven columns stand for; the day blocks carry their heading inside the scroller.
-        if (inWeekView) PinnedWeekHeader(listState, axis, today, strings)
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            // Runs behind the glass bar, so the last hours of the final block stay reachable.
-            contentPadding = PaddingValues(bottom = GlassNavigationBarDefaults.clearance()),
-        ) {
-            if (inWeekView) {
-                items(
-                    count = axis.pageCount,
-                    key = { "timeline-week-$it" },
-                    contentType = { WeekContentType },
-                ) { index ->
-                    val blockDate = axis.dateAt(index)
-                    val days = remember(blockDate) { blockDate.weekDates() }
-                    val eventsByDate = remember(days, events) { days.associateWith { events.occurringOn(it) } }
-                    WeekTimelineGrid(
-                        strings = strings,
-                        today = today,
-                        now = now,
-                        weekStart = blockDate,
-                        eventsByDate = eventsByDate,
-                        onOpen = onOpen,
-                    )
-                }
-            } else {
-                // A day is two items, heading and grid, so the heading can stick to the top of the
-                // scroller while its hours pass under it; the next day's heading then takes over.
-                for (index in 0 until axis.pageCount) {
-                    stickyHeader(
-                        key = "timeline-day-heading-$index",
-                        contentType = DayHeadingContentType,
-                    ) {
-                        val blockDate = axis.dateAt(index)
-                        val dayEvents = remember(blockDate, events) { events.occurringOn(blockDate) }
-                        DayHeadingRow(
-                            date = blockDate,
-                            today = today,
-                            count = dayEvents.size,
-                            strings = strings,
-                            modifier = Modifier
-                                .height(TimelineDayHeadingHeight)
-                                // Opaque so the hours sliding beneath the pinned heading stay hidden.
-                                .background(MiuixTheme.colorScheme.surface),
-                        )
-                    }
-                    item(
-                        key = "timeline-day-$index",
-                        contentType = DayContentType,
-                    ) {
-                        val blockDate = axis.dateAt(index)
-                        val dayEvents = remember(blockDate, events) { events.occurringOn(blockDate) }
-                        DayTimelineGrid(
-                            strings = strings,
-                            today = today,
-                            now = now,
-                            date = blockDate,
-                            events = dayEvents,
-                            onAdd = onAdd,
-                            onOpen = onOpen,
-                        )
-                    }
-                }
+    LazyColumn(
+        state = listState,
+        modifier = Modifier
+            .fillMaxSize(),
+        // Runs behind the glass bar, so the last hours of the final block stay reachable.
+        contentPadding = PaddingValues(bottom = GlassNavigationBarDefaults.clearance()),
+    ) {
+        // A day is two items, heading and grid, so the heading can stick to the top of the
+        // scroller while its hours pass under it; the next day's heading then takes over.
+        for (index in 0 until axis.pageCount) {
+            stickyHeader(
+                key = "timeline-day-heading-$index",
+                contentType = DayHeadingContentType,
+            ) {
+                val blockDate = axis.dateAt(index)
+                val dayEvents = remember(blockDate, events) { events.occurringOn(blockDate) }
+                DayHeadingRow(
+                    date = blockDate,
+                    today = today,
+                    count = dayEvents.size,
+                    strings = strings,
+                    modifier = Modifier
+                        .height(TimelineDayHeadingHeight)
+                        // Opaque so the hours sliding beneath the pinned heading stay hidden.
+                        .background(MiuixTheme.colorScheme.surface),
+                )
+            }
+            item(
+                key = "timeline-day-$index",
+                contentType = DayContentType,
+            ) {
+                val blockDate = axis.dateAt(index)
+                val dayEvents = remember(blockDate, events) { events.occurringOn(blockDate) }
+                DayTimelineGrid(
+                    strings = strings,
+                    today = today,
+                    now = now,
+                    date = blockDate,
+                    events = dayEvents,
+                    onAdd = onAdd,
+                    onOpen = onOpen,
+                )
             }
         }
     }
-}
-
-/** Weekday and date strip of whichever week is under the top edge of the scroller. */
-@Composable
-private fun PinnedWeekHeader(
-    listState: LazyListState,
-    axis: BlockAxis,
-    today: LocalDate,
-    strings: Strings,
-) {
-    // Read through a derived state: the block changes once per week, while reading the index
-    // directly would recompose this header, and its parent, on every frame of the scroll.
-    val weekStart by remember(listState, axis) {
-        derivedStateOf { axis.dateAt(listState.firstVisibleItemIndex) }
-    }
-    WeekDayHeaderRow(
-        days = remember(weekStart) { weekStart.weekDates() },
-        today = today,
-        strings = strings,
-    )
 }
 
 /** Vertical offset that opens [block] on its anchor hour: today's hour, or the configured one. */
@@ -217,33 +327,23 @@ private fun anchorOffsetPx(
     density: Density,
     axis: BlockAxis,
     block: Int,
-    weeks: Boolean,
     today: LocalDate,
     now: LocalClock,
     defaultScrollHour: Int,
     events: List<Event>,
 ): Int {
     val date = axis.dateAt(block)
-    val hour = if (covers(date, today, if (weeks) 7 else 1)) now.time.hour else defaultScrollHour
-    val blockEvents = if (weeks) {
-        date.weekDates().flatMap { events.occurringOn(it) }
-    } else {
-        events.occurringOn(date)
-    }
+    val hour = if (date == today) now.time.hour else defaultScrollHour
     // A pinned day heading covers the top of the grid, so the anchor hour is placed just below it
     // instead of underneath it.
-    val heading = if (weeks) 0.dp else TimelineDayHeadingHeight + HourLabelLift
+    val heading = TimelineDayHeadingHeight + HourLabelLift
     return with(density) {
-        (hourLayoutOf(blockEvents).offset(hour) - heading).coerceAtLeast(0.dp).roundToPx()
+        (hourLayoutOf(events.occurringOn(date)).offset(hour) - heading).coerceAtLeast(0.dp).roundToPx()
     }
 }
 
-/** Scroller item that opens [block]: its grid in the day view, where its heading is a sticky item. */
-private fun itemIndexOfBlock(block: Int, weeks: Boolean): Int = if (weeks) block else block * 2 + 1
+/** Scroller item that opens [block]: its grid, preceded by the heading item of the same day. */
+private fun itemIndexOfBlock(block: Int): Int = block * 2 + 1
 
 /** Block whose content is at [firstVisibleItemIndex]; a day block is a heading item and a grid item. */
-private fun blockOfItem(firstVisibleItemIndex: Int, weeks: Boolean): Int =
-    if (weeks) firstVisibleItemIndex else firstVisibleItemIndex / 2
-
-/** Whether the block starting at [first] and running [days] long contains [day]. */
-private fun covers(first: LocalDate, day: LocalDate, days: Int): Boolean = day in first..first.plusDays(days - 1)
+private fun blockOfItem(firstVisibleItemIndex: Int): Int = firstVisibleItemIndex / 2

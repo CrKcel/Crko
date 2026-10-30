@@ -185,8 +185,9 @@ internal fun rememberWeekPager(
 }
 
 /**
- * Whole-week overview drawn as seven day columns on a shared 24-hour grid. One of these per week is
- * stacked in [ContinuousTimeline], which owns the scrolling and pins [WeekDayHeaderRow] above it.
+ * Whole-week overview drawn as seven day columns on a shared 24-hour grid. One of these is the
+ * content of each page of [ContinuousTimeline]'s week overview, which pins [WeekDayHeaderRow] above
+ * it and owns the paging; the page also uses [layout] to open on the right hour.
  */
 @Composable
 internal fun WeekTimelineGrid(
@@ -194,13 +195,11 @@ internal fun WeekTimelineGrid(
     today: LocalDate,
     now: State<LocalClock>,
     weekStart: LocalDate,
+    layout: HourLayout,
     eventsByDate: Map<LocalDate, List<Event>>,
     onOpen: (Event) -> Unit,
 ) {
     val days = remember(weekStart) { weekStart.weekDates() }
-    // Rows are shared by the seven columns, so an hour only shrinks when none of the days has
-    // anything in it.
-    val layout = remember(eventsByDate) { hourLayoutOf(eventsByDate.values.flatten()) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -220,7 +219,7 @@ internal fun WeekTimelineGrid(
     }
 }
 
-/** Weekday and date strip of one week block; pinned above the week timeline while it scrolls. */
+/** Weekday and date strip of one week page; pinned above the week pager. */
 @Composable
 internal fun WeekDayHeaderRow(
     days: List<LocalDate>,
