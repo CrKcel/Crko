@@ -17,7 +17,7 @@ import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal val HourHeight = 56.dp
-internal const val SlotMinutes = 30
+internal const val SlotMinutes = 60
 internal const val SlotsPerHour = 60 / SlotMinutes
 internal val SlotHeight = HourHeight / SlotsPerHour
 internal val TimeGutterWidth = 40.dp
@@ -77,6 +77,10 @@ internal fun rememberBlockAxis(base: LocalDate, weeks: Boolean): BlockAxis {
 
 internal fun isOverdue(todo: Todo, today: LocalDate): Boolean =
     !todo.done && todo.due != null && LocalDate.parse(todo.due) < today
+
+/** Light grey rule that closes each hour cell in the day and week grids. */
+@Composable
+internal fun hourDividerColor(): Color = MiuixTheme.colorScheme.dividerLine
 
 /** Tones for event blocks, derived from the palette so they follow the theme. */
 @Composable

@@ -127,7 +127,7 @@ fun ScheduleTab(
                 date == currentToday -> ((now.value.time.minutesOfDay() / SlotMinutes) + 1) * SlotMinutes
                 else -> state.settings.agendaScrollHour * 60
             }
-            val startMinutes = start.coerceAtMost(23 * 60 + 30)
+            val startMinutes = start.coerceAtMost(24 * 60 - SlotMinutes)
             currentOnOpenEvent(
                 Event(
                     id = null,

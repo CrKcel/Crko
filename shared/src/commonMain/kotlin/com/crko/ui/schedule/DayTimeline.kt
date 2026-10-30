@@ -108,8 +108,7 @@ internal fun DayTimelineGrid(
     val hourHeight = HourHeight
     val primary = MiuixTheme.colorScheme.primary
     val alarmColor = MiuixTheme.colorScheme.error
-    val halfHourColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.08f)
-    val hourLineColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.06f)
+    val hourLineColor = hourDividerColor()
     val currentOnAdd by rememberUpdatedState(onAdd)
 
     Row(
@@ -134,25 +133,17 @@ internal fun DayTimelineGrid(
                 .weight(1f)
                 .fillMaxHeight()
                 .clip(RoundedCornerShape(3.dp))
-                // Grid lines are drawn by a single modifier instead of 48 nested boxes.
+                // Hour rules are drawn by a single modifier instead of 25 nested boxes.
                 .drawBehind {
                     val hourPx = hourHeight.toPx()
+                    val hourStroke = 1.dp.toPx()
                     for (hour in 0..24) {
-                        val y = (hour * hourPx).coerceAtMost(size.height - 1f)
+                        val y = (hour * hourPx).coerceIn(0f, size.height - 1f)
                         drawLine(
                             color = hourLineColor,
                             start = Offset(0f, y),
                             end = Offset(size.width, y),
-                            strokeWidth = 1f,
-                        )
-                    }
-                    for (half in 0..47) {
-                        val y = (half * hourPx / 2f).coerceIn(0f, size.height - 1f)
-                        drawLine(
-                            color = halfHourColor,
-                            start = Offset(0f, y),
-                            end = Offset(size.width, y),
-                            strokeWidth = 1f,
+                            strokeWidth = hourStroke,
                         )
                     }
                 }

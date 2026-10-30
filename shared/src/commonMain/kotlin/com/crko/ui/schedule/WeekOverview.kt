@@ -256,22 +256,18 @@ private fun WeekColumns(
     onOpen: (Event) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val hourLineColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.06f)
-    val halfHourColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.08f)
-    val daySeparatorColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.12f)
+    val hourLineColor = hourDividerColor()
+    val daySeparatorColor = hourLineColor
     Box(
         modifier = modifier
             .fillMaxHeight()
             .clipToBounds()
             .drawBehind {
                 val hourPx = HourHeight.toPx()
+                val hourStroke = 1.dp.toPx()
                 for (hour in 0..24) {
-                    val y = (hour * hourPx).coerceAtMost(size.height - 1f)
-                    drawLine(hourLineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
-                }
-                for (half in 0..47) {
-                    val y = (half * hourPx / 2f).coerceIn(0f, size.height - 1f)
-                    drawLine(halfHourColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
+                    val y = (hour * hourPx).coerceIn(0f, size.height - 1f)
+                    drawLine(hourLineColor, Offset(0f, y), Offset(size.width, y), hourStroke)
                 }
                 for (day in 1 until 7) {
                     val x = size.width * day / 7f
