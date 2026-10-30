@@ -26,51 +26,26 @@ internal val MonthRowHeight = 54.dp
 /** Heading that opens a day inside the scrolling timeline. */
 internal val TimelineDayHeadingHeight = 34.dp
 
-/** Share of a full row an hour keeps when nothing is scheduled on it. */
-private const val EmptyHourRatio = 0.5f
+/** Share of a full [HourHeight] one hour of a timeline block takes up. */
+private const val HourRatio = 0.5f
 
 /**
- * Vertical geometry of the 24 hours of one timeline block. Hours that hold an event keep their full
- * [HourHeight]; empty hours shrink to half, so a day mostly spent away from the calendar no longer
- * pushes everything else far off screen while the hours with content keep room for their blocks.
+ * Vertical geometry of the 24 hours of one timeline block. Every hour takes the same half
+ * [HourHeight], so a day occupies twelve full hours whether or not anything is scheduled on it.
  */
-internal class HourLayout(private val rowHeights: FloatArray) {
-    private val rowStarts = FloatArray(25).also { starts ->
-        for (hour in 0 until 24) starts[hour + 1] = starts[hour] + rowHeights[hour]
-    }
-
-    val totalHeight: Dp get() = HourHeight * rowStarts[24]
+internal object HourLayout {
+    val totalHeight: Dp = HourHeight * (24 * HourRatio)
 
     /** Top edge of [hour]'s row; 24 resolves to the bottom of the grid. */
-    fun offset(hour: Int): Dp = HourHeight * rowStarts[hour.coerceIn(0, 24)]
+    fun offset(hour: Int): Dp = HourHeight * (hour.coerceIn(0, 24) * HourRatio)
 
     /** Vertical position of [minutes] after midnight. */
-    fun offsetOf(minutes: Int): Dp {
-        val clamped = minutes.coerceIn(0, 24 * 60)
-        if (clamped == 24 * 60) return totalHeight
-        val hour = clamped / 60
-        return HourHeight * (rowStarts[hour] + (clamped % 60) / 60f * rowHeights[hour])
-    }
+    fun offsetOf(minutes: Int): Dp =
+        HourHeight * (minutes.coerceIn(0, 24 * 60) / 60f * HourRatio)
 
     /** Minute of day under [y], rounded down and kept inside the block. */
-    fun minutesAt(y: Dp): Int {
-        val units = (y / HourHeight).coerceIn(0f, rowStarts[24])
-        var hour = 0
-        while (hour < 23 && units >= rowStarts[hour + 1]) hour++
-        val withinRow = (units - rowStarts[hour]) / rowHeights[hour]
-        return (hour * 60 + withinRow * 60f).toInt().coerceIn(0, 24 * 60 - 1)
-    }
-}
-
-/** Geometry for the hours that any of [events] touches; every other hour is kept short. */
-internal fun hourLayoutOf(events: List<Event>): HourLayout {
-    val rowHeights = FloatArray(24) { EmptyHourRatio }
-    for (event in events) {
-        val first = event.startMinutes / 60
-        val last = ((event.endMinutes - 1) / 60).coerceAtLeast(first)
-        for (hour in first..last.coerceAtMost(23)) rowHeights[hour] = 1f
-    }
-    return HourLayout(rowHeights)
+    fun minutesAt(y: Dp): Int =
+        (y / HourHeight / HourRatio * 60f).toInt().coerceIn(0, 24 * 60 - 1)
 }
 
 /**

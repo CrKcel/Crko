@@ -131,7 +131,7 @@ private fun WeekTimelinePage(
     openAt: WeekOpenAt,
     onOpen: (Event) -> Unit,
 ) {
-    val layout = remember(eventsByDate) { hourLayoutOf(eventsByDate.values.flatten()) }
+    val layout = HourLayout
     val density = LocalDensity.current
     // Saved with the page, so flipping away and back returns to the hours left behind. ScrollState
     // clamps the seeded value once the grid has been measured.
@@ -193,7 +193,7 @@ private fun ContinuousDayTimeline(
         LazyListState(
             firstVisibleItemIndex = itemIndexOfBlock(initialBlock),
             firstVisibleItemScrollOffset = anchorOffsetPx(
-                density, axis, initialBlock, today, now.value, defaultScrollHour, events,
+                density, axis, initialBlock, today, now.value, defaultScrollHour,
             ),
         )
     }
@@ -204,7 +204,6 @@ private fun ContinuousDayTimeline(
     val currentOnSelect by rememberUpdatedState(onSelect)
     val currentToday by rememberUpdatedState(today)
     val currentDefaultHour by rememberUpdatedState(defaultScrollHour)
-    val currentEvents by rememberUpdatedState(events)
 
     // The block under the top edge feeds the selection and the selection drives the scroller, so one
     // collector tells the two apart instead of letting them chase each other: a block the scroll
@@ -231,7 +230,7 @@ private fun ContinuousDayTimeline(
                         itemIndexOfBlock(selectedBlock),
                         anchorOffsetPx(
                             density, axis, selectedBlock, currentToday, now.value,
-                            currentDefaultHour, currentEvents,
+                            currentDefaultHour,
                         ),
                     )
                 }
@@ -299,7 +298,6 @@ private fun anchorOffsetPx(
     today: LocalDate,
     now: LocalClock,
     defaultScrollHour: Int,
-    events: List<Event>,
 ): Int {
     val date = axis.dateAt(block)
     val hour = if (date == today) now.time.hour else defaultScrollHour
@@ -307,7 +305,7 @@ private fun anchorOffsetPx(
     // instead of underneath it.
     val heading = TimelineDayHeadingHeight + HourLabelLift
     return with(density) {
-        (hourLayoutOf(events.occurringOn(date)).offset(hour) - heading).coerceAtLeast(0.dp).roundToPx()
+        (HourLayout.offset(hour) - heading).coerceAtLeast(0.dp).roundToPx()
     }
 }
 

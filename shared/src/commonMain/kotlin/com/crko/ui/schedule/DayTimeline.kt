@@ -107,7 +107,7 @@ internal fun DayTimelineGrid(
     onAdd: (LocalDate, Int?) -> Unit,
     onOpen: (Event) -> Unit,
 ) {
-    val layout = remember(events) { hourLayoutOf(events) }
+    val layout = HourLayout
     val alarmColor = MiuixTheme.colorScheme.error
     val hourLineColor = hourDividerColor()
     val currentOnAdd by rememberUpdatedState(onAdd)
