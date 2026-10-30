@@ -587,7 +587,7 @@ private fun MonthCell(
                 .clip(CircleShape)
                 .background(
                     when {
-                        isToday || !hasEvents || !inMonth -> Color.Transparent
+                        !hasEvents || !inMonth -> Color.Transparent
                         selected -> scheme.primary
                         else -> scheme.onSurfaceVariantSummary.copy(alpha = 0.6f)
                     },
