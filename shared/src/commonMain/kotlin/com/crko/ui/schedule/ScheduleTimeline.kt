@@ -1,5 +1,6 @@
 package com.crko.ui.schedule
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,16 +33,19 @@ import kotlinx.datetime.LocalDate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val DayContentType = "timeline-day"
+private const val DayHeadingContentType = "timeline-day-heading"
 private const val WeekContentType = "timeline-week"
 
 /**
  * The timeline as one continuous vertical scroller: a 24-hour block per day, or per week in the
  * overview, running on without end in either direction. Crossing midnight simply keeps scrolling
- * into the neighbouring block — day blocks open with their own heading, week blocks carry the
- * pinned strip of dates — so the schedule reads as one long ribbon rather than one page at a time.
- * The block under the top edge is the one the rest of the screen follows.
+ * into the neighbouring block — day headings stick to the top of the scroller and hand over to the
+ * next day's heading, week blocks carry the pinned strip of dates — so the schedule reads as one
+ * long ribbon rather than one page at a time. The block under the top edge is the one the rest of
+ * the screen follows.
  */
 @Composable
 internal fun ContinuousTimeline(
@@ -64,7 +68,7 @@ internal fun ContinuousTimeline(
     // when the axis changes shape, because a day index carried into the week axis lands past its end.
     val listState = rememberSaveable(inWeekView, saver = LazyListState.Saver) {
         LazyListState(
-            firstVisibleItemIndex = initialBlock,
+            firstVisibleItemIndex = itemIndexOfBlock(initialBlock, inWeekView),
             firstVisibleItemScrollOffset = anchorOffsetPx(
                 density, axis, initialBlock, inWeekView, today, now.value, defaultScrollHour, events,
             ),
@@ -87,7 +91,10 @@ internal fun ContinuousTimeline(
             .drop(1)
             .collect { scrolling ->
                 if (scrolling) return@collect
-                val date = axis.restingDateAt(listState.firstVisibleItemIndex, currentSelected)
+                val date = axis.restingDateAt(
+                    blockOfItem(listState.firstVisibleItemIndex, inWeekView),
+                    currentSelected,
+                )
                 if (date != currentSelected) currentOnSelect(date)
             }
     }
@@ -97,9 +104,9 @@ internal fun ContinuousTimeline(
     LaunchedEffect(selected, axis, inWeekView) {
         val target = axis.indexOf(selected)
         snapshotFlow { listState.isScrollInProgress }.first { scrolling -> !scrolling }
-        if (listState.firstVisibleItemIndex != target) {
+        if (blockOfItem(listState.firstVisibleItemIndex, inWeekView) != target) {
             listState.scrollToItem(
-                target,
+                itemIndexOfBlock(target, inWeekView),
                 anchorOffsetPx(
                     density, axis, target, inWeekView, today, now.value, currentDefaultHour, currentEvents,
                 ),
@@ -119,13 +126,13 @@ internal fun ContinuousTimeline(
             // Runs behind the glass bar, so the last hours of the final block stay reachable.
             contentPadding = PaddingValues(bottom = GlassNavigationBarDefaults.clearance()),
         ) {
-            items(
-                count = axis.pageCount,
-                key = { "timeline-$it" },
-                contentType = { if (inWeekView) WeekContentType else DayContentType },
-            ) { index ->
-                val blockDate = axis.dateAt(index)
-                if (inWeekView) {
+            if (inWeekView) {
+                items(
+                    count = axis.pageCount,
+                    key = { "timeline-week-$it" },
+                    contentType = { WeekContentType },
+                ) { index ->
+                    val blockDate = axis.dateAt(index)
                     val days = remember(blockDate) { blockDate.weekDates() }
                     val eventsByDate = remember(days, events) { days.associateWith { events.occurringOn(it) } }
                     WeekTimelineGrid(
@@ -136,16 +143,34 @@ internal fun ContinuousTimeline(
                         eventsByDate = eventsByDate,
                         onOpen = onOpen,
                     )
-                } else {
-                    val dayEvents = remember(blockDate, events) { events.occurringOn(blockDate) }
-                    Column {
+                }
+            } else {
+                // A day is two items, heading and grid, so the heading can stick to the top of the
+                // scroller while its hours pass under it; the next day's heading then takes over.
+                for (index in 0 until axis.pageCount) {
+                    stickyHeader(
+                        key = "timeline-day-heading-$index",
+                        contentType = DayHeadingContentType,
+                    ) {
+                        val blockDate = axis.dateAt(index)
+                        val dayEvents = remember(blockDate, events) { events.occurringOn(blockDate) }
                         DayHeadingRow(
                             date = blockDate,
                             today = today,
                             count = dayEvents.size,
                             strings = strings,
-                            modifier = Modifier.height(TimelineDayHeadingHeight),
+                            modifier = Modifier
+                                .height(TimelineDayHeadingHeight)
+                                // Opaque so the hours sliding beneath the pinned heading stay hidden.
+                                .background(MiuixTheme.colorScheme.surface),
                         )
+                    }
+                    item(
+                        key = "timeline-day-$index",
+                        contentType = DayContentType,
+                    ) {
+                        val blockDate = axis.dateAt(index)
+                        val dayEvents = remember(blockDate, events) { events.occurringOn(blockDate) }
                         DayTimelineGrid(
                             strings = strings,
                             today = today,
@@ -195,14 +220,25 @@ private fun anchorOffsetPx(
 ): Int {
     val date = axis.dateAt(block)
     val hour = if (covers(date, today, if (weeks) 7 else 1)) now.time.hour else defaultScrollHour
-    val heading = if (weeks) 0.dp else TimelineDayHeadingHeight
     val blockEvents = if (weeks) {
         date.weekDates().flatMap { events.occurringOn(it) }
     } else {
         events.occurringOn(date)
     }
-    return with(density) { (heading + hourLayoutOf(blockEvents).offset(hour)).roundToPx() }
+    // A pinned day heading covers the top of the grid, so the anchor hour is placed just below it
+    // instead of underneath it.
+    val heading = if (weeks) 0.dp else TimelineDayHeadingHeight + HourLabelLift
+    return with(density) {
+        (hourLayoutOf(blockEvents).offset(hour) - heading).coerceAtLeast(0.dp).roundToPx()
+    }
 }
+
+/** Scroller item that opens [block]: its grid in the day view, where its heading is a sticky item. */
+private fun itemIndexOfBlock(block: Int, weeks: Boolean): Int = if (weeks) block else block * 2 + 1
+
+/** Block whose content is at [firstVisibleItemIndex]; a day block is a heading item and a grid item. */
+private fun blockOfItem(firstVisibleItemIndex: Int, weeks: Boolean): Int =
+    if (weeks) firstVisibleItemIndex else firstVisibleItemIndex / 2
 
 /** Whether the block starting at [first] and running [days] long contains [day]. */
 private fun covers(first: LocalDate, day: LocalDate, days: Int): Boolean = day in first..first.plusDays(days - 1)

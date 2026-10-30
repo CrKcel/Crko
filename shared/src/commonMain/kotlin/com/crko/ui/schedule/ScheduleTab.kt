@@ -241,20 +241,25 @@ fun ScheduleTab(
                 onMonthChange = onMonthChange,
             )
 
-            DaySummary(
-                date = selected,
-                today = today,
-                events = dayEvents,
-                strings = strings,
-                onDeleteDay = onDeleteDay,
-                modifier = Modifier
-                    .clickable(
-                        interactionSource = summaryInteraction,
-                        indication = null,
-                        onClickLabel = if (expanded) strings.collapseCalendar else strings.expandCalendar,
-                    ) { expanded = !expanded }
-                    .padding(horizontal = 16.dp),
-            )
+            // The day timeline pins a date heading of its own at the top of the scroller, so the
+            // summary would only repeat that heading. The list and the week overview still need it:
+            // their headers name the days but not the one the rest of the screen follows.
+            if (listMode || weekMode) {
+                DaySummary(
+                    date = selected,
+                    today = today,
+                    events = dayEvents,
+                    strings = strings,
+                    onDeleteDay = onDeleteDay,
+                    modifier = Modifier
+                        .clickable(
+                            interactionSource = summaryInteraction,
+                            indication = null,
+                            onClickLabel = if (expanded) strings.collapseCalendar else strings.expandCalendar,
+                        ) { expanded = !expanded }
+                        .padding(horizontal = 16.dp),
+                )
+            }
         }
 
         // The overview and the day view share this area; the upper calendar stays untouched.

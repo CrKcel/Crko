@@ -82,6 +82,13 @@ internal const val DayBlockCount = 20001
 internal const val WeekBlockCount = 2400
 
 /**
+ * Days the timeline scroller spans — about eleven years in all, five either side of where it
+ * opened. The day view registers a heading and a grid per day so the heading can stay pinned, and
+ * a window this wide keeps that item list cheap to rebuild while still outlasting any real scroll.
+ */
+internal const val TimelineDayBlockCount = 4001
+
+/**
  * Index space of a scroller that keeps running past the ends of the calendar: index
  * [center] is the block starting at the base date and every other index a fixed offset from it.
  * Mapping never depends on what is currently on screen, so scrolling or paging never remaps content
@@ -117,7 +124,7 @@ internal fun rememberBlockAxis(base: LocalDate, weeks: Boolean): BlockAxis {
     val saved = rememberSaveable { (if (weeks) base.startOfWeek() else base).toString() }
     return remember(saved, weeks) {
         val date = LocalDate.parse(saved)
-        if (weeks) BlockAxis(date, 7, WeekBlockCount) else BlockAxis(date, 1, DayBlockCount)
+        if (weeks) BlockAxis(date, 7, WeekBlockCount) else BlockAxis(date, 1, TimelineDayBlockCount)
     }
 }
 

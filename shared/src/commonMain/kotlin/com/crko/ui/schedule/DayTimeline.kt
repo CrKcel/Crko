@@ -51,6 +51,9 @@ import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+/** Distance an hour label is lifted so its text centres on the hour line. */
+internal val HourLabelLift = 7.dp
+
 /** Hour labels for a 24-hour grid, shared by the day and week timelines. */
 @Composable
 internal fun TimeGutterLabels(strings: Strings, layout: HourLayout) {
@@ -78,7 +81,7 @@ internal fun TimeGutterLabels(strings: Strings, layout: HourLayout) {
             .height(layout.totalHeight)
             .clipToBounds(),
     ) {
-        val lift = 7.dp.toPx()
+        val lift = HourLabelLift.toPx()
         layouts.forEachIndexed { hour, label ->
             // Centres each label on its hour line. The first one would otherwise be lifted above
             // the grid and clipped there, right against the day heading.
