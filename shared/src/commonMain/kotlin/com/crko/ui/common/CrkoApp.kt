@@ -1,7 +1,6 @@
 package com.crko.ui.common
 
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.calculateEndPadding
@@ -20,8 +19,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.crko.domain.Event
 import com.crko.domain.LocalClock
 import com.crko.domain.MaxEndMinutes
@@ -112,27 +116,29 @@ fun CrkoApp(state: AppStateHolder) {
             bottom = 0.dp,
         )
         Box(Modifier.fillMaxSize()) {
-            Crossfade(
-                targetState = tab,
-                animationSpec = tween(180),
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .layerBackdrop(backdrop),
-            ) { current ->
-                when (current) {
-                    0 -> TodoTab(
+            ) {
+                TabPage(visible = tab == 0) {
+                    TodoTab(
                         state = state,
                         strings = strings,
                         contentPadding = tabPadding,
                     )
-                    1 -> ScheduleTab(
+                }
+                TabPage(visible = tab == 1) {
+                    ScheduleTab(
                         state = state,
                         now = now,
                         strings = strings,
                         contentPadding = tabPadding,
                         onOpenEvent = { eventEditor = it },
                     )
-                    else -> MoreTab(
+                }
+                TabPage(visible = tab == 2) {
+                    MoreTab(
                         state = state,
                         strings = strings,
                         contentPadding = tabPadding,
@@ -200,6 +206,47 @@ fun CrkoApp(state: AppStateHolder) {
         strings = strings,
         onDismiss = { showSettings = false },
     )
+}
+
+/**
+ * One tab's page, kept composed while another tab is shown. Building a page costs tens of
+ * milliseconds (the calendar and timeline lay out a lot), and composing it on the frame the bar's
+ * selection bubble is released made that animation skip frames. Pages that are not on top are
+ * skipped while drawing, so they stay out of the bar's backdrop, and they swallow touches so a tap
+ * the visible page ignores cannot reach the page underneath.
+ */
+@Composable
+private fun TabPage(visible: Boolean, content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(if (visible) 1f else 0f)
+            .drawWithContent {
+                if (visible) drawContent()
+            }
+            .then(
+                if (visible) {
+                    Modifier
+                } else {
+                    // Invisible to screen readers too; otherwise they would walk into a page the
+                    // user cannot see.
+                    Modifier
+                        .clearAndSetSemantics { }
+                        .swallowTouches()
+                },
+            ),
+    ) {
+        content()
+    }
+}
+
+private fun Modifier.swallowTouches(): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        do {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            event.changes.forEach { it.consume() }
+        } while (event.changes.any { it.pressed })
+    }
 }
 
 private fun newEvent(state: AppStateHolder, now: LocalClock): Event {
