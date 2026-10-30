@@ -63,7 +63,7 @@ jobs:
         run: |
           apk=$(ls androidApp/build/outputs/apk/debug/*.apk | head -1)
           {
-            echo "### CrKo Android"
+            echo "### Crko Android"
             echo ""
             echo "| File | Size | Download |"
             echo "| --- | --- | --- |"
@@ -114,8 +114,8 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
           mkdir -p build/Payload
-          cp -R build/ios/Build/Products/Release-iphoneos/CrKo.app build/Payload/
-          ditto -c -k --norsrc --noextattr --keepParent build/Payload build/CrKo-unsigned.ipa
+          cp -R build/ios/Build/Products/Release-iphoneos/Crko.app build/Payload/
+          ditto -c -k --norsrc --noextattr --keepParent build/Payload build/Crko-unsigned.ipa
 
       - name: Upload test report
         if: failure()
@@ -130,14 +130,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ios-unsigned-ipa
-          path: build/CrKo-unsigned.ipa
+          path: build/Crko-unsigned.ipa
           if-no-files-found: error
 
       - name: Add IPA to run summary
         run: |
-          ipa=build/CrKo-unsigned.ipa
+          ipa=build/Crko-unsigned.ipa
           {
-            echo "### CrKo iOS"
+            echo "### Crko iOS"
             echo ""
             echo "| File | Size | Download |"
             echo "| --- | --- | --- |"

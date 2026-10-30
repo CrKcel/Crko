@@ -1,4 +1,4 @@
-rootProject.name = "CrKo"
+rootProject.name = "Crko"
 
 pluginManagement {
     repositories {

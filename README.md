@@ -1,4 +1,4 @@
-# CrKo
+# Crko
 
 日程与待办应用。Android 与 iOS 共用 Kotlin Multiplatform + Compose Multiplatform 界面。
 

@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		E127A3A06F22253AA10F94B8 /* CrKo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CrKo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E127A3A06F22253AA10F94B8 /* Crko.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Crko.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -59,7 +59,7 @@
 		F0000EA30C2424F6979B0195 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				E127A3A06F22253AA10F94B8 /* CrKo.app */,
+				E127A3A06F22253AA10F94B8 /* Crko.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -87,7 +87,7 @@
 			packageProductDependencies = (
 			);
 			productName = iosApp;
-			productReference = E127A3A06F22253AA10F94B8 /* CrKo.app */;
+			productReference = E127A3A06F22253AA10F94B8 /* Crko.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
