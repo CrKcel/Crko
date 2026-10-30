@@ -141,9 +141,14 @@ fun ScheduleTab(
 
     val dayPager = rememberDayPager(selected = selected, today = today, onSelect = onSelectDate)
     val overviewPager = rememberWeekPager(selected = selected, onSelect = onSelectDate)
-    // The calendar strip above follows the list's sideways drag; the timeline has no such pager.
-    val weekStrip = remember(listMode, weekMode, dayPager, overviewPager) {
+    val timelineWeekPager = rememberWeekPager(selected = selected, onSelect = onSelectDate)
+    // The calendar strip above follows the pager below: sideways in the list and up and down in the
+    // week timeline, which flips one whole week at a time. The day timeline scrolls continuously and
+    // has no such pager.
+    val weekStrip = remember(listMode, weekMode, dayPager, overviewPager, timelineWeekPager) {
         when {
+            !listMode && weekMode ->
+                WeekStrip(timelineWeekPager.state, timelineWeekPager::weekAt, pageIsWeek = true, vertical = true)
             !listMode -> null
             weekMode -> WeekStrip(overviewPager.state, overviewPager::weekAt, pageIsWeek = true)
             else -> WeekStrip(dayPager.state, dayPager::dateAt, pageIsWeek = false)
@@ -241,7 +246,7 @@ fun ScheduleTab(
                 showWeekSelection = expanded || !weekMode,
                 onSelect = onSelectDate,
                 onMonthChange = onMonthChange,
-                listStrip = weekStrip,
+                driveStrip = weekStrip,
             )
         }
 
@@ -341,6 +346,7 @@ fun ScheduleTab(
                             now = now,
                             events = events,
                             selected = selected,
+                            weekPager = timelineWeekPager,
                             inWeekView = inWeekView,
                             defaultScrollHour = state.settings.agendaScrollHour,
                             onSelect = onSelectDate,

@@ -164,8 +164,9 @@ internal fun Modifier.calendarFoldDrag(
  * pager takes over that row, so a horizontal swipe switches to the adjacent week.
  *
  * [expanded] is the settled state; while dragging, the revealed height follows the finger directly.
- * [listStrip] is the list pager below, when one is showing: the collapsed week row then slides with
- * it so a swipe across a week edge carries the calendar above along.
+ * [driveStrip] is the pager below the calendar, when one is showing (the list pager, or the week
+ * overview's timeline pager): the collapsed week row then slides with it, sideways or up and down,
+ * so a swipe that flips the week carries the calendar above along.
  */
 @Composable
 internal fun WeekMonthCalendar(
@@ -179,7 +180,7 @@ internal fun WeekMonthCalendar(
     showWeekSelection: Boolean,
     onSelect: (LocalDate) -> Unit,
     onMonthChange: (LocalDate) -> Unit,
-    listStrip: WeekStrip?,
+    driveStrip: WeekStrip?,
 ) {
     val density = LocalDensity.current
     val rowHeightPx = with(density) { MonthRowHeight.toPx() }
@@ -195,25 +196,25 @@ internal fun WeekMonthCalendar(
     val weekPager = rememberWeekPager(selected, onSelect)
 
     // The collapsed row can be moved from two sides: its own pager when swiped directly, and the
-    // list pager below while a list swipe crosses a week edge. The latter draws both weeks and
-    // slides between them, staying on screen until the week pager has caught up with the
-    // selection; dropping it at the page edge would flash the old week for a frame.
-    val stripPair by remember(listStrip) {
+    // pager below while its swipe crosses a week edge. The latter draws both weeks and slides between
+    // them, staying on screen until the week pager has caught up with the selection; dropping it at
+    // the page edge would flash the old week for a frame.
+    val stripPair by remember(driveStrip) {
         derivedStateOf {
-            val strip = listStrip ?: return@derivedStateOf null
+            val strip = driveStrip ?: return@derivedStateOf null
             strip.pairAt(strip.state.currentPage, strip.state.currentPageOffsetFraction)
         }
     }
-    val stripCrossing by remember(listStrip) {
+    val stripCrossing by remember(driveStrip) {
         derivedStateOf {
-            val strip = listStrip ?: return@derivedStateOf false
+            val strip = driveStrip ?: return@derivedStateOf false
             strip.isCrossing(strip.state.currentPage, strip.state.currentPageOffsetFraction)
         }
     }
     var pendingWeek by remember { mutableStateOf<LocalDate?>(null) }
-    LaunchedEffect(listStrip, weekPager) {
+    LaunchedEffect(driveStrip, weekPager) {
         pendingWeek = null
-        val strip = listStrip ?: return@LaunchedEffect
+        val strip = driveStrip ?: return@LaunchedEffect
         snapshotFlow {
             Triple(
                 strip.state.currentPage,
@@ -230,8 +231,8 @@ internal fun WeekMonthCalendar(
             }
         }
     }
-    val stripProgress: () -> Float = remember(listStrip) {
-        { listStrip?.progressAt(listStrip.state.currentPageOffsetFraction) ?: 0f }
+    val stripProgress: () -> Float = remember(driveStrip) {
+        { driveStrip?.progressAt(driveStrip.state.currentPageOffsetFraction) ?: 0f }
     }
 
     // Progress changes on every animation frame, so it is only read in the layout/draw passes or
@@ -350,6 +351,7 @@ internal fun WeekMonthCalendar(
                         left = pair.first,
                         right = pair.second,
                         progress = stripProgress,
+                        vertical = driveStrip?.vertical == true,
                         month = currentSelected.startOfMonth(),
                         selected = currentSelected,
                         today = currentToday,
@@ -482,14 +484,16 @@ private fun WeekRow(
 }
 
 /**
- * Two weeks drawn side by side and slid between as the list pager crosses the edge of a week. The
- * translation is read while placing the row, so dragging only re-lays it out, never recomposes it.
+ * Two weeks drawn next to each other and slid between as the driving pager crosses the edge of a
+ * week. Sideways for the list, stacked up and down for the week timeline. The translation is read
+ * while placing the row, so dragging only re-lays it out, never recomposes it.
  */
 @Composable
 private fun WeekStripRow(
     left: LocalDate,
     right: LocalDate,
     progress: () -> Float,
+    vertical: Boolean,
     month: LocalDate,
     selected: LocalDate,
     today: LocalDate,
@@ -497,7 +501,7 @@ private fun WeekStripRow(
     showSelection: Boolean,
     onSelect: (LocalDate) -> Unit,
 ) {
-    // Both weeks are measured at exactly the viewport width and placed side by side, so the offset
+    // Both weeks are measured at exactly the viewport size and placed one page apart, so the offset
     // can slide them by whole pages without depending on how a Row would distribute a wider child.
     Layout(
         content = {
@@ -523,9 +527,11 @@ private fun WeekStripRow(
         val placeables = measurables.map { it.measure(Constraints.fixed(pageWidth, pageHeight)) }
         layout(pageWidth, pageHeight) {
             // Read at placement time so a drag re-lays out the row's position without recomposing it.
-            val shift = (-progress() * pageWidth).roundToInt()
+            val pageSize = if (vertical) pageHeight else pageWidth
+            val shift = (-progress() * pageSize).roundToInt()
             placeables.forEachIndexed { index, placeable ->
-                placeable.place(index * pageWidth + shift, 0)
+                val offset = index * pageSize + shift
+                if (vertical) placeable.place(0, offset) else placeable.place(offset, 0)
             }
         }
     }

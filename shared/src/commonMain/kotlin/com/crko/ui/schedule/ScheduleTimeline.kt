@@ -43,6 +43,7 @@ internal fun ContinuousTimeline(
     now: State<LocalClock>,
     events: List<Event>,
     selected: LocalDate,
+    weekPager: WeekPager,
     inWeekView: Boolean,
     defaultScrollHour: Int,
     onSelect: (LocalDate) -> Unit,
@@ -54,9 +55,8 @@ internal fun ContinuousTimeline(
             today = today,
             now = now,
             events = events,
-            selected = selected,
+            pager = weekPager,
             defaultScrollHour = defaultScrollHour,
-            onSelect = onSelect,
             onOpen = onOpen,
         )
     } else {
@@ -79,18 +79,19 @@ internal fun ContinuousTimeline(
  * itself, and the drag left over when it reaches its top or bottom flips the pager to the
  * neighbouring week. A page arriving from above opens at its top and one arriving from below at its
  * bottom, so the hours keep running across a flip instead of snapping back to midnight.
+ *
+ * [pager] is owned above, so the collapsed week row in the header can follow the same flip up and
+ * down while the week changes.
  */
 @Composable
 private fun PagedWeekTimeline(
     today: LocalDate,
     now: State<LocalClock>,
     events: List<Event>,
-    selected: LocalDate,
+    pager: WeekPager,
     defaultScrollHour: Int,
-    onSelect: (LocalDate) -> Unit,
     onOpen: (Event) -> Unit,
 ) {
-    val pager = rememberWeekPager(selected = selected, onSelect = onSelect)
     VerticalPager(
         state = pager.state,
         // Laid out ahead of time, so the neighbour already opens at the edge it will be

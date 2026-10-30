@@ -7,16 +7,20 @@ import com.crko.domain.startOfWeek
 import kotlinx.datetime.LocalDate
 
 /**
- * Horizontal list pager whose drag the collapsed week strip follows. A day axis only crosses a week
- * between Sunday and Monday, so a mid-week swipe leaves the strip alone; a week axis crosses on
- * every page. [pairAt] and [progressAt] describe the two weeks to draw side by side and how far the
- * strip has travelled between them; both are read while laying the row out, so following the finger
- * does not recompose the header on every frame.
+ * Pager whose drag the collapsed week strip follows — the list pager below it, or the week timeline
+ * pager. A day axis only crosses a week between Sunday and Monday, so a mid-week swipe leaves the
+ * strip alone; a week axis crosses on every page. [pairAt] and [progressAt] describe the two weeks
+ * to draw next to each other and how far the strip has travelled between them; both are read while
+ * laying the row out, so following the finger does not recompose the header on every frame.
+ *
+ * [vertical] stacks the pair up and down instead of sideways, for the pager that flips weeks in the
+ * week overview's timeline.
  */
 internal class WeekStrip(
     val state: PagerState,
     private val pageDate: (Int) -> LocalDate,
     private val pageIsWeek: Boolean,
+    val vertical: Boolean = false,
 ) {
     fun weekOf(page: Int): LocalDate =
         if (pageIsWeek) pageDate(page) else pageDate(page).startOfWeek()
