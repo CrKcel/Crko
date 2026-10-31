@@ -48,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.Layout
@@ -330,6 +331,9 @@ internal fun WeekMonthCalendar(
     val currentToday by rememberUpdatedState(today)
     val currentHasEvents by rememberUpdatedState(hasEvents)
     val currentOnSelect by rememberUpdatedState(onSelect)
+    // One stable handler for every cell: a fresh lambda per recomposition would recompose the
+    // whole row of cells whenever anything above merely re-executes.
+    val onSelectDate: (LocalDate) -> Unit = remember { { currentOnSelect(it) } }
     val currentShowWeekSelection by rememberUpdatedState(showWeekSelection)
     val currentSelectionPosition by rememberUpdatedState(selectionPosition)
 
@@ -361,7 +365,7 @@ internal fun WeekMonthCalendar(
                 selected = currentSelected,
                 today = currentToday,
                 hasEvents = currentHasEvents,
-                onSelect = { currentOnSelect(it) },
+                onSelect = onSelectDate,
             )
         }
     }
@@ -370,11 +374,14 @@ internal fun WeekMonthCalendar(
             WeekRow(
                 weekStart = weekPager.weekAt(page),
                 month = currentSelected.startOfMonth(),
-                selected = currentSelected,
+                // A hidden selection draws nothing, so it is passed as null: a week swipe then
+                // settles without recomposing every page of this pager over a selection that is
+                // not shown anyway.
+                selected = if (currentShowWeekSelection) currentSelected else null,
                 today = currentToday,
                 hasEvents = currentHasEvents,
                 showSelection = currentShowWeekSelection,
-                onSelect = { currentOnSelect(it) },
+                onSelect = onSelectDate,
                 selectionPosition = currentSelectionPosition,
             )
         }
@@ -416,31 +423,72 @@ internal fun WeekMonthCalendar(
             // The week pager draws the same row the month grid would, so the switch as the
             // calendar folds open is invisible.
             if (!showMonthGrid) {
-                // Read the pair only while a swipe is carrying it; a plain day-to-day swipe must not
-                // recompose the header each time its page flips.
-                val pair = if (stripCrossing || pendingWeek != null) stripPair else null
-                if (pair != null) {
-                    WeekStripRow(
-                        left = pair.first,
-                        right = pair.second,
-                        progress = stripProgress,
-                        vertical = driveStrip?.vertical == true,
-                        month = currentSelected.startOfMonth(),
-                        selected = currentSelected,
-                        today = currentToday,
-                        hasEvents = currentHasEvents,
-                        showSelection = currentShowWeekSelection,
-                        onSelect = { currentOnSelect(it) },
-                    )
-                } else {
-                    HorizontalPager(
-                        state = weekPager.state,
-                        beyondViewportPageCount = 1,
+                val pair = stripPair
+                // The pair of weeks takes the place of the week pager while the pager below crosses
+                // a week edge. A week axis crosses on every flip, so there both stay composed and
+                // only their visibility is switched, in measure and in draw: recomposing one of
+                // them in place of the other would compose a whole row of cells on the animation
+                // frame, every swipe. A day axis only crosses between Sunday and Monday, so it
+                // keeps swapping them.
+                val showPair: () -> Boolean = remember(driveStrip) {
+                    { driveStrip != null && (stripCrossing || pendingWeek != null) }
+                }
+                if (pair != null && driveStrip?.isWeekAxis == true) {
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(MonthRowHeight),
-                        pageContent = weekPage,
-                    )
+                    ) {
+                        HorizontalPager(
+                            state = weekPager.state,
+                            beyondViewportPageCount = 1,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(MonthRowHeight)
+                                // Read in the draw phase; a crossing only flips this skip, and the
+                                // pager behind the pair does not draw while it is covered.
+                                .drawWithContent { if (!showPair()) drawContent() },
+                            pageContent = weekPage,
+                        )
+                        WeekStripRow(
+                            left = pair.first,
+                            right = pair.second,
+                            progress = stripProgress,
+                            vertical = driveStrip.vertical,
+                            month = currentSelected.startOfMonth(),
+                            selected = if (currentShowWeekSelection) currentSelected else null,
+                            today = currentToday,
+                            hasEvents = currentHasEvents,
+                            showSelection = currentShowWeekSelection,
+                            onSelect = onSelectDate,
+                            visible = showPair,
+                        )
+                    }
+                } else {
+                    val crossingPair = if (pair != null && showPair()) pair else null
+                    if (crossingPair != null) {
+                        WeekStripRow(
+                            left = crossingPair.first,
+                            right = crossingPair.second,
+                            progress = stripProgress,
+                            vertical = driveStrip?.vertical == true,
+                            month = currentSelected.startOfMonth(),
+                            selected = if (currentShowWeekSelection) currentSelected else null,
+                            today = currentToday,
+                            hasEvents = currentHasEvents,
+                            showSelection = currentShowWeekSelection,
+                            onSelect = onSelectDate,
+                        )
+                    } else {
+                        HorizontalPager(
+                            state = weekPager.state,
+                            beyondViewportPageCount = 1,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(MonthRowHeight),
+                            pageContent = weekPage,
+                        )
+                    }
                 }
             }
         }
@@ -527,7 +575,7 @@ private class MonthPager(val state: PagerState, private val baseMonth: LocalDate
 private fun WeekRow(
     weekStart: LocalDate,
     month: LocalDate,
-    selected: LocalDate,
+    selected: LocalDate?,
     today: LocalDate,
     hasEvents: (LocalDate) -> Boolean,
     showSelection: Boolean,
@@ -540,7 +588,7 @@ private fun WeekRow(
     val daysWithEvents = remember(dates, hasEvents) { dates.associateWith(hasEvents) }
     // The floating frame belongs to the row holding the selected date; the neighbouring pager page
     // keeps plain cells so a week swipe never shows two frames at once.
-    val floating = selectionPosition != null && weekStart == selected.startOfWeek()
+    val floating = selectionPosition != null && selected != null && weekStart == selected.startOfWeek()
     Box(modifier = Modifier.fillMaxWidth().height(MonthRowHeight)) {
         Row(modifier = Modifier.fillMaxSize()) {
             dates.forEach { date ->
@@ -560,7 +608,7 @@ private fun WeekRow(
                 )
             }
         }
-        if (floating && showSelection) SelectionFrame(selectionPosition!!)
+        if (floating && showSelection) SelectionFrame(selectionPosition)
     }
 }
 
@@ -610,11 +658,12 @@ private fun WeekStripRow(
     progress: () -> Float,
     vertical: Boolean,
     month: LocalDate,
-    selected: LocalDate,
+    selected: LocalDate?,
     today: LocalDate,
     hasEvents: (LocalDate) -> Boolean,
     showSelection: Boolean,
     onSelect: (LocalDate) -> Unit,
+    visible: () -> Boolean = { true },
 ) {
     // Both weeks are measured at exactly the viewport size and placed one page apart, so the offset
     // can slide them by whole pages without depending on how a Row would distribute a wider child.
@@ -637,6 +686,10 @@ private fun WeekStripRow(
             .height(MonthRowHeight)
             .clipToBounds(),
     ) { measurables, constraints ->
+        // Hidden while the week pager itself shows these weeks: nothing is measured or placed, so
+        // the row neither draws over the pager nor swallows the strip's own swipes. Read in
+        // measure, so a crossing starting or ending never recomposes it.
+        if (!visible()) return@Layout layout(constraints.maxWidth, constraints.maxHeight) {}
         val pageWidth = constraints.maxWidth
         val pageHeight = constraints.maxHeight
         val placeables = measurables.map { it.measure(Constraints.fixed(pageWidth, pageHeight)) }

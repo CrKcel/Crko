@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -152,6 +153,44 @@ fun ScheduleTab(
             !listMode -> null
             weekMode -> WeekStrip(overviewPager.state, overviewPager::weekAt, pageIsWeek = true)
             else -> WeekStrip(dayPager.state, dayPager::dateAt, pageIsWeek = false)
+        }
+    }
+
+    // Page content is remembered and reads the latest parameters through states: a fresh content
+    // lambda per recomposition would rebuild the pager's item provider and recompose every page it
+    // holds — the neighbouring days or weeks included — whenever the selection moves.
+    val currentEvents by rememberUpdatedState(events)
+    val currentStrings by rememberUpdatedState(strings)
+    val currentShowListView by rememberUpdatedState<(Boolean, Float?) -> Unit>(::showListView)
+    val onSwipeToTimeline: (Float) -> Unit = remember { { currentShowListView(false, it) } }
+
+    val weekPage: @Composable PagerScope.(Int) -> Unit = remember(overviewPager) {
+        { page ->
+            val weekStart = overviewPager.weekAt(page)
+            val weekDays = remember(weekStart) { weekStart.weekDates() }
+            val weekEvents = remember(weekDays, currentEvents) {
+                weekDays.associateWith { date -> state.eventsOn(date) }
+            }
+            WeekAgendaList(
+                strings = currentStrings,
+                today = currentToday,
+                weekStart = weekStart,
+                eventsByDate = weekEvents,
+                onOpen = onOpenStable,
+                onSwipeToTimeline = onSwipeToTimeline,
+            )
+        }
+    }
+    val dayPage: @Composable PagerScope.(Int) -> Unit = remember(dayPager) {
+        { page ->
+            val date = dayPager.dateAt(page)
+            val pageEvents = remember(date, currentEvents) { state.eventsOn(date) }
+            DayAgendaList(
+                events = pageEvents,
+                strings = currentStrings,
+                onOpen = onOpenStable,
+                onSwipeToTimeline = onSwipeToTimeline,
+            )
         }
     }
 
@@ -306,37 +345,15 @@ fun ScheduleTab(
                     if (asList) {
                         // One day — or one week in the overview — per page. A sideways swipe moves
                         // to the adjacent date along the axis while the page itself scrolls
-                        // vertically.
+                        // vertically. A week page holds far more rows than a day page, so the
+                        // pager keeps one extra week either side composed and a swipe never has to
+                        // build a page on the frame it is animating.
                         HorizontalPager(
                             state = if (inWeekView) overviewPager.state else dayPager.state,
-                            beyondViewportPageCount = 1,
+                            beyondViewportPageCount = if (inWeekView) 2 else 1,
                             modifier = Modifier.fillMaxSize(),
-                        ) { page ->
-                            if (inWeekView) {
-                                val weekStart = overviewPager.weekAt(page)
-                                val weekDays = remember(weekStart) { weekStart.weekDates() }
-                                val weekEvents = remember(weekDays, events) {
-                                    weekDays.associateWith { date -> state.eventsOn(date) }
-                                }
-                                WeekAgendaList(
-                                    strings = strings,
-                                    today = today,
-                                    weekStart = weekStart,
-                                    eventsByDate = weekEvents,
-                                    onOpen = onOpenStable,
-                                    onSwipeToTimeline = { travel -> showListView(false, travel) },
-                                )
-                            } else {
-                                val date = dayPager.dateAt(page)
-                                val pageEvents = remember(date, events) { state.eventsOn(date) }
-                                DayAgendaList(
-                                    events = pageEvents,
-                                    strings = strings,
-                                    onOpen = onOpenStable,
-                                    onSwipeToTimeline = { travel -> showListView(false, travel) },
-                                )
-                            }
-                        }
+                            pageContent = if (inWeekView) weekPage else dayPage,
+                        )
                     } else {
                         // No page boundary: the days run into each other and the scroll simply
                         // carries on into the next one.
