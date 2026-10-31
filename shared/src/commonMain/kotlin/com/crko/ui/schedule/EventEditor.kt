@@ -409,15 +409,6 @@ private fun RepeatSection(
                 }
             }
         }
-        if (frequency != null) {
-            Text(
-                text = strings.repeatSeriesHint,
-                style = MiuixTheme.textStyles.footnote2,
-                fontSize = 11.sp,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(start = 4.dp, top = 6.dp),
-            )
-        }
     }
 }
 

@@ -78,7 +78,6 @@ interface Strings {
     val repeatWeekly: String
     val repeatCustom: String
     val repeatWeekdaysRequired: String
-    val repeatSeriesHint: String
 
     val todos: String
     val todoNew: String
@@ -183,7 +182,6 @@ object ZhStrings : Strings {
     override val repeatWeekly = "每周"
     override val repeatCustom = "自定义"
     override val repeatWeekdaysRequired = "请至少选择一天"
-    override val repeatSeriesHint = "重复日程的修改会应用到所有日期"
 
     override val todos = "待办"
     override val todoNew = "新建待办"
@@ -291,7 +289,6 @@ object EnStrings : Strings {
     override val repeatWeekly = "Weekly"
     override val repeatCustom = "Custom"
     override val repeatWeekdaysRequired = "Pick at least one day"
-    override val repeatSeriesHint = "Changes apply to every date in this repeat"
 
     override val todos = "Todo"
     override val todoNew = "New todo"
