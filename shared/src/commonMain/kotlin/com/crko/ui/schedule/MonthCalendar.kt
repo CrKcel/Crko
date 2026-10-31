@@ -73,10 +73,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.number
-import kotlin.math.abs
 import kotlin.math.roundToInt
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.window.WindowDialog
 
 private const val PageCount = 2400
 private const val HomePage = PageCount / 2
@@ -589,30 +591,82 @@ internal fun MonthCalendar(
     val anchorMonth = monthAnchor.startOfMonth()
     val pager = rememberMonthPager(anchorMonth, onMonthChange)
 
+    // The grid is laid out at its tallest and the container reveals only the rows the month on
+    // screen needs, so a five-week month leaves no empty strip under the calendar.
+    val monthRows by remember(pager) {
+        derivedStateOf { pager.monthAt(pager.state.currentPage).monthGrid().size / 7 }
+    }
+    val revealedRows by animateFloatAsState(
+        targetValue = monthRows.toFloat(),
+        animationSpec = tween(200),
+    )
+
     Column(modifier = modifier.fillMaxWidth()) {
         WeekdayHeader(strings)
         Spacer(Modifier.height(2.dp))
-        MonthCaption(
-            strings = strings,
-            month = pager.monthAt(pager.state.currentPage),
-            fraction = pager.state.currentPageOffsetFraction,
-            modifier = Modifier.padding(bottom = 2.dp),
-        )
-        HorizontalPager(
-            state = pager.state,
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(MonthRowHeight * MaxMonthRows.toFloat()),
-        ) { page ->
-            val month = pager.monthAt(page)
-            MonthPage(
-                month = month,
-                days = remember(month) { month.monthGrid() },
+                .height(MonthRowHeight * revealedRows)
+                .clipToBounds(),
+        ) {
+            HorizontalPager(
+                state = pager.state,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(MonthRowHeight * MaxMonthRows.toFloat()),
+            ) { page ->
+                val month = pager.monthAt(page)
+                MonthPage(
+                    month = month,
+                    days = remember(month) { month.monthGrid() },
+                    selected = selected,
+                    today = today,
+                    hasEvents = hasEvents,
+                    onSelect = onSelect,
+                )
+            }
+        }
+    }
+}
+
+/** Month picker shown in its own dialog; horizontal paging between months is handled by the calendar. */
+@Composable
+internal fun DatePickerDialog(
+    initial: LocalDate,
+    today: LocalDate,
+    strings: Strings,
+    onDismiss: () -> Unit,
+    onConfirm: (LocalDate) -> Unit,
+) {
+    var month by remember { mutableStateOf(initial.startOfMonth()) }
+    var selected by remember { mutableStateOf(initial) }
+
+    WindowDialog(
+        show = true,
+        onDismissRequest = onDismiss,
+        title = strings.monthTitle(month.year, month.month),
+    ) {
+        Column {
+            MonthCalendar(
+                hasEvents = { false },
+                strings = strings,
+                monthAnchor = month,
                 selected = selected,
                 today = today,
-                hasEvents = hasEvents,
-                onSelect = onSelect,
+                onSelect = { selected = it },
+                onMonthChange = { month = it },
             )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                TextButton(text = strings.cancel, onClick = onDismiss, modifier = Modifier.weight(1f))
+                TextButton(
+                    text = strings.save,
+                    onClick = { onConfirm(selected) },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.textButtonColorsPrimary(),
+                )
+            }
         }
     }
 }
@@ -827,27 +881,6 @@ private fun WeekdayHeader(strings: Strings) {
                 )
             }
         }
-    }
-}
-
-/**
- * Month label that fades between pages. The outgoing label leaves as the pager offset grows so the
- * title follows the finger instead of jumping when the page settles.
- */
-@Composable
-private fun MonthCaption(
-    strings: Strings,
-    month: LocalDate,
-    fraction: Float,
-    modifier: Modifier = Modifier,
-) {
-    val alpha = (1f - abs(fraction) * 2f).coerceIn(0.35f, 1f)
-    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        Text(
-            text = strings.monthTitle(month.year, month.month),
-            style = MiuixTheme.textStyles.footnote1,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = alpha),
-        )
     }
 }
 

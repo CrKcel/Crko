@@ -177,6 +177,7 @@ fun CrkoApp(state: AppStateHolder) {
     EventEditorDialog(
         event = eventEditor,
         strings = strings,
+        today = state.today,
         onDismiss = { eventEditor = null },
         onSave = { event ->
             val saved = state.saveEvent(event) == WriteResult.Success

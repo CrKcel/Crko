@@ -90,6 +90,7 @@ interface Strings {
     val dueDate: String
     val clear: String
     val customDate: String
+    val selectDate: String
     val incomplete: String
     val completed: String
     val emptyTodos: String
@@ -194,6 +195,7 @@ object ZhStrings : Strings {
     override val dueDate = "截止日期"
     override val clear = "清除"
     override val customDate = "自定义"
+    override val selectDate = "选择日期"
     override val incomplete = "未完成"
     override val completed = "已完成"
     override val emptyTodos = "暂无待办"
@@ -301,6 +303,7 @@ object EnStrings : Strings {
     override val dueDate = "Due date"
     override val clear = "Clear"
     override val customDate = "Custom"
+    override val selectDate = "Select date"
     override val incomplete = "To do"
     override val completed = "Completed"
     override val emptyTodos = "No todos"

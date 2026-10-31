@@ -51,12 +51,13 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 internal fun EventEditorDialog(
     event: Event?,
     strings: Strings,
+    today: LocalDate,
     onDismiss: () -> Unit,
     onSave: (Event) -> Boolean,
     onDelete: (Event) -> Unit,
 ) {
     if (event != null) {
-        EventEditorContent(event, strings, onDismiss, onSave, onDelete)
+        EventEditorContent(event, strings, today, onDismiss, onSave, onDelete)
     }
 }
 
@@ -64,6 +65,7 @@ internal fun EventEditorDialog(
 private fun EventEditorContent(
     event: Event,
     strings: Strings,
+    today: LocalDate,
     onDismiss: () -> Unit,
     onSave: (Event) -> Boolean,
     onDelete: (Event) -> Unit,
@@ -79,6 +81,7 @@ private fun EventEditorContent(
     var error by remember(event) { mutableStateOf<String?>(null) }
     var showStartPicker by remember { mutableStateOf(false) }
     var showEndPicker by remember { mutableStateOf(false) }
+    var showDatePicker by remember { mutableStateOf(false) }
 
     val startMinutes = start.hour * 60 + start.minute
     val endMinutes = end.hour * 60 + end.minute
@@ -119,6 +122,20 @@ private fun EventEditorContent(
         return
     }
 
+    if (showDatePicker) {
+        DatePickerDialog(
+            initial = date,
+            today = today,
+            strings = strings,
+            onDismiss = { showDatePicker = false },
+            onConfirm = { picked ->
+                date = picked
+                showDatePicker = false
+            },
+        )
+        return
+    }
+
     WindowDialog(
         show = true,
         onDismissRequest = onDismiss,
@@ -138,7 +155,12 @@ private fun EventEditorContent(
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(10.dp))
-            DateRow(strings = strings, date = date, onChange = { date = it })
+            DateRow(
+                strings = strings,
+                date = date,
+                onChange = { date = it },
+                onPickDate = { showDatePicker = true },
+            )
             Spacer(Modifier.height(10.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 TimeField(
@@ -271,18 +293,39 @@ private fun TimeField(
     }
 }
 
-/** Horizontal strip of dates: the selected day plus the surrounding week. */
+/** Horizontal strip of dates: the selected day plus the surrounding week, with a month picker. */
 @Composable
-private fun DateRow(strings: Strings, date: LocalDate, onChange: (LocalDate) -> Unit) {
+private fun DateRow(
+    strings: Strings,
+    date: LocalDate,
+    onChange: (LocalDate) -> Unit,
+    onPickDate: () -> Unit,
+) {
     val days = remember(date) { date.startOfWeek().let { start -> (0 until 7).map { start.plusDays(it) } } }
     Column {
-        Text(
-            text = strings.dayMonth(date),
-            style = MiuixTheme.textStyles.footnote2,
-            fontSize = 11.sp,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = strings.dayMonth(date),
+                style = MiuixTheme.textStyles.footnote2,
+                fontSize = 11.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.weight(1f).padding(start = 4.dp),
+            )
+            Text(
+                text = strings.selectDate,
+                style = MiuixTheme.textStyles.footnote2,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = MiuixTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onPickDate)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+        }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             days.forEachIndexed { index, day ->
                 val selected = day == date

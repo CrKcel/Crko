@@ -28,13 +28,12 @@ import androidx.compose.ui.unit.sp
 import com.crko.domain.TodoPriority
 import com.crko.domain.plusDays
 import com.crko.i18n.Strings
-import com.crko.ui.schedule.MonthCalendar
+import com.crko.ui.schedule.DatePickerDialog
 import com.crko.ui.schedule.priorityColor
 import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -197,45 +196,4 @@ private fun DateChip(
             .clickable(onClick = onClick)
             .padding(horizontal = 4.dp, vertical = 10.dp),
     )
-}
-
-/** Month picker used for due dates; horizontal paging between months is handled by the calendar. */
-@Composable
-internal fun DatePickerDialog(
-    initial: LocalDate,
-    today: LocalDate,
-    strings: Strings,
-    onDismiss: () -> Unit,
-    onConfirm: (LocalDate) -> Unit,
-) {
-    var month by remember { mutableStateOf(LocalDate(initial.year, initial.month, 1)) }
-    var selected by remember { mutableStateOf(initial) }
-
-    WindowDialog(
-        show = true,
-        onDismissRequest = onDismiss,
-        title = strings.dueDate,
-    ) {
-        Column {
-            MonthCalendar(
-                hasEvents = { false },
-                strings = strings,
-                monthAnchor = month,
-                selected = selected,
-                today = today,
-                onSelect = { selected = it },
-                onMonthChange = { month = it },
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                TextButton(text = strings.cancel, onClick = onDismiss, modifier = Modifier.weight(1f))
-                TextButton(
-                    text = strings.save,
-                    onClick = { onConfirm(selected) },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.textButtonColorsPrimary(),
-                )
-            }
-        }
-    }
 }
