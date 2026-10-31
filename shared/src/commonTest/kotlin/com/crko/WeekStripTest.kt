@@ -57,6 +57,15 @@ class WeekStripTest {
     }
 
     @Test
+    fun dayPositionRidesThePagerWithinTheWeek() {
+        val strip = dayStrip()
+        val wednesdayPage = firstPage + 2
+        assertEquals(2f, strip.dayPosition(wednesdayPage, 0f))
+        assertEquals(2.5f, strip.dayPosition(wednesdayPage, 0.5f))
+        assertEquals(1.5f, strip.dayPosition(wednesdayPage, -0.5f))
+    }
+
+    @Test
     fun weekPagesSlideOnEveryPage() {
         val strip = weekStrip()
         assertTrue(strip.isCrossing(firstPage, 0.3f))

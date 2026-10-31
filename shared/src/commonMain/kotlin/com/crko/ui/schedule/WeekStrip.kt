@@ -25,6 +25,15 @@ internal class WeekStrip(
     fun weekOf(page: Int): LocalDate =
         if (pageIsWeek) pageDate(page) else pageDate(page).startOfWeek()
 
+    /** Whether each page is a whole week rather than a day. */
+    val isWeekAxis: Boolean get() = pageIsWeek
+
+    /**
+     * Day axis only: continuous cell position, 0..7, of the page's date inside its week row. Reading
+     * it while laying the row out lets the selected frame ride the pager's own offset.
+     */
+    fun dayPosition(page: Int, fraction: Float): Float = pageDate(page).mondayIndex + fraction
+
     /** Weeks to draw side by side; a negative offset slides the strip back to the week before. */
     fun pairAt(page: Int, fraction: Float): Pair<LocalDate, LocalDate> {
         val week = weekOf(page)

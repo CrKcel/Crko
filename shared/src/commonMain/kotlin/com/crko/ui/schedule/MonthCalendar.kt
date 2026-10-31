@@ -1,5 +1,6 @@
 package com.crko.ui.schedule
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -59,10 +61,12 @@ import androidx.compose.ui.unit.sp
 import com.crko.domain.monthGrid
 import com.crko.domain.plusMonths
 import com.crko.domain.startOfMonth
+import com.crko.domain.startOfWeek
 import com.crko.domain.weekDates
 import com.crko.i18n.Strings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.datetime.LocalDate
@@ -235,6 +239,35 @@ internal fun WeekMonthCalendar(
         { driveStrip?.progressAt(driveStrip.state.currentPageOffsetFraction) ?: 0f }
     }
 
+    // The collapsed day strip floats one frame over its week instead of outlining the selected cell,
+    // so the frame can ride the day pager: it tracks the finger across the row, follows the pager's
+    // settle onto the date being swiped to, and glides (rather than jumps) after a tapped date.
+    // Only the day axis does this; the week overview hides the selection and slides whole weeks.
+    val dayStrip = driveStrip?.takeIf { !it.isWeekAxis }
+    val selectionSlide = remember(dayStrip) {
+        dayStrip?.let {
+            Animatable(it.dayPosition(it.state.currentPage, it.state.currentPageOffsetFraction))
+        }
+    }
+    LaunchedEffect(dayStrip) {
+        val strip = dayStrip ?: return@LaunchedEffect
+        val slide = selectionSlide ?: return@LaunchedEffect
+        snapshotFlow {
+            Triple(
+                strip.state.currentPage,
+                strip.state.currentPageOffsetFraction,
+                strip.state.isScrollInProgress,
+            )
+        }.collectLatest { (page, fraction, scrolling) ->
+            val target = strip.dayPosition(page, fraction)
+            if (scrolling) slide.snapTo(target) else slide.animateTo(target, tween(220))
+        }
+    }
+    // Read while laying the row out, so a drag only re-lays the frame instead of recomposing it.
+    val selectionPosition: (() -> Float)? = remember(selectionSlide) {
+        selectionSlide?.let { slide -> { slide.value } }
+    }
+
     // Progress changes on every animation frame, so it is only read in the layout/draw passes or
     // through a derived state that flips at most twice per fold. Reading it during composition
     // would recompose the grid, the pagers and every date cell on each frame.
@@ -279,6 +312,7 @@ internal fun WeekMonthCalendar(
     val currentHasEvents by rememberUpdatedState(hasEvents)
     val currentOnSelect by rememberUpdatedState(onSelect)
     val currentShowWeekSelection by rememberUpdatedState(showWeekSelection)
+    val currentSelectionPosition by rememberUpdatedState(selectionPosition)
 
     val monthPage: @Composable PagerScope.(Int) -> Unit = remember(pager) {
         { page ->
@@ -303,6 +337,7 @@ internal fun WeekMonthCalendar(
                 hasEvents = currentHasEvents,
                 showSelection = currentShowWeekSelection,
                 onSelect = { currentOnSelect(it) },
+                selectionPosition = currentSelectionPosition,
             )
         }
     }
@@ -459,28 +494,70 @@ private fun WeekRow(
     hasEvents: (LocalDate) -> Boolean,
     showSelection: Boolean,
     onSelect: (LocalDate) -> Unit,
+    selectionPosition: (() -> Float)? = null,
 ) {
     // The dates and their event dots only depend on the week and the event list, so a selection or
     // a day rollover inside the same week does not rescan every event for all seven cells.
     val dates = remember(weekStart) { weekStart.weekDates() }
     val daysWithEvents = remember(dates, hasEvents) { dates.associateWith(hasEvents) }
-    Row(modifier = Modifier.fillMaxWidth().height(MonthRowHeight)) {
-        dates.forEach { date ->
-            MonthCell(
-                date = date,
-                inMonth = date.month == month.month && date.year == month.year,
-                // In the week overview the whole week is on screen, so a single selected day means
-                // nothing there; the row keeps only the today marker.
-                selected = showSelection && date == selected,
-                isToday = date == today,
-                hasEvents = daysWithEvents[date] == true,
-                onClick = { onSelect(date) },
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight(),
-            )
+    // The floating frame belongs to the row holding the selected date; the neighbouring pager page
+    // keeps plain cells so a week swipe never shows two frames at once.
+    val floating = selectionPosition != null && weekStart == selected.startOfWeek()
+    Box(modifier = Modifier.fillMaxWidth().height(MonthRowHeight)) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            dates.forEach { date ->
+                MonthCell(
+                    date = date,
+                    inMonth = date.month == month.month && date.year == month.year,
+                    // In the week overview the whole week is on screen, so a single selected day
+                    // means nothing there; the row keeps only the today marker.
+                    selected = showSelection && date == selected,
+                    drawSelectedBorder = !floating,
+                    isToday = date == today,
+                    hasEvents = daysWithEvents[date] == true,
+                    onClick = { onSelect(date) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                )
+            }
         }
+        if (floating && showSelection) SelectionFrame(selectionPosition!!)
     }
+}
+
+/**
+ * Frame over the selected day of the collapsed strip. Its horizontal position is read while placing
+ * it, driven by the day pager, so dragging slides it with the finger and its settle snaps it home.
+ */
+@Composable
+private fun SelectionFrame(position: () -> Float) {
+    val scheme = MiuixTheme.colorScheme
+    val shape = RoundedCornerShape(12.dp)
+    val frameSize = 38.dp
+    // Mirrors a cell's column: the 38.dp day box over its 2.dp gap and 4.dp event dot, centred.
+    val frameTop = (MonthRowHeight - 44.dp) * 0.5f
+    val density = LocalDensity.current
+    val framePx = with(density) { frameSize.toPx().roundToInt() }
+    val topPx = with(density) { frameTop.toPx() }
+    Box(
+        modifier = Modifier
+            .layout { measurable, constraints ->
+                val cell = constraints.maxWidth / 7f
+                val centre = position().coerceIn(0f, 7f) * cell + cell / 2f
+                val placeable = measurable.measure(Constraints.fixed(framePx, framePx))
+                val height = if (constraints.hasBoundedHeight) {
+                    constraints.maxHeight
+                } else {
+                    topPx.roundToInt() + framePx
+                }
+                layout(constraints.maxWidth, height) {
+                    placeable.place((centre - framePx / 2f).roundToInt(), topPx.roundToInt())
+                }
+            }
+            .size(frameSize)
+            .border(2.dp, scheme.primary, shape),
+    )
 }
 
 /**
@@ -664,6 +741,7 @@ private fun MonthCell(
     hasEvents: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    drawSelectedBorder: Boolean = true,
 ) {
     val scheme = MiuixTheme.colorScheme
     val shape = RoundedCornerShape(12.dp)
@@ -679,7 +757,7 @@ private fun MonthCell(
                 .then(
                     when {
                         isToday -> Modifier.background(scheme.primary)
-                        selected -> Modifier.border(2.dp, scheme.primary, shape)
+                        selected && drawSelectedBorder -> Modifier.border(2.dp, scheme.primary, shape)
                         else -> Modifier
                     },
                 )
