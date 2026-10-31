@@ -143,7 +143,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          tag="canary-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          tag="canary"
           short_sha="${GITHUB_SHA::7}"
           apk=$(find release-assets -type f -name '*.apk' | head -n 1)
           # ipa=$(find release-assets -type f -name '*.ipa' | head -n 1)
@@ -161,16 +161,12 @@ jobs:
             echo ""
             echo "- Commit: \`$(git log -1 --pretty=%s)\`"
             echo "- Run: [#${GITHUB_RUN_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
-            echo ""
-            echo "| Asset | Notes |"
-            echo "| --- | --- |"
-            echo "| \`Crko-${tag}-debug.apk\` | Debug-signed Android build. Install with \`adb install -r\`. |"
-            # echo "| \`Crko-${tag}-unsigned.ipa\` | Unsigned iOS build. Re-sign with AltStore/Sideloadly. |"
           } > release-notes.md
 
-          # Reruns of the same run_number reuse the tag, so replace it first.
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release delete "$tag" --yes --cleanup-tag
+          else
+            git push origin ":refs/tags/$tag" >/dev/null 2>&1 || true
           fi
 
           gh release create "$tag" \
@@ -178,22 +174,9 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "Canary #${GITHUB_RUN_NUMBER} (${short_sha})" \
             --notes-file release-notes.md \
-            --prerelease
-
-          # Keep only the canary released by this run.
-          while IFS= read -r old; do
-            if [ -n "$old" ]; then
-              echo "Deleting previous canary release: $old"
-              gh release delete "$old" --yes --cleanup-tag
-            fi
-          done < <(
-            gh release list --limit 100 --json tagName,isPrerelease \
-              --jq '.[] | select(.isPrerelease and (.tagName | startswith("canary-"))) | .tagName' |
-              grep -vxF "$tag" || true
-          )
 
           {
             echo "### Canary release"
             echo ""
-            echo "[${tag}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${tag}) published as a pre-release; previous canary releases were removed."
+            echo "[${tag}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${tag}) published as a pre-release."
           } >> "$GITHUB_STEP_SUMMARY"
