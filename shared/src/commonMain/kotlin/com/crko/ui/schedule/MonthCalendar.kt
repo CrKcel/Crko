@@ -50,7 +50,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
@@ -371,6 +370,13 @@ internal fun WeekMonthCalendar(
             }
         }
     }
+    // The pager is only composed while the calendar is open. Its state survives; make sure it opens
+    // on the month the header is naming even if a jump happened while it was hidden.
+    LaunchedEffect(showMonthGrid) {
+        if (!showMonthGrid) return@LaunchedEffect
+        val page = pager.pageOf(anchorMonth)
+        if (pager.state.currentPage != page) pager.state.scrollToPage(page)
+    }
 
     // Pager content is remembered and reads the latest parameters through states: a fresh content
     // lambda per recomposition would rebuild the pager item provider and recompose its pages along
@@ -446,28 +452,34 @@ internal fun WeekMonthCalendar(
                 .clipToBounds()
                 .foldRevealHeight(fold, rowHeightPx) { foldPx },
         ) {
-            // Collapsed, the week row is the only thing shown; the month grid is kept composed but
-            // transparent so it stays laid out (programmatic page jumps while hidden still work).
-            // Leaving it visible would show a second copy of the dates whenever a week swipe moves
-            // the row aside.
-            //
-            // Measured unbounded and top-aligned: the grid keeps its full size while the folding
-            // box clips it, otherwise the small container would centre and swallow the pager.
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .wrapContentHeight(align = Alignment.Top, unbounded = true)
-                    .graphicsLayer { alpha = if (fold.progress > 0.001f) 1f else 0f },
-            ) {
-                HorizontalPager(
-                    state = pager.state,
-                    userScrollEnabled = monthGridScrollable,
+            // Collapsed, the week row is the only thing shown and the month grid is not composed at
+            // all: keeping it composed and transparent meant its 42 cells recomposed on every
+            // selection change while invisible. The pager state stays above, so page jumps made
+            // while folded still land.
+            if (showMonthGrid) {
+                // Measured unbounded and top-aligned: the grid keeps its full size while the
+                // folding box clips it, otherwise the small container would centre and swallow
+                // the pager.
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(MonthRowHeight * MaxMonthRows.toFloat())
-                        .offset { IntOffset(0, (-(1f - fold.progress) * selectedRow * rowHeightPx).roundToInt()) },
-                    pageContent = monthPage,
-                )
+                        .wrapContentHeight(align = Alignment.Top, unbounded = true),
+                ) {
+                    HorizontalPager(
+                        state = pager.state,
+                        userScrollEnabled = monthGridScrollable,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(MonthRowHeight * MaxMonthRows.toFloat())
+                            .offset {
+                                IntOffset(
+                                    0,
+                                    (-(1f - fold.progress) * selectedRow * rowHeightPx).roundToInt(),
+                                )
+                            },
+                        pageContent = monthPage,
+                    )
+                }
             }
 
             // The week pager draws the same row the month grid would, so the switch as the
@@ -653,7 +665,7 @@ private fun WeekRow(
                     drawSelectedBorder = !floating,
                     isToday = date == today,
                     hasEvents = daysWithEvents[date] == true,
-                    onClick = { onSelect(date) },
+                    onSelect = onSelect,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight(),
@@ -681,8 +693,6 @@ private fun SelectionFrame(position: () -> Float) {
     Box(
         modifier = Modifier
             .layout { measurable, constraints ->
-                val cell = constraints.maxWidth / 7f
-                val centre = position().coerceIn(0f, 7f) * cell + cell / 2f
                 val placeable = measurable.measure(Constraints.fixed(framePx, framePx))
                 val height = if (constraints.hasBoundedHeight) {
                     constraints.maxHeight
@@ -690,6 +700,10 @@ private fun SelectionFrame(position: () -> Float) {
                     topPx.roundToInt() + framePx
                 }
                 layout(constraints.maxWidth, height) {
+                    // The animated position is read while placing, so a slide only re-places the
+                    // frame instead of measuring it again on every frame.
+                    val cell = constraints.maxWidth / 7f
+                    val centre = position().coerceIn(0f, 7f) * cell + cell / 2f
                     placeable.place((centre - framePx / 2f).roundToInt(), topPx.roundToInt())
                 }
             }
@@ -865,7 +879,7 @@ private fun MonthPage(
                         selected = date == selected,
                         isToday = date == today,
                         hasEvents = daysWithEvents[date] == true,
-                        onClick = { onSelect(date) },
+                        onSelect = onSelect,
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight(),
@@ -876,6 +890,10 @@ private fun MonthPage(
     }
 }
 
+/**
+ * A date cell. [onSelect] is handed down instead of a per-cell click lambda: a fresh lambda
+ * instance would defeat skipping and recompose all 42 cells of the month on every selection change.
+ */
 @Composable
 private fun MonthCell(
     date: LocalDate,
@@ -883,7 +901,7 @@ private fun MonthCell(
     selected: Boolean,
     isToday: Boolean,
     hasEvents: Boolean,
-    onClick: () -> Unit,
+    onSelect: (LocalDate) -> Unit,
     modifier: Modifier = Modifier,
     drawSelectedBorder: Boolean = true,
 ) {
@@ -905,7 +923,7 @@ private fun MonthCell(
                         else -> Modifier
                     },
                 )
-                .clickable(onClick = onClick),
+                .clickable { onSelect(date) },
             contentAlignment = Alignment.Center,
         ) {
             Text(

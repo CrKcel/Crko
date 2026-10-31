@@ -31,6 +31,7 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -54,18 +55,19 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 /** Distance an hour label is lifted so its text centres on the hour line. */
 internal val HourLabelLift = 7.dp
 
-/** Hour labels for a 24-hour grid, shared by the day and week timelines. */
+/**
+ * The 24 hour labels measured once per theme, locale and gutter width, then only drawn. The day
+ * timeline composes one block per day, so measuring per block would re-shape the same strings
+ * every time a new day scrolls in.
+ */
 @Composable
-internal fun TimeGutterLabels(strings: Strings, layout: HourLayout) {
+internal fun rememberHourLabelLayouts(strings: Strings): List<TextLayoutResult> {
     val labels = remember(strings) { List(24) { strings.time(LocalTime(it, 0)) } }
     val style = MiuixTheme.textStyles.footnote2.copy(fontSize = 11.sp)
-    val color = MiuixTheme.colorScheme.onSurfaceVariantSummary
     val layoutDirection = LocalLayoutDirection.current
     val gutterPx = with(LocalDensity.current) { TimeGutterWidth.roundToPx() }
     val measurer = rememberTextMeasurer()
-    // One canvas instead of 24 text nodes per day and week block. The layouts are measured once per
-    // theme, locale and width, then only drawn.
-    val layouts = remember(labels, style, layoutDirection, gutterPx, measurer) {
+    return remember(labels, style, layoutDirection, gutterPx, measurer) {
         labels.map { label ->
             measurer.measure(
                 text = AnnotatedString(label),
@@ -75,6 +77,14 @@ internal fun TimeGutterLabels(strings: Strings, layout: HourLayout) {
             )
         }
     }
+}
+
+/** Hour gutter of one day block; [labels] come from [rememberHourLabelLayouts]. */
+@Composable
+internal fun TimeGutterLabels(layout: HourLayout, labels: List<TextLayoutResult>) {
+    val color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+    val layoutDirection = LocalLayoutDirection.current
+    // One canvas instead of 24 text nodes per day block.
     Canvas(
         modifier = Modifier
             .width(TimeGutterWidth)
@@ -82,7 +92,7 @@ internal fun TimeGutterLabels(strings: Strings, layout: HourLayout) {
             .clipToBounds(),
     ) {
         val lift = HourLabelLift.toPx()
-        layouts.forEachIndexed { hour, label ->
+        labels.forEachIndexed { hour, label ->
             // Centres each label on its hour line. The first one would otherwise be lifted above
             // the grid and clipped there, right against the day heading.
             val x = if (layoutDirection == LayoutDirection.Rtl) size.width - label.size.width else 0f
@@ -99,7 +109,7 @@ internal fun TimeGutterLabels(strings: Strings, layout: HourLayout) {
  */
 @Composable
 internal fun DayTimelineGrid(
-    strings: Strings,
+    hourLabels: List<TextLayoutResult>,
     today: LocalDate,
     now: State<LocalClock>,
     date: LocalDate,
@@ -128,7 +138,7 @@ internal fun DayTimelineGrid(
             }
             .padding(horizontal = ColumnHorizontalPadding),
     ) {
-        TimeGutterLabels(strings, layout)
+        TimeGutterLabels(layout, hourLabels)
         Box(
             modifier = Modifier
                 .weight(1f)

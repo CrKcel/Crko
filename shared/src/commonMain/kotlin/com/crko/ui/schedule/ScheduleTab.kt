@@ -240,7 +240,7 @@ fun ScheduleTab(
                                 listMode -> AppIcons.ListView
                                 else -> AppIcons.Timeline
                             },
-                            contentDescription = null,
+                            contentDescription = strings.switchView,
                             tint = MiuixTheme.colorScheme.primary,
                             modifier = Modifier.size(22.dp),
                         )

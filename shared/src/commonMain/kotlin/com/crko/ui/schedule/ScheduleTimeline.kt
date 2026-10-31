@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -102,34 +103,29 @@ private fun PagedWeekTimeline(
         val weekStart = pager.weekAt(page)
         val days = remember(weekStart) { weekStart.weekDates() }
         val eventsByDate = remember(days, events) { days.associateWith { events.occurringOn(it) } }
-        val openAt = when {
-            page > pager.state.currentPage -> WeekOpenAt.Top
-            page < pager.state.currentPage -> WeekOpenAt.Bottom
-            else -> WeekOpenAt.AnchorHour
-        }
         WeekTimelinePage(
             today = today,
             now = now,
             weekStart = weekStart,
+            page = page,
+            pager = pager.state,
             eventsByDate = eventsByDate,
             defaultScrollHour = defaultScrollHour,
-            openAt = openAt,
             onOpen = onOpen,
         )
     }
 }
-
-/** Edge of the week a page opens on when it is first composed. */
-private enum class WeekOpenAt { Top, Bottom, AnchorHour }
 
 @Composable
 private fun WeekTimelinePage(
     today: LocalDate,
     now: State<LocalClock>,
     weekStart: LocalDate,
+    /** Page index and pager, used only to decide the edge this page is first revealed from. */
+    page: Int,
+    pager: PagerState,
     eventsByDate: Map<LocalDate, List<Event>>,
     defaultScrollHour: Int,
-    openAt: WeekOpenAt,
     onOpen: (Event) -> Unit,
 ) {
     val layout = HourLayout
@@ -137,10 +133,14 @@ private fun WeekTimelinePage(
     // Saved with the page, so flipping away and back returns to the hours left behind. ScrollState
     // clamps the seeded value once the grid has been measured.
     val scrollState = rememberSaveable(saver = ScrollState.Saver) {
-        val offset = when (openAt) {
-            WeekOpenAt.Top -> 0
-            WeekOpenAt.Bottom -> Int.MAX_VALUE
-            WeekOpenAt.AnchorHour -> {
+        // Neighbour pages are composed ahead of time, so the edge this page will be revealed from
+        // is the side it sits on: above the current page opens at the top, below at the bottom.
+        // The pager is read inside the seed only, so the page does not keep observing it and is
+        // not recomposed on every flip.
+        val offset = when {
+            page > pager.currentPage -> 0
+            page < pager.currentPage -> Int.MAX_VALUE
+            else -> {
                 val days = weekStart.weekDates()
                 val hour = if (today in days) now.value.time.hour else defaultScrollHour
                 with(density) { layout.offset(hour).roundToPx() }
@@ -188,9 +188,11 @@ private fun ContinuousDayTimeline(
     val axis = rememberBlockAxis(selected, weeks = false)
     val density = LocalDensity.current
     val initialBlock = axis.indexOf(selected)
+    val hourLabels = rememberHourLabelLayouts(strings)
     // Seeded on first composition: the opening frame must already sit on the anchor hour, since a
-    // block drawn at midnight and scrolled afterwards would flash the wrong window first.
-    val listState = rememberSaveable(saver = LazyListState.Saver) {
+    // block drawn at midnight and scrolled afterwards would flash the wrong window first. Keyed on
+    // the axis base so a pick far outside the window re-seeds the scroller for the new axis.
+    val listState = rememberSaveable(axis.baseDate, saver = LazyListState.Saver) {
         LazyListState(
             firstVisibleItemIndex = itemIndexOfBlock(initialBlock),
             firstVisibleItemScrollOffset = anchorOffsetPx(
@@ -212,10 +214,10 @@ private fun ContinuousDayTimeline(
     // same day while the finger is still moving; a date picked elsewhere (a calendar cell, the week
     // strip, the list view) moves the scroller there once it comes to rest.
     LaunchedEffect(listState, axis) {
-        // Block the scroller last reported as its own selection. A selection that maps to another
-        // block came from outside; a selection that still maps to this one is the scroll's own, and
-        // the report for the block now under the top edge is on its way.
-        var reportedBlock = -1
+        // Block the scroller last answered (or was seeded at). A selection that still maps to it is
+        // the scroll's own, so the next report is for the block under the top edge; a selection
+        // that moved elsewhere is a pick, which the scroll must not overwrite mid-fling.
+        var reportedBlock = blockOfItem(listState.firstVisibleItemIndex)
         snapshotFlow {
             Triple(
                 blockOfItem(listState.firstVisibleItemIndex),
@@ -223,9 +225,9 @@ private fun ContinuousDayTimeline(
                 !listState.isScrollInProgress,
             )
         }.collect { (block, selectedBlock, idle) ->
-            when {
-                block == selectedBlock -> Unit
-                idle && selectedBlock != reportedBlock -> {
+            when (timelineSyncAction(block, selectedBlock, reportedBlock, idle)) {
+                TimelineSync.None -> Unit
+                TimelineSync.Follow -> {
                     reportedBlock = selectedBlock
                     listState.scrollToItem(
                         itemIndexOfBlock(selectedBlock),
@@ -235,7 +237,7 @@ private fun ContinuousDayTimeline(
                         ),
                     )
                 }
-                else -> {
+                TimelineSync.Report -> {
                     reportedBlock = block
                     val date = axis.dateAt(block)
                     if (date != currentSelected) currentOnSelect(date)
@@ -278,7 +280,7 @@ private fun ContinuousDayTimeline(
                 val blockDate = axis.dateAt(index)
                 val dayEvents = remember(blockDate, events) { events.occurringOn(blockDate) }
                 DayTimelineGrid(
-                    strings = strings,
+                    hourLabels = hourLabels,
                     today = today,
                     now = now,
                     date = blockDate,
@@ -315,3 +317,26 @@ private fun itemIndexOfBlock(block: Int): Int = block * 2 + 1
 
 /** Block whose content is at [firstVisibleItemIndex]; a day block is a heading item and a grid item. */
 private fun blockOfItem(firstVisibleItemIndex: Int): Int = firstVisibleItemIndex / 2
+
+/** What the day timeline's scroll/selection collector does for one observed state. */
+internal enum class TimelineSync { None, Report, Follow }
+
+/**
+ * Tells a scroll-driven selection apart from a pick made elsewhere (a calendar cell, the week
+ * strip, the list view).
+ *
+ * [reportedBlock] is the block the scroller last answered. While the selection still maps to it,
+ * a different visible block is the scroll crossing into a new day and is reported. A selection
+ * that moved to another block came from outside: the scroller follows it once it comes to rest,
+ * and until then does nothing, so a fling cannot overwrite the pick.
+ */
+internal fun timelineSyncAction(
+    block: Int,
+    selectedBlock: Int,
+    reportedBlock: Int,
+    idle: Boolean,
+): TimelineSync = when {
+    block == selectedBlock -> TimelineSync.None
+    selectedBlock != reportedBlock -> if (idle) TimelineSync.Follow else TimelineSync.None
+    else -> TimelineSync.Report
+}

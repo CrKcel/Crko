@@ -1,6 +1,8 @@
 package com.crko.ui.schedule
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.graphics.Color
@@ -79,6 +81,15 @@ internal class BlockAxis(val baseDate: LocalDate, val blockDays: Int, val pageCo
         (center + baseDate.daysTo(date).floorDiv(blockDays)).coerceIn(0, pageCount - 1)
 
     /**
+     * Whether [date] really falls inside the index space, as opposed to [indexOf] clamping it onto
+     * one of the ends — in which case the scroller could not show the day at all.
+     */
+    fun contains(date: LocalDate): Boolean {
+        val block = baseDate.daysTo(date).floorDiv(blockDays)
+        return center + block in 0 until pageCount
+    }
+
+    /**
      * The date the block at [index] stands for once the scroller rests on it: its own day, or in a
      * week axis the same weekday [weekdayOf] falls on. [indexOf] maps this back to the same index.
      */
@@ -92,14 +103,26 @@ internal class BlockAxis(val baseDate: LocalDate, val blockDays: Int, val pageCo
 /**
  * Axis whose base date is saved with the screen, so a restored scroller index still resolves to the
  * block it was showing. Weeks start on Monday, so the base of the week axis is snapped there.
+ *
+ * A pick beyond either end of the window re-anchors the axis on the picked date instead of letting
+ * [BlockAxis.indexOf] clamp it: clamping would leave the scroller on the last reachable day while
+ * the calendar and the title above it show the picked one.
  */
 @Composable
 internal fun rememberBlockAxis(base: LocalDate, weeks: Boolean): BlockAxis {
-    val saved = rememberSaveable { (if (weeks) base.startOfWeek() else base).toString() }
-    return remember(saved, weeks) {
-        val date = LocalDate.parse(saved)
-        if (weeks) BlockAxis(date, 7, WeekBlockCount) else BlockAxis(date, 1, TimelineDayBlockCount)
-    }
+    val anchor = if (weeks) base.startOfWeek() else base
+    val blockDays = if (weeks) 7 else 1
+    val pageCount = if (weeks) WeekBlockCount else TimelineDayBlockCount
+    val saved = rememberSaveable { mutableStateOf(anchor.toString()) }
+    val savedBase = LocalDate.parse(saved.value)
+    // Whether the saved axis can actually show the picked day; a date outside it re-anchors
+    // immediately, in this composition, so the scroller is seeded for it on the same frame.
+    val reachable = savedBase.daysTo(anchor).floorDiv(blockDays) + pageCount / 2 in 0 until pageCount
+    val baseDate = if (reachable) savedBase else anchor
+    // Persist the re-anchor after the frame: the state write then recomposes with the same
+    // effective base, so the axis (and the scroller seeded from it) is only built once.
+    SideEffect { if (baseDate != savedBase) saved.value = baseDate.toString() }
+    return remember(baseDate, blockDays, pageCount) { BlockAxis(baseDate, blockDays, pageCount) }
 }
 
 internal fun isOverdue(todo: Todo, today: LocalDate): Boolean =

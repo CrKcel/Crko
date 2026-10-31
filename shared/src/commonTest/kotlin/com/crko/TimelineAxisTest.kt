@@ -1,9 +1,12 @@
 package com.crko
 
+import com.crko.domain.plusDays
 import com.crko.ui.schedule.BlockAxis
 import kotlinx.datetime.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class TimelineAxisTest {
 
@@ -47,5 +50,21 @@ class TimelineAxisTest {
         val axis = BlockAxis(LocalDate(2026, 10, 28), blockDays = 1, pageCount = 20001)
         assertEquals(0, axis.indexOf(LocalDate(1900, 1, 1)))
         assertEquals(20000, axis.indexOf(LocalDate(2200, 1, 1)))
+    }
+
+    @Test
+    fun datesOnlyCountAsReachableInsideTheIndexSpace() {
+        // center = 10000, so a day axis reaches exactly ten thousand days either side.
+        val base = LocalDate(2026, 10, 28)
+        val axis = BlockAxis(base, blockDays = 1, pageCount = 20001)
+        assertTrue(axis.contains(base))
+        assertTrue(axis.contains(base.plusDays(10000)))
+        assertTrue(axis.contains(base.plusDays(-10000)))
+        assertFalse(axis.contains(base.plusDays(10001)))
+        assertFalse(axis.contains(base.plusDays(-10001)))
+        // A week axis reaches its blocks, not the individual days past the end.
+        val weeks = BlockAxis(LocalDate(2026, 10, 26), blockDays = 7, pageCount = 2400)
+        assertTrue(weeks.contains(LocalDate(2026, 10, 26)))
+        assertFalse(weeks.contains(LocalDate(2026, 10, 26).plusDays(1200 * 7)))
     }
 }
