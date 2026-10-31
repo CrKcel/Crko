@@ -41,3 +41,8 @@ shared/src/commonMain/kotlin/com/crko/
 - 莫奈与自选色盘由 `ThemeController` 以 `MonetSystem` 模式驱动，无配色使用 `ColorSchemeMode.System`（即 miuix 自带的默认色板）；所有 miuix 组件与 Material `TimePicker` 共享同一套颜色。
 - 整页使用 `safeDrawingPadding`，因为 iOS 上 `WindowInsets.statusBars` 为空。
 - 对话框使用 `WindowDialog`（独立窗口），不依赖 Scaffold 的 `MiuixPopupHost`。
+
+## 许可证
+
+- **GPL-3.0-or-later**
+- **App Store** 分发及任何**闭源分发**的构建，不适用 GPLv3，请获取商业许可。
