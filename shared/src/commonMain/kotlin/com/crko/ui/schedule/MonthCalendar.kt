@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.crko.domain.mondayIndex
 import com.crko.domain.monthGrid
 import com.crko.domain.plusMonths
 import com.crko.domain.startOfMonth
@@ -170,7 +171,8 @@ internal fun Modifier.calendarFoldDrag(
  * [expanded] is the settled state; while dragging, the revealed height follows the finger directly.
  * [driveStrip] is the pager below the calendar, when one is showing (the list pager, or the week
  * overview's timeline pager): the collapsed week row then slides with it, sideways or up and down,
- * so a swipe that flips the week carries the calendar above along.
+ * so a swipe that flips the week carries the calendar above along. Without one — the day timeline,
+ * which scrolls continuously — the strip animates its own selection instead.
  */
 @Composable
 internal fun WeekMonthCalendar(
@@ -197,7 +199,9 @@ internal fun WeekMonthCalendar(
 
     val anchorMonth = monthAnchor.startOfMonth()
     val pager = rememberMonthPager(anchorMonth, onMonthChange)
-    val weekPager = rememberWeekPager(selected, onSelect)
+    // Only the strip of the day timeline has no pager below to slide it; it animates across weeks
+    // itself rather than jumping when the timeline scrolls into the next one.
+    val weekPager = rememberWeekPager(selected, onSelect, animatePicks = driveStrip == null)
 
     // The collapsed row can be moved from two sides: its own pager when swiped directly, and the
     // pager below while its swipe crosses a week edge. The latter draws both weeks and slides between
@@ -240,13 +244,24 @@ internal fun WeekMonthCalendar(
     }
 
     // The collapsed day strip floats one frame over its week instead of outlining the selected cell,
-    // so the frame can ride the day pager: it tracks the finger across the row, follows the pager's
-    // settle onto the date being swiped to, and glides (rather than jumps) after a tapped date.
-    // Only the day axis does this; the week overview hides the selection and slides whole weeks.
+    // so the frame can glide: it rides the day pager (tracks the finger across the row, follows the
+    // settle onto the date being swiped to, glides after a tapped date) and, above the day timeline,
+    // walks to the day the scrolling blocks selected. Only a day axis does this; the week overview
+    // hides the selection and slides whole weeks.
     val dayStrip = driveStrip?.takeIf { !it.isWeekAxis }
-    val selectionSlide = remember(dayStrip) {
-        dayStrip?.let {
-            Animatable(it.dayPosition(it.state.currentPage, it.state.currentPageOffsetFraction))
+    // The day timeline scrolls continuously and has no pager to drive the strip, so its selection
+    // arrives day by day; the strip animates those changes itself.
+    val selfDrivenStrip = driveStrip == null
+    val selectionSlide = remember(dayStrip, selfDrivenStrip) {
+        when {
+            dayStrip != null -> Animatable(
+                dayStrip.dayPosition(
+                    dayStrip.state.currentPage,
+                    dayStrip.state.currentPageOffsetFraction,
+                ),
+            )
+            selfDrivenStrip -> Animatable(selected.mondayIndex.toFloat())
+            else -> null
         }
     }
     LaunchedEffect(dayStrip) {
@@ -313,6 +328,25 @@ internal fun WeekMonthCalendar(
     val currentOnSelect by rememberUpdatedState(onSelect)
     val currentShowWeekSelection by rememberUpdatedState(showWeekSelection)
     val currentSelectionPosition by rememberUpdatedState(selectionPosition)
+
+    // The day timeline reports a day the moment a block crosses its top edge, so the frame animates
+    // wherever the selection lands: across the row for another day of the same week, or straight to
+    // its cell for a day in another week, where the week pager slides the weeks themselves.
+    LaunchedEffect(selfDrivenStrip, selectionSlide) {
+        if (!selfDrivenStrip) return@LaunchedEffect
+        val slide = selectionSlide ?: return@LaunchedEffect
+        var previousWeek = currentSelected.startOfWeek()
+        snapshotFlow { currentSelected }.collectLatest { date ->
+            val week = date.startOfWeek()
+            val weeks = (week.toEpochDays() - previousWeek.toEpochDays()) / 7
+            previousWeek = week
+            if (weeks == 0L) {
+                slide.animateTo(date.mondayIndex.toFloat(), tween(220))
+            } else {
+                slide.snapTo(date.mondayIndex.toFloat())
+            }
+        }
+    }
 
     val monthPage: @Composable PagerScope.(Int) -> Unit = remember(pager) {
         { page ->

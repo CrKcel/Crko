@@ -125,11 +125,16 @@ internal class WeekPager(val state: PagerState, baseWeek: LocalDate) {
 /**
  * Pager over whole weeks, used by the collapsed calendar row and by the week overview. Settling on
  * another week keeps the same weekday, which is the day the rest of the screen follows.
+ *
+ * [animatePicks] slides the pager to a week picked elsewhere instead of jumping there, for the
+ * collapsed strip above the day timeline: that view has no pager below it, so the strip has to
+ * move itself when the scrolling timeline selects a day in another week.
  */
 @Composable
 internal fun rememberWeekPager(
     selected: LocalDate,
     onSelect: (LocalDate) -> Unit,
+    animatePicks: Boolean = false,
 ): WeekPager {
     val pagerState = rememberPagerState(initialPage = WeekBlockCount / 2) { WeekBlockCount }
     // Saved with the pager so a restored page index still maps to the week it was showing.
@@ -148,7 +153,7 @@ internal fun rememberWeekPager(
     // selection had), while a date picked elsewhere (a cell tap, the day pager, the other week
     // pager) moves this one there. The page last answered by either side marks a report as the
     // pager's own, so a pick still wins over a report it races.
-    LaunchedEffect(pagerState, pager) {
+    LaunchedEffect(pagerState, pager, animatePicks) {
         var answeredPage = -1
         snapshotFlow {
             Triple(
@@ -164,7 +169,10 @@ internal fun rememberWeekPager(
                 // it, so the pick wins over a page that settled while it was being made.
                 selectedPage != answeredPage -> {
                     answeredPage = selectedPage
-                    if (pagerState.currentPage != selectedPage) pagerState.scrollToPage(selectedPage)
+                    if (pagerState.currentPage != selectedPage) {
+                        if (animatePicks) pagerState.animateScrollToPage(selectedPage)
+                        else pagerState.scrollToPage(selectedPage)
+                    }
                 }
                 // The pager settled on a page the selection has not caught up with yet: report it.
                 settled != selectedPage -> {
