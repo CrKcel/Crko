@@ -238,4 +238,24 @@ class StateHolderTest {
         holder.setDefaultHour(6)
         assertEquals(6, Fixture(storage).holder.settings.agendaScrollHour)
     }
+
+    @Test
+    fun importingEventsAssignsIdsAndSkipsKnownUids() {
+        val f = Fixture()
+        val imported = Event(null, "Imported", "2026-10-27", 540, 600, icsUid = "ics-1")
+        assertEquals(1, f.holder.importEvents(listOf(imported)))
+        assertEquals(0, f.holder.importEvents(listOf(imported)))
+        val stored = f.holder.appState.events.single()
+        assertEquals("id-0", stored.id)
+        assertEquals("ics-1", stored.icsUid)
+    }
+
+    @Test
+    fun reimportingAnExportOfNativeEventsDoesNotDuplicateThem() {
+        val f = Fixture()
+        f.holder.saveEvent(Event("native-1", "Native", "2026-10-27", 540, 600))
+        val exported = Event(null, "Native", "2026-10-27", 540, 600, icsUid = "native-1@crko")
+        assertEquals(0, f.holder.importEvents(listOf(exported)))
+        assertEquals(1, f.holder.appState.events.size)
+    }
 }

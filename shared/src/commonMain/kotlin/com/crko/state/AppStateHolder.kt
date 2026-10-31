@@ -38,6 +38,10 @@ sealed interface AppMessage {
     data object Saved : AppMessage
     data object Deleted : AppMessage
     data object TodoAdded : AppMessage
+    data class EventsImported(val count: Int) : AppMessage
+    data object ImportFailed : AppMessage
+    data object Exported : AppMessage
+    data object ExportFailed : AppMessage
 }
 
 enum class PaletteSetting { Monet, Monochrome, Custom }
@@ -146,6 +150,28 @@ class AppStateHolder(
     fun deleteEvent(id: String?) {
         if (id == null) return
         persist(appState.copy(events = appState.events.filterNot { it.id == id }))
+    }
+
+    /**
+     * Appends events parsed from an ICS file, skipping ones whose UID is already stored so the
+     * same file can be imported twice. Returns how many events were actually added.
+     */
+    fun importEvents(events: List<Event>): Int {
+        if (events.isEmpty()) return 0
+        val knownUids = appState.events.mapNotNull { it.icsUid?.takeIf(String::isNotBlank) }.toMutableSet()
+        val knownIds = appState.events.mapNotNull { it.id }.toSet()
+        val added = mutableListOf<Event>()
+        events.forEach { event ->
+            val uid = event.icsUid?.takeIf { it.isNotBlank() }
+            if (uid != null) {
+                if (!knownUids.add(uid)) return@forEach
+                // Exports of events created in this app use "<id>@crko".
+                if (uid.endsWith("@crko") && uid.removeSuffix("@crko") in knownIds) return@forEach
+            }
+            added += event.copy(id = idProvider())
+        }
+        if (added.isNotEmpty()) persist(appState.copy(events = appState.events + added))
+        return added.size
     }
 
     /**

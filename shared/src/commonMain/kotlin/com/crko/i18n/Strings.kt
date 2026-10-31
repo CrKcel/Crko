@@ -105,6 +105,18 @@ interface Strings {
     val thisWeek: String
     val todayEvents: String
 
+    val calendarData: String
+    val importIcs: String
+    val importIcsHint: String
+    val exportIcs: String
+    val exportIcsHint: String
+    val nothingToImport: String
+    val importFailed: String
+    val exportFailed: String
+    val exported: String
+    fun importedEvents(count: Int): String
+    val untitledEvent: String
+
     val language: String
     val languageSystem: String
     val languageChinese: String
@@ -207,6 +219,17 @@ object ZhStrings : Strings {
     override val byPriority = "按优先级"
     override val thisWeek = "本周日程"
     override val todayEvents = "今日日程"
+    override val calendarData = "日程数据"
+    override val importIcs = "导入 ICS 文件"
+    override val importIcsHint = "从其他日历应用导入日程"
+    override val exportIcs = "导出 ICS 文件"
+    override val exportIcsHint = "将全部日程保存为 .ics 文件"
+    override val nothingToImport = "没有可导入的日程"
+    override val importFailed = "导入失败，请检查文件格式"
+    override val exportFailed = "导出失败"
+    override val exported = "已导出"
+    override fun importedEvents(count: Int) = "已导入 $count 项日程"
+    override val untitledEvent = "无标题日程"
     override val language = "语言"
     override val languageSystem = "跟随系统"
     override val languageChinese = "中文"
@@ -314,6 +337,17 @@ object EnStrings : Strings {
     override val byPriority = "By priority"
     override val thisWeek = "This week"
     override val todayEvents = "Today"
+    override val calendarData = "Calendar data"
+    override val importIcs = "Import ICS file"
+    override val importIcsHint = "Bring events in from another calendar app"
+    override val exportIcs = "Export ICS file"
+    override val exportIcsHint = "Save every event as an .ics file"
+    override val nothingToImport = "Nothing to import"
+    override val importFailed = "Import failed. Check the file format."
+    override val exportFailed = "Export failed"
+    override val exported = "Exported"
+    override fun importedEvents(count: Int) = if (count == 1) "1 event imported" else "$count events imported"
+    override val untitledEvent = "Untitled event"
     override val language = "Language"
     override val languageSystem = "System"
     override val languageChinese = "中文"

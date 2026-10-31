@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -54,6 +55,8 @@ fun MoreTab(
     strings: Strings,
     contentPadding: PaddingValues,
     onOpenSettings: () -> Unit,
+    onImportCalendar: () -> Unit,
+    onExportCalendar: () -> Unit,
 ) {
     val today = state.today
     val layoutDirection = LocalLayoutDirection.current
@@ -86,6 +89,28 @@ fun MoreTab(
             )
             Spacer(Modifier.height(12.dp))
             StatisticsSection(state = state, strings = strings, today = today)
+            Spacer(Modifier.height(20.dp))
+            LinkedCardTitle(
+                icon = AppIcons.Timeline,
+                iconTint = MiuixTheme.colorScheme.primary,
+                title = strings.calendarData,
+            )
+            Spacer(Modifier.height(12.dp))
+            SurfaceCard {
+                CalendarFileRow(
+                    icon = AppIcons.Import,
+                    title = strings.importIcs,
+                    subtitle = strings.importIcsHint,
+                    onClick = onImportCalendar,
+                )
+                CardRowDivider()
+                CalendarFileRow(
+                    icon = AppIcons.Export,
+                    title = strings.exportIcs,
+                    subtitle = strings.exportIcsHint,
+                    onClick = onExportCalendar,
+                )
+            }
             Spacer(Modifier.height(20.dp))
             EntryCard(
                 icon = AppIcons.Settings,
@@ -134,6 +159,42 @@ private fun EntryCard(
                 }
                 Spacer(Modifier.width(12.dp))
                 Text(text = title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Medium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarFileRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    BasicComponent(onClick = onClick, insideMargin = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.15f))
+                    .padding(6.dp),
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = MiuixTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(text = title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Medium)
+                Text(
+                    text = subtitle,
+                    style = MiuixTheme.textStyles.footnote1,
+                    fontSize = 12.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
             }
         }
     }

@@ -29,6 +29,8 @@ data class Event(
     val repeat: RepeatRule? = null,
     /** Dates on which a repeating event is skipped, e.g. a single day cleared from the agenda. */
     val excludedDates: List<String> = emptyList(),
+    /** UID from an imported ICS file; keeps re-importing the same file from duplicating events. */
+    val icsUid: String? = null,
 ) {
     /** Parsed [date], cached because [occursOn] runs for every visible calendar cell. */
     val day: LocalDate by lazy(LazyThreadSafetyMode.NONE) { LocalDate.parse(date) }

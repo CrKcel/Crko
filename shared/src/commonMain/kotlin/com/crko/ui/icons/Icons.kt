@@ -75,6 +75,14 @@ object AppIcons {
         )
     }
 
+    val Import: ImageVector by lazy {
+        icon("Import", "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z")
+    }
+
+    val Export: ImageVector by lazy {
+        icon("Export", "M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z")
+    }
+
     val Settings: ImageVector by lazy {
         icon(
             "Settings",

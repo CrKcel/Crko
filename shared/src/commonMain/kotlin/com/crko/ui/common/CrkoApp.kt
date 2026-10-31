@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -30,6 +31,8 @@ import androidx.compose.ui.zIndex
 import com.crko.domain.Event
 import com.crko.domain.LocalClock
 import com.crko.domain.MaxEndMinutes
+import com.crko.domain.exportIcs
+import com.crko.domain.importIcs
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
 import com.crko.state.WriteResult
@@ -39,14 +42,18 @@ import com.crko.ui.schedule.EventEditorDialog
 import com.crko.ui.schedule.ScheduleTab
 import com.crko.ui.todo.TodoEditorDialog
 import com.crko.ui.todo.TodoTab
+import com.crko.ui.transfer.rememberCalendarFileBridge
 import com.crko.ui.components.AddFab
 import com.crko.ui.components.GlassNavigationBar
 import com.crko.ui.components.GlassNavigationBarDefaults
 import com.crko.ui.components.GlassNavigationBarItem
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Duration.Companion.seconds
@@ -67,6 +74,8 @@ fun CrkoApp(state: AppStateHolder) {
     var showSettings by remember { mutableStateOf(false) }
 
     val now = rememberClock(state)
+    val scope = rememberCoroutineScope()
+    val fileBridge = rememberCalendarFileBridge()
     val snackbar = remember { SnackbarHostState() }
     // The collector outlives recompositions; read the latest strings so messages follow a
     // language switch made after the screen was first shown.
@@ -78,8 +87,49 @@ fun CrkoApp(state: AppStateHolder) {
                 AppMessage.Saved -> currentStrings.saved
                 AppMessage.Deleted -> currentStrings.deleted
                 AppMessage.TodoAdded -> currentStrings.todoAdded
+                is AppMessage.EventsImported -> {
+                    if (message.count == 0) currentStrings.nothingToImport else currentStrings.importedEvents(message.count)
+                }
+                AppMessage.ImportFailed -> currentStrings.importFailed
+                AppMessage.Exported -> currentStrings.exported
+                AppMessage.ExportFailed -> currentStrings.exportFailed
             }
             snackbar.showSnackbar(text)
+        }
+    }
+
+    fun importCalendar() {
+        val untitled = state.strings.untitledEvent
+        fileBridge.openImport(
+            onPicked = { text ->
+                scope.launch {
+                    val events = runCatching {
+                        withContext(Dispatchers.Default) {
+                            importIcs(text, TimeZone.currentSystemDefault(), untitled)
+                        }
+                    }.getOrNull()
+                    if (events == null) {
+                        state.notify(AppMessage.ImportFailed)
+                    } else {
+                        state.notify(AppMessage.EventsImported(state.importEvents(events)))
+                    }
+                }
+            },
+            onError = { state.notify(AppMessage.ImportFailed) },
+        )
+    }
+
+    fun exportCalendar() {
+        val events = state.appState.events
+        val fileName = "crko-${state.today}.ics"
+        scope.launch {
+            val content = withContext(Dispatchers.Default) { exportIcs(events) }
+            fileBridge.saveExport(
+                fileName = fileName,
+                content = content,
+                onExported = { state.notify(AppMessage.Exported) },
+                onError = { state.notify(AppMessage.ExportFailed) },
+            )
         }
     }
 
@@ -144,6 +194,8 @@ fun CrkoApp(state: AppStateHolder) {
                         strings = strings,
                         contentPadding = tabPadding,
                         onOpenSettings = { showSettings = true },
+                        onImportCalendar = ::importCalendar,
+                        onExportCalendar = ::exportCalendar,
                     )
                 }
             }
