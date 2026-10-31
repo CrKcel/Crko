@@ -3,6 +3,7 @@ package com.crko.ui.schedule
 import androidx.compose.foundation.pager.PagerState
 import com.crko.domain.mondayIndex
 import com.crko.domain.plusDays
+import com.crko.domain.startOfMonth
 import com.crko.domain.startOfWeek
 import kotlinx.datetime.LocalDate
 
@@ -61,5 +62,32 @@ internal class WeekStrip(
         fraction > 0f -> pageIsWeek || pageDate(page).mondayIndex == 6
         fraction < 0f -> pageIsWeek || pageDate(page).mondayIndex == 0
         else -> false
+    }
+
+    /**
+     * The date this axis lands on at [page]: the page's own day, or the day [weekdayIndex] into its
+     * week — the weekday the week pager keeps when it flips to a whole week.
+     */
+    fun landingDate(page: Int, weekdayIndex: Int): LocalDate =
+        if (pageIsWeek) pageDate(page).plusDays(weekdayIndex) else pageDate(page)
+
+    /**
+     * Months of the two rows [pairAt] draws at this offset, left first. Each row is colored by the
+     * month it lands on, so the incoming week already shows its own month while it slides in.
+     */
+    fun pairMonthsAt(page: Int, fraction: Float, weekdayIndex: Int): Pair<LocalDate, LocalDate> {
+        val leftPage = if (fraction < 0f) page - 1 else page
+        return landingDate(leftPage, weekdayIndex).startOfMonth() to
+            landingDate(leftPage + 1, weekdayIndex).startOfMonth()
+    }
+
+    /**
+     * Month of the pair row that owns the viewport at this offset: the row that is more than half
+     * on screen, so the title flips once the swipe passes halfway instead of when it settles.
+     */
+    fun pairMonthAt(page: Int, fraction: Float, weekdayIndex: Int): LocalDate {
+        val leftPage = if (fraction < 0f) page - 1 else page
+        val shown = if (progressAt(page, fraction) >= 0.5f) leftPage + 1 else leftPage
+        return landingDate(shown, weekdayIndex).startOfMonth()
     }
 }

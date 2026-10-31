@@ -70,7 +70,6 @@ fun ScheduleTab(
 ) {
     val today = state.today
     var selectedName by rememberSaveable { mutableStateOf(today.toString()) }
-    var anchorName by rememberSaveable { mutableStateOf(today.startOfWeek().toString()) }
     var monthAnchorName by rememberSaveable { mutableStateOf(today.startOfMonth().toString()) }
     var expanded by rememberSaveable { mutableStateOf(false) }
     var listMode by rememberSaveable { mutableStateOf(state.settings.agendaView == "list") }
@@ -82,7 +81,6 @@ fun ScheduleTab(
     val layoutDirection = LocalLayoutDirection.current
 
     val selected = remember(selectedName) { LocalDate.parse(selectedName) }
-    val weekAnchor = remember(anchorName) { LocalDate.parse(anchorName) }
     val monthAnchor = remember(monthAnchorName) { LocalDate.parse(monthAnchorName) }
     val events = state.appState.events
     val hasEvents = remember(events) { { date: LocalDate -> events.any { it.occursOn(date) } } }
@@ -93,8 +91,6 @@ fun ScheduleTab(
 
     fun select(date: LocalDate) {
         selectedName = date.toString()
-        val week = date.startOfWeek()
-        if (week != weekAnchor) anchorName = week.toString()
         val month = date.startOfMonth()
         if (month != monthAnchor) monthAnchorName = month.toString()
     }
@@ -226,10 +222,11 @@ fun ScheduleTab(
                     .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // While the calendar is unfolded the pager may show another month; follow it.
-                val heading = if (expanded) monthAnchor else weekAnchor
+                // The month of the date being shown: while unfolded the month pager reports what it
+                // is browsing, while collapsed the strip reports the month it slides onto, so the
+                // title follows a swipe (or the timeline) instead of jumping when it settles.
                 Text(
-                    text = strings.monthTitle(heading.year, heading.month),
+                    text = strings.monthTitle(monthAnchor.year, monthAnchor.month),
                     modifier = Modifier.weight(1f),
                     style = if (strings === ZhStrings) MiuixTheme.textStyles.title3 else MiuixTheme.textStyles.title1,
                     fontWeight = FontWeight.Bold,
