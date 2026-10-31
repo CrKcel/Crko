@@ -240,7 +240,11 @@ internal fun WeekMonthCalendar(
         }
     }
     val stripProgress: () -> Float = remember(driveStrip) {
-        { driveStrip?.progressAt(driveStrip.state.currentPageOffsetFraction) ?: 0f }
+        {
+            driveStrip?.let {
+                it.progressAt(it.state.currentPage, it.state.currentPageOffsetFraction)
+            } ?: 0f
+        }
     }
 
     // The collapsed day strip floats one frame over its week instead of outlining the selected cell,

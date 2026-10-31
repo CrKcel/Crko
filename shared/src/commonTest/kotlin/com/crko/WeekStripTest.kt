@@ -31,6 +31,12 @@ class WeekStripTest {
         val wednesdayPage = firstPage + 2
         assertFalse(strip.isCrossing(wednesdayPage, 0.4f))
         assertFalse(strip.isCrossing(wednesdayPage, -0.4f))
+        // Even with the pager partway between two days, the pair stays on the current week and the
+        // strip does not slide: sliding would flip a whole week on every day-to-day swipe.
+        assertEquals(monday to monday.plusDays(7), strip.pairAt(wednesdayPage, 0.4f))
+        assertEquals(0f, strip.progressAt(wednesdayPage, 0.4f))
+        assertEquals(monday to monday.plusDays(7), strip.pairAt(wednesdayPage, -0.4f))
+        assertEquals(0f, strip.progressAt(wednesdayPage, -0.4f))
     }
 
     @Test
@@ -39,7 +45,7 @@ class WeekStripTest {
         val sundayPage = firstPage + 6
         assertTrue(strip.isCrossing(sundayPage, 0.25f))
         assertEquals(monday to monday.plusDays(7), strip.pairAt(sundayPage, 0.25f))
-        assertEquals(0.25f, strip.progressAt(0.25f))
+        assertEquals(0.25f, strip.progressAt(sundayPage, 0.25f))
     }
 
     @Test
@@ -47,7 +53,7 @@ class WeekStripTest {
         val strip = dayStrip()
         assertTrue(strip.isCrossing(firstPage, -0.25f))
         assertEquals(monday.plusDays(-7) to monday, strip.pairAt(firstPage, -0.25f))
-        assertEquals(0.75f, strip.progressAt(-0.25f))
+        assertEquals(0.75f, strip.progressAt(firstPage, -0.25f))
     }
 
     @Test
@@ -70,7 +76,9 @@ class WeekStripTest {
         val strip = weekStrip()
         assertTrue(strip.isCrossing(firstPage, 0.3f))
         assertEquals(monday to monday.plusDays(7), strip.pairAt(firstPage, 0.3f))
+        assertEquals(0.3f, strip.progressAt(firstPage, 0.3f))
         assertTrue(strip.isCrossing(firstPage, -0.3f))
         assertEquals(monday.plusDays(-7) to monday, strip.pairAt(firstPage, -0.3f))
+        assertEquals(0.7f, strip.progressAt(firstPage, -0.3f))
     }
 }

@@ -34,15 +34,27 @@ internal class WeekStrip(
      */
     fun dayPosition(page: Int, fraction: Float): Float = pageDate(page).mondayIndex + fraction
 
-    /** Weeks to draw side by side; a negative offset slides the strip back to the week before. */
+    /**
+     * Weeks to draw side by side; a negative offset slides the strip back to the week before. A day
+     * axis only crosses a week between Sunday and Monday, so anywhere else in the week it keeps its
+     * own page's week: otherwise a day-to-day swipe would slide the strip a whole week.
+     */
     fun pairAt(page: Int, fraction: Float): Pair<LocalDate, LocalDate> {
         val week = weekOf(page)
-        return if (fraction < 0f) week.plusDays(-7) to week else week to week.plusDays(7)
+        return when {
+            !pageIsWeek && !isCrossing(page, fraction) -> week to week.plusDays(7)
+            fraction < 0f -> week.plusDays(-7) to week
+            else -> week to week.plusDays(7)
+        }
     }
 
     /** 0 shows the left week of [pairAt], 1 the right one. */
-    fun progressAt(fraction: Float): Float =
-        if (fraction < 0f) 1f + fraction else fraction
+    fun progressAt(page: Int, fraction: Float): Float = when {
+        // Mid-week the pair is pinned to the page's own week, so the strip does not move at all.
+        !pageIsWeek && !isCrossing(page, fraction) -> 0f
+        fraction < 0f -> 1f + fraction
+        else -> fraction
+    }
 
     /** Whether the page at this offset is leaving for a neighbouring week. */
     fun isCrossing(page: Int, fraction: Float): Boolean = when {
