@@ -1,0 +1,42 @@
+## 日程编辑器与提醒
+
+- [ ] 零时长日程在编辑器里改动开始时间会被自动撑成 60 分钟（`pickedMinutes >= endMinutes` 分支），应保留零时长或明确告知用户。
+- [ ] 提醒支持 `RELATED=END` 基准：编辑器目前把以结束为基准的 `VALARM` 当“开始前 N 分钟”展示，并在修改时把基准改写成 START。
+- [ ] `VALARM` 的系统通知与权限、重复提醒（当前只存储，不调度）。
+
+## ICS 导入 / 导出
+
+- [ ] 导入反馈只统计日程与待办：仅导入 `VJOURNAL`、或 `CANCELLED` 清掉本地记录时提示“没有可导入内容”，需要把日记条数与被移除的条数也体现出来。
+- [ ] 文件内静默删除（记录不再出现在文件中）需要记录导入来源或明确的导入范围。
+- [ ] 逐条导入预览与选择（与“警告带行号”配套）。
+- [ ] 导入分块 / 流式读取：当前仍是一次读取整份文本，上限 5 MB。
+- [ ] 编码识别的进一步处理：带 BOM 的 UTF-16 文件目前按“无法识别的格式”失败，可按 BOM 识别后解码；GB18030 与 Windows-1252 无法从字节特征区分时，需要统计判定或让用户指定。
+- [ ] Android 保存附件固定用 `application/octet-stream`，没有使用 `FMTTYPE`（`CreateDocument` 的类型在选择器构造时就定死），可按 MIME 或扩展名派生。
+- [ ] 内嵌 `ENCODING=BASE64` 附件另存为文件、状态里只留引用：目前 payload 进入 SharedPreferences / UserDefaults 的全量 JSON，多次导入会持续累积。
+- [ ] `RECURRENCE-ID;RANGE=THISANDPRIOR` 拆分保留时区：过去与未来两段目前清空 `sourceStart` / `timeZoneId`，再次导出会退化为浮动时间。
+
+## 重复规则与展开
+
+- [ ] 秒级时间与极端历史系列的性能：`MONTHLY` / `YEARLY` 且带 `COUNT` 的规则仍可能从锚点线性扫描。
+- [ ] `BYHOUR` / `BYMINUTE` 展开为同一天多个开始时间（当前模型只有单个开始时间）。
+- [ ] VTODO 的 `RRULE` / `RDATE` / `EXDATE` 展开（重复待办目前只保留原始行，显示为一条）。
+
+## 日历互操作与同步
+
+- [ ] `METHOD` / iTIP 邀请流程（`REQUEST` / `REPLY` / `CANCEL`）。
+- [ ] `ORGANIZER` / `ATTENDEE` 的邀请、回复、`METHOD` 与 `SEQUENCE` 冲突解决。
+- [ ] 多日历 / 导入 `X-WR-CALNAME` / `REFRESH-INTERVAL`（当前没有日历容器模型）。
+- [ ] 日历订阅 / 同步（webcal、CalDAV、增量同步）。
+- [ ] `VFREEBUSY` 与忙闲查询。
+
+## 待办（VTODO）
+
+- [ ] VTODO 的 `RELATED-TO` 子任务层级与界面。
+
+## 日记（VJOURNAL）
+
+- [ ] `VJOURNAL` 的浏览 / 编辑界面。
+
+## 代码质量
+
+- [ ] 清理 `Ics.kt` 里 `eventEndSource` 分支的多余安全调用告警（`startTimed` 已由 `sourceStart` 推出非空）。
