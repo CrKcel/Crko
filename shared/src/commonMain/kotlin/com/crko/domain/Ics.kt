@@ -130,6 +130,12 @@ data class IcsImport(
     val refreshMinutes: Int? = null,
     /** Busy periods of the `VFREEBUSY` components the file carried. */
     val freeBusy: List<BusyInterval> = emptyList(),
+    /**
+     * Every UID the file still describes, kept rows or not. Reconciliation against this set must
+     * not use the kept subset alone, or unchecking a preview row would turn "skip this update"
+     * into "the source removed it" and delete the local record.
+     */
+    val describedUids: Set<String> = emptySet(),
 )
 
 /** A series whose newest master copy is `STATUS:CANCELLED`; importing it removes local records. */
@@ -309,6 +315,14 @@ internal fun importCalendarLines(
         calendarName = calendarMeta.name,
         refreshMinutes = calendarMeta.refreshMinutes,
         freeBusy = freeBusy,
+        describedUids = buildSet {
+            events.mapNotNullTo(this) { it.icsUid }
+            todos.mapNotNullTo(this) { it.icsUid }
+            journals.mapNotNullTo(this) { it.icsUid }
+            // A cancelled series is still described by the file: declining its removal in the
+            // preview must not let the vanished-record pass delete it instead.
+            cancelledUids.mapTo(this) { it }
+        },
     )
 }
 

@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -722,9 +723,14 @@ private fun AttachmentRow(
 ) {
     val uriHandler = LocalUriHandler.current
     val openable = attachment.uri.startsWith("http://") || attachment.uri.startsWith("https://")
-    // Read once per attachment: a several-megabyte payload decoded on every recomposition while the
-    // user types in the editor would stall the frame.
-    val payload = remember(attachment) { if (attachment.binary) attachment.attachmentBytes() else null }
+    // Read after composition, once per attachment: a several-megabyte payload must not stall the
+    // frame on the main thread, whether it is decoded or fetched from the attachment store.
+    var payload by remember(attachment) { mutableStateOf<ByteArray?>(null) }
+    var settled by remember(attachment) { mutableStateOf(!attachment.binary) }
+    LaunchedEffect(attachment) {
+        payload = if (attachment.binary) attachment.attachmentBytes() else null
+        settled = true
+    }
     val label = attachment.name.ifBlank {
         if (attachment.binary) strings.attachments else attachment.uri.ifBlank { strings.attachments }
     }
@@ -743,16 +749,17 @@ private fun AttachmentRow(
             .clickable(enabled = openable || attachment.binary) {
                 if (attachment.binary) {
                     val bytes = payload
-                    if (bytes == null) {
-                        onNotice(strings.attachmentBroken)
-                    } else {
-                        bridge.saveAttachment(
+                    when {
+                        bytes != null -> bridge.saveAttachment(
                             fileName = safeAttachmentFileName(attachment),
                             bytes = bytes,
                             mimeType = attachmentMimeType(attachment),
                             onSaved = {},
                             onError = { onNotice(strings.attachmentSaveFailed) },
                         )
+                        // Only a finished read can call the payload broken; an early click on a
+                        // large file is still in flight and says nothing about the payload.
+                        settled -> onNotice(strings.attachmentBroken)
                     }
                 } else if (openable) {
                     uriHandler.openUri(attachment.uri)

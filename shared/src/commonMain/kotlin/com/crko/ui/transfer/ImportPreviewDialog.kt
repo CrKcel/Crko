@@ -150,6 +150,14 @@ internal fun ImportSelection.toIcsImport(checked: List<Boolean>): IcsImport {
         calendarName = calendarName,
         refreshMinutes = refreshMinutes,
         freeBusy = freeBusy,
+        // The whole file, not the kept subset: unchecking a row skips its update, but the record
+        // the file still describes must survive the vanished-record reconciliation.
+        describedUids = buildSet {
+            events.mapNotNullTo(this) { it.icsUid }
+            todos.mapNotNullTo(this) { it.icsUid }
+            journals.mapNotNullTo(this) { it.icsUid }
+            cancelled.mapTo(this) { it.uid }
+        },
     )
 }
 

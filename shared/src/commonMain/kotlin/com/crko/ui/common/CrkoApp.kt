@@ -186,7 +186,11 @@ fun CrkoApp(state: AppStateHolder) {
     fun applyImport(preview: ImportPreview, checked: List<Boolean>) {
         val selection = preview.selection
         scope.launch {
-            val outcome = state.importCalendar(selection.toIcsImport(checked), preview.fileName)
+            // Materializing attachment payloads writes files and the whole state is re-serialised;
+            // like the parse above, that stays off the frame thread.
+            val outcome = withContext(Dispatchers.Default) {
+                state.importCalendar(selection.toIcsImport(checked), preview.fileName)
+            }
             state.notify(
                 AppMessage.EventsImported(
                     outcome.events,

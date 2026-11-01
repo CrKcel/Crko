@@ -638,6 +638,17 @@ class AppStateHolder(
             import.journals.isNotEmpty() || import.cancelledUids.isNotEmpty() || import.freeBusy.isNotEmpty()
         if (!hasContent && source.isNullOrBlank()) return ImportOutcome()
         val sourceName = source?.takeIf { it.isNotBlank() }
+        // The vanished-record pass compares against every UID the file describes, not against the
+        // kept rows alone: unchecking a preview row skips that one update without deleting the
+        // local record the file still lists. A directly built import derives the set from its rows.
+        val described = import.describedUids.ifEmpty {
+            buildSet {
+                import.events.mapNotNullTo(this) { it.icsUid }
+                import.todos.mapNotNullTo(this) { it.icsUid }
+                import.journals.mapNotNullTo(this) { it.icsUid }
+                import.cancelledUids.mapTo(this) { it }
+            }
+        }
         // Removal of records that no longer appear is scoped per kind: a file that carries no todo
         // at all (or none but cancellations) says nothing about the user's todos.
         val events = mergeEvents(
@@ -646,16 +657,19 @@ class AppStateHolder(
             source = sourceName,
             removeVanished = sourceName != null &&
                 (import.events.isNotEmpty() || import.cancelledUids.isNotEmpty()),
+            describedUids = described,
         )
         val todos = mergeTodos(
             incoming = import.todos.map(::withStoredAttachments),
             source = sourceName,
             removeVanished = sourceName != null && import.todos.isNotEmpty(),
+            describedUids = described,
         )
         val journals = mergeJournals(
             incoming = import.journals.map(::withStoredAttachments),
             source = sourceName,
             removeVanished = sourceName != null && import.journals.isNotEmpty(),
+            describedUids = described,
         )
         val outcome = ImportOutcome(
             events = events.changed,
@@ -663,9 +677,11 @@ class AppStateHolder(
             journals = journals.changed,
             removed = events.removed + todos.removed + journals.removed,
         )
-        if (outcome.isEmpty && import.freeBusy.isEmpty()) return outcome
         val changed = events.items != appState.events || todos.items != appState.todos ||
             journals.items != appState.journals || import.freeBusy.isNotEmpty()
+        // An all-zero outcome is only "nothing happened" when the lists did not move either;
+        // provenance may have followed the file even though no record was added or replaced.
+        if (outcome.isEmpty && !changed) return outcome
         if (changed) {
             persist(
                 appState.copy(
@@ -733,6 +749,7 @@ class AppStateHolder(
         cancelledUids: Set<String>,
         source: String?,
         removeVanished: Boolean,
+        describedUids: Set<String> = emptySet(),
     ): MergeResult<Event> {
         val merged = appState.events.toMutableList()
         var removed = 0
@@ -746,7 +763,7 @@ class AppStateHolder(
         // records this very file brought in are eligible, and only when the file still describes the
         // same kind of content.
         if (removeVanished && source != null) {
-            val present = incoming.mapNotNullTo(mutableSetOf()) { it.icsUid }
+            val present = describedUids.ifEmpty { incoming.mapNotNullTo(mutableSetOf()) { it.icsUid } }
             val before = merged.size
             merged.removeAll { event ->
                 event.importSource == source && event.icsUid != null && event.icsUid !in present
@@ -794,11 +811,12 @@ class AppStateHolder(
         incoming: List<Todo>,
         source: String?,
         removeVanished: Boolean,
+        describedUids: Set<String> = emptySet(),
     ): MergeResult<Todo> {
         val merged = appState.todos.toMutableList()
         var removed = 0
         if (removeVanished && source != null) {
-            val present = incoming.mapNotNullTo(mutableSetOf()) { it.icsUid }
+            val present = describedUids.ifEmpty { incoming.mapNotNullTo(mutableSetOf()) { it.icsUid } }
             val before = merged.size
             merged.removeAll { todo ->
                 todo.importSource == source && todo.icsUid != null && todo.icsUid !in present
@@ -838,11 +856,12 @@ class AppStateHolder(
         incoming: List<Journal>,
         source: String?,
         removeVanished: Boolean,
+        describedUids: Set<String> = emptySet(),
     ): MergeResult<Journal> {
         val merged = appState.journals.toMutableList()
         var removed = 0
         if (removeVanished && source != null) {
-            val present = incoming.mapNotNullTo(mutableSetOf()) { it.icsUid }
+            val present = describedUids.ifEmpty { incoming.mapNotNullTo(mutableSetOf()) { it.icsUid } }
             val before = merged.size
             merged.removeAll { journal ->
                 journal.importSource == source && journal.icsUid != null && journal.icsUid !in present
@@ -1421,11 +1440,17 @@ private fun storeAttachmentPayload(attachment: Attachment): Attachment {
 /** Everything before the value of an `ATTACH` line: the name and its parameters. */
 private fun attachmentParameterHead(raw: String): String {
     var quoted = false
-    raw.forEachIndexed { index, ch ->
+    var index = 0
+    while (index < raw.length) {
+        val ch = raw[index]
         when {
+            // Inside a quoted parameter value a backslash escapes the next character, so `\"`
+            // must not end the string and a `\:` must not start the value.
+            ch == '\\' && quoted && index + 1 < raw.length -> index++
             ch == '"' -> quoted = !quoted
             ch == ':' && !quoted -> return raw.substring(0, index)
         }
+        index++
     }
     return raw
 }

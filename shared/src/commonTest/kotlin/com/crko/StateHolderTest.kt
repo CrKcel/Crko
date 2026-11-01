@@ -37,6 +37,8 @@ import com.crko.domain.decodedBytes
 import com.crko.ui.common.importSummaryText
 import com.crko.ui.schedule.endMinutesAfterStartChange
 import com.crko.ui.schedule.updateReminderAlarms
+import com.crko.ui.transfer.importSelection
+import com.crko.ui.transfer.toIcsImport
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.datetime.LocalDate
@@ -1047,6 +1049,96 @@ class StateHolderTest {
             f.holder.importCalendar(IcsImport(events = listOf(second)), "plan.ics"),
         )
         assertEquals(listOf("Imported", "Mine"), f.holder.appState.events.map { it.title }.sorted())
+    }
+
+    @Test
+    fun uncheckingAPreviewRowDoesNotRemoveTheRecordTheFileStillLists() {
+        val f = Fixture()
+        val first = Event(null, "First", "2026-10-27", 540, 600, icsUid = "e-1")
+        val second = Event(null, "Second", "2026-10-28", 540, 600, icsUid = "e-2")
+        assertEquals(
+            ImportOutcome(events = 2),
+            f.holder.importCalendar(IcsImport(events = listOf(first, second)), "plan.ics"),
+        )
+        // The re-imported file still describes both records, but the user unchecked the first one:
+        // the update is skipped, not turned into an upstream removal.
+        val import = IcsImport(
+            events = listOf(second.copy(sequence = 1, dtStamp = "2026-10-30T00:00:00Z")),
+            describedUids = setOf("e-1", "e-2"),
+        )
+        assertEquals(ImportOutcome(events = 1), f.holder.importCalendar(import, "plan.ics"))
+        assertEquals(listOf("First", "Second"), f.holder.appState.events.map { it.title }.sorted())
+    }
+
+    @Test
+    fun thePreviewSelectionSkipsAnUpdateWithoutDeletingTheRecord() {
+        val f = Fixture()
+        val file = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n" +
+            "BEGIN:VEVENT\r\nUID:e-1\r\nDTSTAMP:20261001T000000Z\r\n" +
+            "DTSTART:20261027T090000\r\nDTEND:20261027T100000\r\nSUMMARY:First\r\nEND:VEVENT\r\n" +
+            "BEGIN:VEVENT\r\nUID:e-2\r\nDTSTAMP:20261001T000000Z\r\n" +
+            "DTSTART:20261028T090000\r\nDTEND:20261028T100000\r\nSUMMARY:Second\r\nEND:VEVENT\r\n" +
+            "END:VCALENDAR\r\n"
+        val parsed = importCalendar(file, TimeZone.UTC, "Untitled")
+        val selection = importSelection(parsed)
+        assertEquals(2, selection.rows.size)
+        assertEquals(
+            ImportOutcome(events = 2),
+            f.holder.importCalendar(selection.toIcsImport(listOf(true, true)), "plan.ics"),
+        )
+        // The same file arrives again and the user unchecks the first row: only the second record
+        // is updated, and the unchecked one stays exactly as it was.
+        val newer = importSelection(parsed.copy(events = parsed.events.map { it.copy(sequence = 3) }))
+        assertEquals(
+            ImportOutcome(events = 1),
+            f.holder.importCalendar(newer.toIcsImport(listOf(false, true)), "plan.ics"),
+        )
+        assertEquals(listOf("First", "Second"), f.holder.appState.events.map { it.title }.sorted())
+        assertEquals(3, f.holder.appState.events.single { it.title == "Second" }.sequence)
+        assertEquals(0, f.holder.appState.events.single { it.title == "First" }.sequence)
+    }
+
+    @Test
+    fun decliningACancellationDoesNotRemoveTheSeriesThroughTheVanishedPass() {
+        val f = Fixture()
+        val cancelled = Event(null, "Cancelled", "2026-10-27", 540, 600, icsUid = "c-1")
+        val live = Event(null, "Live", "2026-10-28", 540, 600, icsUid = "c-2")
+        f.holder.importCalendar(IcsImport(events = listOf(cancelled, live)), "plan.ics")
+        // The new file cancels one series and keeps the other; the user declines the removal row,
+        // so the declined series must survive the reconciliation of the same import as well.
+        assertEquals(
+            ImportOutcome(),
+            f.holder.importCalendar(
+                IcsImport(events = listOf(live), describedUids = setOf("c-1", "c-2")),
+                "plan.ics",
+            ),
+        )
+        assertEquals(listOf("Cancelled", "Live"), f.holder.appState.events.map { it.title }.sorted())
+    }
+
+    @Test
+    fun aRenamedSourceTakesOverProvenanceEvenWhenNothingElseChanges() {
+        val f = Fixture()
+        val original = Event(
+            null,
+            "Same",
+            "2026-10-27",
+            540,
+            600,
+            icsUid = "p-1",
+            dtStamp = "2026-10-01T00:00:00Z",
+        )
+        f.holder.importCalendar(IcsImport(events = listOf(original)), "plan.ics")
+        // The renamed file carries the same stale copy: nothing is imported, but provenance has to
+        // follow it anyway, or a later reconciliation against the new name would see no owner.
+        assertEquals(
+            ImportOutcome(),
+            f.holder.importCalendar(
+                IcsImport(events = listOf(original.copy(id = null))),
+                "plan-renamed.ics",
+            ),
+        )
+        assertEquals("plan-renamed.ics", f.storage.state.events.single().importSource)
     }
 
     @Test

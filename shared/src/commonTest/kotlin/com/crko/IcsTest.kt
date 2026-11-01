@@ -1518,6 +1518,43 @@ class IcsTest {
     }
 
     @Test
+    fun theImportReportsEveryUidTheFileDescribes() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:event-1
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            SUMMARY:Live
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:event-1
+            DTSTAMP:20261020T000000Z
+            SEQUENCE:5
+            STATUS:CANCELLED
+            DTSTART:20261027T090000
+            SUMMARY:Cancelled
+            END:VEVENT
+            BEGIN:VTODO
+            UID:todo-1
+            SUMMARY:Task
+            DUE;VALUE=DATE:20261101
+            END:VTODO
+            BEGIN:VJOURNAL
+            UID:journal-1
+            DTSTART;VALUE=DATE:20261027
+            DESCRIPTION:Note
+            END:VJOURNAL
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        assertEquals(setOf("event-1", "todo-1", "journal-1"), imported.describedUids)
+        // A cancelled series is still described: declining its removal in the preview must not
+        // turn the skipped choice into a removal through the vanished-record pass.
+        assertEquals(setOf("event-1"), imported.cancelledUids)
+    }
+
+    @Test
     fun twoChangesOnTheSameOccurrenceDateKeepDistinctStorageKeys() {
         val text = calendar(
             """
