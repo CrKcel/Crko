@@ -49,7 +49,7 @@ internal fun ContinuousTimeline(
     defaultScrollHour: Int,
     onSelect: (LocalDate) -> Unit,
     onAdd: (LocalDate, Int?) -> Unit,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
 ) {
     if (inWeekView) {
         PagedWeekTimeline(
@@ -91,7 +91,7 @@ private fun PagedWeekTimeline(
     events: List<Event>,
     pager: WeekPager,
     defaultScrollHour: Int,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
 ) {
     VerticalPager(
         state = pager.state,
@@ -126,7 +126,7 @@ private fun WeekTimelinePage(
     pager: PagerState,
     eventsByDate: Map<LocalDate, List<Event>>,
     defaultScrollHour: Int,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
 ) {
     val layout = HourLayout
     val density = LocalDensity.current
@@ -183,7 +183,7 @@ private fun ContinuousDayTimeline(
     defaultScrollHour: Int,
     onSelect: (LocalDate) -> Unit,
     onAdd: (LocalDate, Int?) -> Unit,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
 ) {
     val axis = rememberBlockAxis(selected, weeks = false)
     val density = LocalDensity.current

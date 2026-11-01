@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -26,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
@@ -199,7 +201,7 @@ internal fun WeekTimelineGrid(
     weekStart: LocalDate,
     layout: HourLayout,
     eventsByDate: Map<LocalDate, List<Event>>,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
 ) {
     val days = remember(weekStart) { weekStart.weekDates() }
     WeekColumns(
@@ -223,7 +225,7 @@ private fun WeekColumns(
     now: State<LocalClock>,
     layout: HourLayout,
     eventsByDate: Map<LocalDate, List<Event>>,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val hourLineColor = hourDividerColor()
@@ -250,6 +252,7 @@ private fun WeekColumns(
                     isToday = date == today,
                     now = now,
                     hours = layout,
+                    date = date,
                     events = eventsByDate[date].orEmpty(),
                     onOpen = onOpen,
                     modifier = Modifier
@@ -267,13 +270,16 @@ private fun WeekDayColumn(
     isToday: Boolean,
     now: State<LocalClock>,
     hours: HourLayout,
+    date: LocalDate,
     events: List<Event>,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scheme = MiuixTheme.colorScheme
     val tones = eventTones()
-    val placed = remember(events) { layoutEvents(events) }
+    val timed = remember(events) { events.filterNot { it.allDay } }
+    val allDay = remember(events) { events.filter { it.allDay } }
+    val placed = remember(timed, date) { layoutEvents(timed, date) }
     Box(
         modifier = modifier.drawWithContent {
             drawContent()
@@ -302,7 +308,7 @@ private fun WeekDayColumn(
                             .padding(end = 1.dp)
                             .clip(RoundedCornerShape(4.dp))
                             .background(container)
-                            .clickable { onOpen(item.event) }
+                            .clickable { onOpen(item.event, date) }
                             .padding(horizontal = 2.dp, vertical = 1.dp),
                     ) {
                         Text(
@@ -339,6 +345,42 @@ private fun WeekDayColumn(
                 }
             }
         }
+        if (allDay.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 1.dp, vertical = 1.dp),
+            ) {
+                allDay.take(2).forEach { event ->
+                    val (container, content) = tones[eventToneIndex(event, tones.size)]
+                    Text(
+                        text = event.title,
+                        style = MiuixTheme.textStyles.footnote2,
+                        fontSize = 8.sp,
+                        color = content,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 1.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(container)
+                            .clickable { onOpen(event, date) }
+                            .padding(horizontal = 2.dp, vertical = 1.dp),
+                    )
+                }
+                if (allDay.size > 2) {
+                    Text(
+                        text = "+${allDay.size - 2}",
+                        style = MiuixTheme.textStyles.footnote2,
+                        fontSize = 8.sp,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -352,7 +394,7 @@ internal fun WeekAgendaList(
     today: LocalDate,
     weekStart: LocalDate,
     eventsByDate: Map<LocalDate, List<Event>>,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
     onSwipeToTimeline: (travel: Float) -> Unit,
 ) {
     val days = remember(weekStart) { weekStart.weekDates() }
@@ -387,7 +429,7 @@ internal fun WeekAgendaList(
                 }
             } else {
                 items(dayEvents, key = { "week-event-$date-${it.id ?: it.title}" }) { event ->
-                    AgendaEventRow(event = event, tones = tones, strings = strings, onOpen = onOpen)
+                    AgendaEventRow(event = event, date = date, tones = tones, strings = strings, onOpen = onOpen)
                 }
             }
         }

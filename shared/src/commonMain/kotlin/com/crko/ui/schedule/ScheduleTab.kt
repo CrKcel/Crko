@@ -66,7 +66,7 @@ fun ScheduleTab(
     now: State<LocalClock>,
     strings: Strings,
     contentPadding: PaddingValues,
-    onOpenEvent: (Event?) -> Unit,
+    onOpenEvent: (Event, LocalDate) -> Unit,
 ) {
     val today = state.today
     var selectedName by rememberSaveable { mutableStateOf(today.toString()) }
@@ -114,7 +114,7 @@ fun ScheduleTab(
     // must be routed through the latest value rather than captured once by the remembered wrapper.
     val currentSelect by rememberUpdatedState<(LocalDate) -> Unit>(::select)
     val onSelectDate: (LocalDate) -> Unit = remember { { currentSelect(it) } }
-    val onOpenStable: (Event) -> Unit = remember { { currentOnOpenEvent(it) } }
+    val onOpenStable: (Event, LocalDate) -> Unit = remember { { event, date -> currentOnOpenEvent(event, date) } }
     val onAddAt: (LocalDate, Int?) -> Unit = remember {
         { date, slotMinutes ->
             val start = when {
@@ -131,6 +131,7 @@ fun ScheduleTab(
                     startMinutes = startMinutes,
                     endMinutes = (startMinutes + 60).coerceAtMost(MaxEndMinutes),
                 ),
+                date,
             )
         }
     }
@@ -183,6 +184,7 @@ fun ScheduleTab(
             val pageEvents = remember(date, currentEvents) { state.eventsOn(date) }
             DayAgendaList(
                 events = pageEvents,
+                date = date,
                 strings = currentStrings,
                 onOpen = onOpenStable,
                 onSwipeToTimeline = onSwipeToTimeline,

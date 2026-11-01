@@ -1,5 +1,6 @@
 package com.crko.i18n
 
+import com.crko.domain.IcsWarning
 import com.crko.domain.TodoPriority
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
@@ -76,8 +77,38 @@ interface Strings {
     val repeatNone: String
     val repeatDaily: String
     val repeatWeekly: String
+    val repeatMonthly: String
+    val repeatYearly: String
     val repeatCustom: String
     val repeatWeekdaysRequired: String
+    val repeatInterval: String
+    val repeatEnd: String
+    val repeatNeverEnds: String
+    val repeatAfterTimes: String
+    val repeatUntilDate: String
+
+    val allDay: String
+    val endDate: String
+    val location: String
+    val locationField: String
+    val categories: String
+    val categoriesField: String
+    val urlField: String
+    val eventStatus: String
+    val statusConfirmed: String
+    val statusTentative: String
+    val transparency: String
+    val busy: String
+    val free: String
+    val priorityNone: String
+    val reminder: String
+    val reminderNone: String
+    val reminderAtTime: String
+    fun reminderBefore(minutes: Int): String
+    val editScope: String
+    val scopeThisEvent: String
+    val scopeThisAndFuture: String
+    val scopeAllEvents: String
 
     val todos: String
     val todoNew: String
@@ -92,6 +123,8 @@ interface Strings {
     val selectDate: String
     val incomplete: String
     val completed: String
+    val todoStatusInProgress: String
+    val todoStatusCancelled: String
     val emptyTodos: String
     fun items(count: Int): String
 
@@ -114,7 +147,8 @@ interface Strings {
     val importFailed: String
     val exportFailed: String
     val exported: String
-    fun importedEvents(count: Int): String
+    fun importedItems(events: Int, todos: Int): String
+    fun importWarning(warning: IcsWarning): String
     val untitledEvent: String
 
     val language: String
@@ -192,8 +226,38 @@ object ZhStrings : Strings {
     override val repeatNone = "不重复"
     override val repeatDaily = "每天"
     override val repeatWeekly = "每周"
+    override val repeatMonthly = "每月"
+    override val repeatYearly = "每年"
     override val repeatCustom = "自定义"
     override val repeatWeekdaysRequired = "请至少选择一天"
+    override val repeatInterval = "间隔"
+    override val repeatEnd = "结束重复"
+    override val repeatNeverEnds = "永不结束"
+    override val repeatAfterTimes = "次数"
+    override val repeatUntilDate = "日期"
+
+    override val allDay = "全天"
+    override val endDate = "结束日期"
+    override val location = "地点"
+    override val locationField = "地点"
+    override val categories = "分类"
+    override val categoriesField = "分类（用逗号分隔）"
+    override val urlField = "网址"
+    override val eventStatus = "状态"
+    override val statusConfirmed = "确认"
+    override val statusTentative = "待定"
+    override val transparency = "空闲状态"
+    override val busy = "忙碌"
+    override val free = "空闲"
+    override val priorityNone = "无"
+    override val reminder = "提醒"
+    override val reminderNone = "不提醒"
+    override val reminderAtTime = "准时"
+    override fun reminderBefore(minutes: Int) = "提前 $minutes 分钟"
+    override val editScope = "修改范围"
+    override val scopeThisEvent = "仅此次"
+    override val scopeThisAndFuture = "此次及以后"
+    override val scopeAllEvents = "整个系列"
 
     override val todos = "待办"
     override val todoNew = "新建待办"
@@ -208,6 +272,8 @@ object ZhStrings : Strings {
     override val selectDate = "选择日期"
     override val incomplete = "未完成"
     override val completed = "已完成"
+    override val todoStatusInProgress = "进行中"
+    override val todoStatusCancelled = "已取消"
     override val emptyTodos = "暂无待办"
     override fun items(count: Int) = "$count 项"
     override val statistics = "统计"
@@ -228,7 +294,17 @@ object ZhStrings : Strings {
     override val importFailed = "导入失败，请检查文件格式"
     override val exportFailed = "导出失败"
     override val exported = "已导出"
-    override fun importedEvents(count: Int) = "已导入 $count 项日程"
+    override fun importedItems(events: Int, todos: Int): String = when {
+        events > 0 && todos > 0 -> "已导入 $events 项日程、$todos 项待办"
+        todos > 0 -> "已导入 $todos 项待办"
+        else -> "已导入 $events 项日程"
+    }
+    override fun importWarning(warning: IcsWarning): String = when (warning) {
+        IcsWarning.UnresolvedTimeZone -> "部分日程的时区无法识别，已按本地时间导入"
+        IcsWarning.InvalidValue -> "部分日期或时间格式无效，已跳过"
+        IcsWarning.UnsupportedRecurrence -> "部分重复规则暂不支持，只保留了首次日程"
+        IcsWarning.MultipleRrules -> "单个日程包含多条重复规则，只使用了第一条"
+    }
     override val untitledEvent = "无标题日程"
     override val language = "语言"
     override val languageSystem = "跟随系统"
@@ -310,8 +386,38 @@ object EnStrings : Strings {
     override val repeatNone = "Never"
     override val repeatDaily = "Daily"
     override val repeatWeekly = "Weekly"
+    override val repeatMonthly = "Monthly"
+    override val repeatYearly = "Yearly"
     override val repeatCustom = "Custom"
     override val repeatWeekdaysRequired = "Pick at least one day"
+    override val repeatInterval = "Every"
+    override val repeatEnd = "Ends"
+    override val repeatNeverEnds = "Never"
+    override val repeatAfterTimes = "After"
+    override val repeatUntilDate = "On date"
+
+    override val allDay = "All day"
+    override val endDate = "End date"
+    override val location = "Location"
+    override val locationField = "Location"
+    override val categories = "Categories"
+    override val categoriesField = "Categories (comma separated)"
+    override val urlField = "URL"
+    override val eventStatus = "Status"
+    override val statusConfirmed = "Confirmed"
+    override val statusTentative = "Tentative"
+    override val transparency = "Availability"
+    override val busy = "Busy"
+    override val free = "Free"
+    override val priorityNone = "None"
+    override val reminder = "Reminder"
+    override val reminderNone = "None"
+    override val reminderAtTime = "At start"
+    override fun reminderBefore(minutes: Int) = "$minutes min before"
+    override val editScope = "Apply to"
+    override val scopeThisEvent = "This event"
+    override val scopeThisAndFuture = "This and later"
+    override val scopeAllEvents = "All events"
 
     override val todos = "Todo"
     override val todoNew = "New todo"
@@ -326,6 +432,8 @@ object EnStrings : Strings {
     override val selectDate = "Select date"
     override val incomplete = "To do"
     override val completed = "Completed"
+    override val todoStatusInProgress = "In progress"
+    override val todoStatusCancelled = "Cancelled"
     override val emptyTodos = "No todos"
     override fun items(count: Int) = if (count == 1) "1 item" else "$count items"
     override val statistics = "Statistics"
@@ -346,7 +454,17 @@ object EnStrings : Strings {
     override val importFailed = "Import failed. Check the file format."
     override val exportFailed = "Export failed"
     override val exported = "Exported"
-    override fun importedEvents(count: Int) = if (count == 1) "1 event imported" else "$count events imported"
+    override fun importedItems(events: Int, todos: Int): String = when {
+        events > 0 && todos > 0 -> "$events events and $todos todos imported"
+        todos > 0 -> if (todos == 1) "1 todo imported" else "$todos todos imported"
+        else -> if (events == 1) "1 event imported" else "$events events imported"
+    }
+    override fun importWarning(warning: IcsWarning): String = when (warning) {
+        IcsWarning.UnresolvedTimeZone -> "Some time zones were unknown; those events use local time"
+        IcsWarning.InvalidValue -> "Some dates or times were invalid and were skipped"
+        IcsWarning.UnsupportedRecurrence -> "Some recurrence rules are unsupported; only the first event was kept"
+        IcsWarning.MultipleRrules -> "An event had several recurrence rules; only the first was used"
+    }
     override val untitledEvent = "Untitled event"
     override val language = "Language"
     override val languageSystem = "System"

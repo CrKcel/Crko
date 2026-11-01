@@ -21,7 +21,7 @@ fun sampleState(
     val yesterday = today.plusDays(-1)
     var eventId = 0
     fun event(title: String, day: LocalDate, startMinutes: Int, endMinutes: Int, note: String = "") =
-        Event("sample-event-${eventId++}", title, day.toString(), startMinutes, endMinutes, note)
+        Event("sample-event-${eventId++}", title, day.toString(), startMinutes, endMinutes, note = note)
 
     var todoId = 0
     fun todo(

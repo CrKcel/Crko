@@ -8,106 +8,276 @@ import kotlinx.datetime.number
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
 /**
- * RFC 5545 subset used by the app. Events are exported as floating local times, which matches how
- * they are stored (wall-clock date and minute of day), and imported from floating, UTC or TZID
- * timestamps.
+ * RFC 5545 reader/writer for the parts of a calendar the app can represent. Unknown content lines
+ * are kept on the model so that an import/export cycle does not silently drop properties.
  */
 
 private const val LineBreak = "\r\n"
 private const val FoldLimit = 75
-private const val MaxExpandedOccurrences = 1000
-private const val MaxAllDaySpanDays = 366
 
 private val weekdayCodes = listOf("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+
+enum class IcsWarning {
+    UnresolvedTimeZone,
+    InvalidValue,
+    UnsupportedRecurrence,
+    MultipleRrules,
+}
+
+data class IcsImport(
+    val events: List<Event> = emptyList(),
+    val todos: List<Todo> = emptyList(),
+    val warnings: List<IcsWarning> = emptyList(),
+)
 
 /** Serializes every event into one VCALENDAR with CRLF line endings. */
 fun exportIcs(
     events: List<Event>,
     now: Instant = Clock.System.now(),
+): String = exportCalendar(events = events, todos = emptyList(), now = now)
+
+/** Serializes events and todos into one VCALENDAR, emitting VTIMEZONE blocks where needed. */
+fun exportCalendar(
+    events: List<Event>,
+    todos: List<Todo> = emptyList(),
+    now: Instant = Clock.System.now(),
+    calendarName: String? = null,
 ): String = buildString {
     line("BEGIN:VCALENDAR")
     line("VERSION:2.0")
     line("PRODID:-//Crko//Crko Calendar//EN")
     line("CALSCALE:GREGORIAN")
-    events.forEachIndexed { index, event -> appendEvent(event, index, now) }
+    if (!calendarName.isNullOrBlank()) line("X-WR-CALNAME:${escapeText(calendarName)}")
+    // Preserved VTIMEZONE blocks are written back verbatim. Known IANA zones are not given a
+    // synthetic fixed-offset definition: that would be wrong for series crossing a DST change,
+    // while clients can resolve the TZID themselves.
+    val zones = mutableMapOf<String, String>()
+    events.forEach { event ->
+        val id = event.timeZoneId ?: return@forEach
+        if (id.equals("UTC", ignoreCase = true) || id in zones) return@forEach
+        val definition = event.timeZoneDefinition?.takeIf { it.isNotBlank() } ?: return@forEach
+        zones[id] = normalizeComponent(definition)
+    }
+    zones.forEach { (_, definition) ->
+        definition.trimEnd().split(Regex("\\r?\\n")).forEach { line(it) }
+    }
+    events.forEachIndexed { index, event -> appendEvent(event, events, index, now) }
+    todos.forEachIndexed { index, todo -> appendTodo(todo, index, now) }
     line("END:VCALENDAR")
 }
 
 /**
- * Parses every VEVENT found in [text]. Recurrences the app can represent stay a single series;
- * series bounded by COUNT or UNTIL are expanded into individual events.
+ * Parses every VEVENT and VTODO found in [text]. Recurrences stay a single series and bounded
+ * series keep their COUNT/UNTIL instead of being expanded into thousands of records.
  */
+fun importCalendar(
+    text: String,
+    timeZone: TimeZone = TimeZone.currentSystemDefault(),
+    untitledTitle: String,
+): IcsImport {
+    val warnings = linkedSetOf<IcsWarning>()
+    val roots = parseComponents(text)
+    val calendars = roots.filter { it.name == "VCALENDAR" }
+    val components = if (calendars.isEmpty()) roots else calendars.flatMap { it.children }
+    val zones = mutableMapOf<String, CustomZone>()
+    val zoneDefinitions = mutableMapOf<String, String>()
+    components.filter { it.name == "VTIMEZONE" }.forEach { component ->
+        val zoneId = component.first("TZID")?.value?.trim()?.removePrefix("/")
+        val zone = parseCustomZone(component)
+        if (zone == null) {
+            warnings.add(IcsWarning.UnresolvedTimeZone)
+        } else {
+            zones[zone.id] = zone
+            if (zoneId != null) zoneDefinitions[zoneId] = component.toText()
+        }
+    }
+
+    val rawEvents = components.filter { it.name == "VEVENT" }.map { readEvent(it, zones, zoneDefinitions, warnings) }
+    val groups = linkedMapOf<String, MutableList<RawEvent>>()
+    val orphanEvents = mutableListOf<RawEvent>()
+    rawEvents.forEach { raw ->
+        val uid = raw.uid
+        if (uid == null) orphanEvents += raw else groups.getOrPut(uid) { mutableListOf() } += raw
+    }
+
+    val events = mutableListOf<Event>()
+    orphanEvents.forEach { raw ->
+        if (!raw.isCancelled()) mapSingle(raw, timeZone, untitledTitle, zones, warnings)?.let(events::add)
+    }
+    groups.forEach { (uid, group) ->
+        events += mapSeries(uid, group, timeZone, untitledTitle, zones, warnings)
+    }
+
+    val todos = components.filter { it.name == "VTODO" }.mapNotNull { readTodo(it, timeZone, warning = { warnings += it }) }
+    return IcsImport(events = events, todos = todos, warnings = warnings.toList())
+}
+
 fun importIcs(
     text: String,
     timeZone: TimeZone = TimeZone.currentSystemDefault(),
     untitledTitle: String,
-): List<Event> {
-    val rawEvents = readEvents(text)
-    if (rawEvents.isEmpty()) return emptyList()
+): List<Event> = importCalendar(text, timeZone, untitledTitle).events
 
-    val baseEvents = mutableListOf<RawEvent>()
-    val overrides = mutableMapOf<String, MutableList<RawEvent>>()
-    rawEvents.forEach { raw ->
-        val recurrenceId = raw.recurrenceId
-        val uid = raw.uid
-        if (recurrenceId != null && uid != null) {
-            overrides.getOrPut(uid) { mutableListOf() } += raw
+/**
+ * Recomputes locally stored wall-clock fields from the preserved ICS source when the device zone
+ * changed since import. Idempotent; events without a source time (`sourceStart`) are returned as-is.
+ *
+ * [recurrenceIdShift] is used for exceptions: their `RECURRENCE-ID` belongs to the parent series, so
+ * it has to move with the series anchor rather than with the exception's own (possibly moved) date.
+ */
+fun Event.normalizedForZone(
+    deviceZone: TimeZone,
+    recurrenceIdShift: Int? = null,
+): Event {
+    // Exceptions created in this app have no source text, but they still belong to the imported
+    // series. Shift them with the parent so they do not stay on the old day and double-book the
+    // shifted occurrence.
+    if (allDay) {
+        return if (seriesUid != null && recurrenceIdShift != null) {
+            shiftedByDays(recurrenceIdShift)
         } else {
-            baseEvents += raw
+            this
         }
     }
-
-    val imported = mutableListOf<Event>()
-    val baseUids = mutableSetOf<String>()
-    val cancelledUids = mutableSetOf<String>()
-    baseEvents.forEach { raw ->
-        val uid = raw.uid
-        if (raw.isCancelled()) {
-            uid?.let { cancelledUids += it }
-            return@forEach
-        }
-        uid?.let { baseUids += it }
-        val related = uid?.let { overrides[it] }.orEmpty()
-        imported += mapBase(raw, related, timeZone, untitledTitle)
-        related.forEach { override ->
-            mapOverride(override, timeZone, untitledTitle)?.let { imported += it }
+    val startText = sourceStart
+    if (startText == null) {
+        return if (seriesUid != null && recurrenceIdShift != null) {
+            shiftedByDays(recurrenceIdShift)
+        } else {
+            this
         }
     }
-    // A file may contain only the modified occurrence of a series.
-    overrides.forEach { (uid, list) ->
-        if (uid !in baseUids && uid !in cancelledUids) {
-            list.forEach { raw ->
-                mapOverride(raw, timeZone, untitledTitle)?.let { imported += it }
+    val zone = resolveZone(timeZoneId, timeZoneDefinition) ?: return this
+    val startLocal = parseSourceLocal(startText) ?: return this
+    val startDateTime = zone.toInstant(startLocal).toLocalDateTime(deviceZone)
+    val endDateText = endDate
+    val endDateTime = when {
+        sourceEnd != null -> parseSourceLocal(sourceEnd)
+            ?.let { zone.toInstant(it) }?.toLocalDateTime(deviceZone)
+        endDateText != null -> {
+            val endDateParsed = runCatching { LocalDate.parse(endDateText) }.getOrNull()
+            if (endDateParsed != null) {
+                val minutes = endMinutes
+                val endLocal = LocalDateTime(endDateParsed, LocalTime(minutes / 60, minutes % 60))
+                zone.toInstant(endLocal).toLocalDateTime(deviceZone)
+            } else {
+                null
             }
         }
+        else -> null
     }
-    return imported
+    val newEndDate = endDateTime?.date?.toString()
+    val newEndMinutes = endDateTime?.time?.let { it.hour * 60 + it.minute } ?: endMinutes
+    // Occurrence dates in excludedDates/RDATE move with the anchor; shift them by the same day so a
+    // zone change that crosses midnight does not leave skips and extra dates on the wrong day.
+    val dateShift = day.daysTo(startDateTime.date)
+    fun shiftDate(text: String, days: Int): String? =
+        runCatching { LocalDate.parse(text) }.getOrNull()?.plusDays(days)?.toString()
+    val shiftedRepeat = if (repeat == null || dateShift == 0) {
+        repeat
+    } else {
+        repeat.copy(
+            until = repeat.until?.let { until ->
+                val parsed = parseRepeatUntil(until)
+                if (parsed != null && parsed.instant == null && parsed.localDateTime == null) {
+                    parsed.date.plusDays(dateShift).toString()
+                } else {
+                    until
+                }
+            },
+            rDates = repeat.rDates.mapNotNull { shiftDate(it, dateShift) },
+        )
+    }
+    val shiftedExclusions = if (dateShift == 0) {
+        excludedDates
+    } else {
+        excludedDates.mapNotNull { shiftDate(it, dateShift) }
+    }
+    val shiftedRecurrenceId = recurrenceId?.let { id ->
+        shiftDate(id, recurrenceIdShift ?: dateShift) ?: id
+    }
+    return copy(
+        date = startDateTime.date.toString(),
+        startMinutes = startDateTime.time.hour * 60 + startDateTime.time.minute,
+        endMinutes = newEndMinutes,
+        startSeconds = startDateTime.time.second,
+        endSeconds = endDateTime?.time?.second ?: endSeconds,
+        endDate = newEndDate,
+        repeat = shiftedRepeat,
+        excludedDates = shiftedExclusions,
+        recurrenceId = shiftedRecurrenceId,
+    )
 }
 
-private fun StringBuilder.appendEvent(event: Event, index: Int, now: Instant) {
-    val uid = event.icsUid?.takeIf { it.isNotBlank() }
-        ?: event.id?.let { "$it@crko" }
-        ?: "crko-${index + 1}@local"
-    line("BEGIN:VEVENT")
-    line("UID:${escapeText(uid)}")
-    line("DTSTAMP:${formatUtc(now)}")
-    line("DTSTART:${formatDateTime(event.day, event.startMinutes)}")
-    line("DTEND:${formatDateTime(event.day, event.endMinutes)}")
-    line("SUMMARY:${escapeText(event.title)}")
-    if (event.note.isNotBlank()) line("DESCRIPTION:${escapeText(event.note)}")
-    event.repeat?.let { line("RRULE:${ruleValue(it, event.day)}") }
-    if (event.repeat != null && event.excludedDates.isNotEmpty()) {
-        val values = event.excludedDates
-            .distinct()
-            .sorted()
-            .mapNotNull { parseDateText(it) }
-            .joinToString(",") { formatDateTime(it, event.startMinutes) }
-        if (values.isNotEmpty()) line("EXDATE:$values")
+/** Day offset a zone change applies to [this] event's local start date, or 0 when unresolved. */
+internal fun Event.zoneRebaseShift(deviceZone: TimeZone): Int {
+    if (allDay) return 0
+    val startText = sourceStart ?: return 0
+    val zone = resolveZone(timeZoneId, timeZoneDefinition) ?: return 0
+    val startLocal = parseSourceLocal(startText) ?: return 0
+    return day.daysTo(zone.toInstant(startLocal).toLocalDateTime(deviceZone).date)
+}
+
+/**
+ * Recomputes every event together so exceptions follow the date shift of their parent series. A
+ * moved exception may shift by a different number of days than its series, but its
+ * `RECURRENCE-ID` must always use the series shift.
+ */
+fun List<Event>.normalizedForZone(deviceZone: TimeZone): List<Event> {
+    if (isEmpty()) return this
+    val seriesShifts = buildMap {
+        this@normalizedForZone.forEach { event ->
+            val uid = event.uid ?: return@forEach
+            if (uid !in this) put(uid, event.zoneRebaseShift(deviceZone))
+        }
     }
-    line("END:VEVENT")
+    return map { event ->
+        val shift = event.seriesUid?.let(seriesShifts::get) ?: event.zoneRebaseShift(deviceZone)
+        event.normalizedForZone(deviceZone, recurrenceIdShift = shift)
+    }
+}
+
+private fun shiftIcsDate(text: String, days: Int): String? =
+    runCatching { LocalDate.parse(text) }.getOrNull()?.plusDays(days)?.toString()
+
+private fun shiftIcsUntil(text: String, days: Int): String? {
+    val parsed = parseRepeatUntil(text) ?: return text
+    return when {
+        parsed.instant != null ->
+            Instant.fromEpochSeconds(parsed.instant.epochSeconds + days * 86_400L).toString()
+        parsed.localDateTime != null -> LocalDateTime(
+            parsed.localDateTime.date.plusDays(days),
+            parsed.localDateTime.time,
+        ).toString()
+        else -> parsed.date.plusDays(days).toString()
+    }
+}
+
+/** Shifts every date belonging to [this] event, keeping its wall-clock time. */
+private fun Event.shiftedByDays(days: Int): Event {
+    if (days == 0) return this
+    val newDay = day.plusDays(days)
+    val newEnd = endDay.plusDays(days)
+    return copy(
+        date = newDay.toString(),
+        endDate = newEnd.takeIf { it != newDay }?.toString(),
+        excludedDates = excludedDates.mapNotNull { shiftIcsDate(it, days) },
+        recurrenceId = recurrenceId?.let { shiftIcsDate(it, days) ?: it },
+        repeat = repeat?.let { rule ->
+            rule.copy(
+                until = rule.until?.let { shiftIcsUntil(it, days) },
+                rDates = rule.rDates.mapNotNull { shiftIcsDate(it, days) },
+            )
+        },
+        sourceStart = null,
+        sourceEnd = null,
+        timeZoneId = null,
+        timeZoneDefinition = null,
+    )
 }
 
 private fun StringBuilder.line(value: String) {
@@ -115,29 +285,1456 @@ private fun StringBuilder.line(value: String) {
     append(LineBreak)
 }
 
-private fun ruleValue(rule: RepeatRule, anchor: LocalDate): String = when (rule.frequency) {
-    RepeatFrequency.Daily -> "FREQ=DAILY"
-    RepeatFrequency.Weekly -> "FREQ=WEEKLY;BYDAY=${weekdayCodes[anchor.mondayIndex]}"
-    RepeatFrequency.Custom -> {
-        val days = rule.weekdays.filter { it in 0..6 }.distinct().sorted()
-        val byDay = if (days.isEmpty()) {
-            weekdayCodes[anchor.mondayIndex]
-        } else {
-            days.joinToString(",") { weekdayCodes[it] }
+private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, index: Int, now: Instant) {
+    // A THISANDFUTURE future segment is exported as its own series. Keeping RECURRENCE-ID together
+    // with a truncated master would make the id point at an instance the master no longer contains.
+    val series = if (event.thisAndFuture) {
+        null
+    } else {
+        event.seriesUid?.let { uid -> allEvents.firstOrNull { it.uid == uid } }
+    }
+    val uid = if (event.thisAndFuture) {
+        event.uid ?: "crko-${index + 1}@local"
+    } else {
+        series?.uid ?: event.uid ?: "crko-${index + 1}@local"
+    }
+    line("BEGIN:VEVENT")
+    line("UID:${escapeText(uid)}")
+    line("DTSTAMP:${formatUtc(parseInstant(event.lastModified) ?: now)}")
+    event.created?.let { if (it.isNotBlank()) line("CREATED:${formatUtc(parseInstant(it) ?: now)}") }
+    event.lastModified?.let { if (it.isNotBlank()) line("LAST-MODIFIED:${formatUtc(parseInstant(it) ?: now)}") }
+    if (event.sequence > 0 || event.lastModified != null) line("SEQUENCE:${event.sequence.coerceAtLeast(0)}")
+    if (!event.thisAndFuture) {
+        event.recurrenceId?.let { recurrenceIdDate ->
+            // The value type follows the master series' DTSTART, not the exception's own DTSTART.
+            if (series?.allDay ?: event.allDay) {
+                val date = parseDateText(recurrenceIdDate)
+                if (date != null) line("RECURRENCE-ID;VALUE=DATE:${formatDate(date)}")
+            } else {
+                val seriesStartMinutes = series?.startMinutes ?: event.startMinutes
+                val seriesSource = series?.sourceStart ?: event.sourceStart
+                val seriesZone = series?.timeZoneId ?: event.timeZoneId
+                val zoneParam = if (seriesSource?.endsWith("Z", ignoreCase = true) != true && seriesZone != null) {
+                    if (seriesZone.equals("UTC", ignoreCase = true)) "" else ";TZID=$seriesZone"
+                } else {
+                    ""
+                }
+                val value = buildRecurrenceValue(recurrenceIdDate, seriesStartMinutes, series?.startSeconds ?: event.startSeconds, seriesSource, seriesZone)
+                line("RECURRENCE-ID$zoneParam:$value")
+            }
         }
-        "FREQ=WEEKLY;BYDAY=$byDay"
+    }
+
+    if (event.allDay) {
+        line("DTSTART;VALUE=DATE:${formatDate(event.day)}")
+        line("DTEND;VALUE=DATE:${formatDate(event.endDay.plusDays(1))}")
+    } else {
+        appendTimedStart("DTSTART", event, event.date, event.startMinutes, event.startSeconds)
+        appendTimedStart("DTEND", event, event.endDay.toString(), event.endMinutes, event.endSeconds)
+    }
+
+    line("SUMMARY:${escapeText(event.title)}")
+    if (event.note.isNotBlank()) line("DESCRIPTION:${escapeText(event.note)}")
+    if (event.location.isNotBlank()) line("LOCATION:${escapeText(event.location)}")
+    if (event.categories.isNotEmpty()) {
+        line("CATEGORIES:${event.categories.joinToString(",") { escapeText(it) }}")
+    }
+    if (event.url.isNotBlank()) line("URL:${escapeText(event.url)}")
+    if (!event.geo.isNullOrBlank()) line("GEO:${event.geo}")
+    if (event.eventClass != null) line("CLASS:${event.eventClass.name.uppercase()}")
+    if (event.status != EventStatus.Confirmed) line("STATUS:${event.status.name.uppercase()}")
+    if (event.transparency == EventTransparency.Transparent) line("TRANSP:TRANSPARENT")
+    event.priority?.let { if (it in 0..9) line("PRIORITY:$it") }
+    val organizerRaw = event.organizerRaw
+    if (!organizerRaw.isNullOrBlank()) {
+        line(organizerRaw)
+    } else {
+        event.organizer?.let { if (it.isNotBlank()) line("ORGANIZER:${escapeText(it)}") }
+    }
+    if (event.attendeeRaw.isNotEmpty()) {
+        event.attendeeRaw.forEach { if (it.isNotBlank()) line(it) }
+    } else {
+        event.attendees.forEach { if (it.isNotBlank()) line("ATTENDEE:${escapeText(it)}") }
+    }
+
+    event.repeat?.let { rule ->
+        line("RRULE:${ruleValue(rule, event)}")
+        appendRDate(event, rule)
+        appendExDate(event)
+    }
+
+    event.alarms.forEach { alarm ->
+        line("BEGIN:VALARM")
+        line("ACTION:${alarm.action.ifBlank { "DISPLAY" }}")
+        val absolute = alarm.absoluteTrigger
+        if (absolute != null) {
+            line("TRIGGER;VALUE=DATE-TIME:$absolute")
+        } else {
+            val related = if (alarm.relatedToEnd) ";RELATED=END" else ""
+            line("TRIGGER$related:${formatTriggerDuration(alarm.triggerMinutes)}")
+        }
+        alarm.repeat?.let { line("REPEAT:$it") }
+        alarm.durationMinutes?.let { line("DURATION:${formatDuration(it)}") }
+        if (alarm.description.isNotBlank()) line("DESCRIPTION:${escapeText(alarm.description)}")
+        alarm.extraProperties.forEach { line(it) }
+        line("END:VALARM")
+    }
+
+    event.extraProperties.forEach { line(it) }
+    line("END:VEVENT")
+}
+
+private fun StringBuilder.appendTimedStart(property: String, event: Event, dateText: String, minutes: Int, seconds: Int) {
+    val sourceValue = when (property) {
+        "DTSTART" -> event.sourceStart
+        else -> event.sourceEnd
+    }
+    val zone = event.timeZoneId
+    when {
+        sourceValue != null && sourceValue.endsWith("Z", ignoreCase = true) ->
+            line("$property:$sourceValue")
+        sourceValue != null && zone != null ->
+            line("$property;TZID=$zone:$sourceValue")
+        sourceValue != null ->
+            line("$property:$sourceValue")
+        else -> line("$property:${formatDateTime(LocalDate.parse(dateText), minutes, seconds)}")
     }
 }
 
-private fun formatDateTime(date: LocalDate, minutes: Int): String = buildString {
+private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
+    line("BEGIN:VTODO")
+    line("UID:${escapeText(todo.icsUid ?: "${todo.id}@crko")}")
+    line("DTSTAMP:${formatUtc(parseInstant(todo.lastModified) ?: now)}")
+    if (todo.createdAt > 0) {
+        line("CREATED:${formatUtc(Instant.fromEpochMilliseconds(todo.createdAt))}")
+    }
+    line("SUMMARY:${escapeText(todo.title)}")
+    if (todo.note.isNotBlank()) line("DESCRIPTION:${escapeText(todo.note)}")
+    todo.due?.let { parseDateText(it)?.let { date -> line("DUE;VALUE=DATE:${formatDate(date)}") } }
+    val exportStatus = when {
+        todo.status != TodoStatus.NeedsAction -> todo.status
+        todo.done -> TodoStatus.Completed
+        else -> TodoStatus.NeedsAction
+    }
+    val percent = when {
+        todo.percentComplete in 1..100 -> todo.percentComplete
+        exportStatus == TodoStatus.Completed -> 100
+        else -> 0
+    }
+    val statusText = when (exportStatus) {
+        TodoStatus.NeedsAction -> "NEEDS-ACTION"
+        TodoStatus.InProcess -> "IN-PROCESS"
+        TodoStatus.Completed -> "COMPLETED"
+        TodoStatus.Cancelled -> "CANCELLED"
+    }
+    line("STATUS:$statusText")
+    line("PERCENT-COMPLETE:$percent")
+    if (exportStatus == TodoStatus.Completed) {
+        // COMPLETED is a UTC DATE-TIME in RFC 5545; never invent one from DUE.
+        val completed = todo.completedTime?.let(::parseInstant)?.let(::formatUtc)
+            ?: todo.completedAt?.let(::parseDateText)?.let { "${formatDate(it)}T000000Z" }
+        if (completed != null) line("COMPLETED:$completed")
+    }
+    line("PRIORITY:${todoPriorityToIcs(todo.priority)}")
+    todo.lastModified?.let { line("LAST-MODIFIED:${formatUtc(parseInstant(it) ?: now)}") }
+    if (todo.sequence > 0) line("SEQUENCE:${todo.sequence}")
+    todo.extraProperties.forEach { line(it) }
+    line("END:VTODO")
+}
+
+private fun StringBuilder.appendRDate(event: Event, rule: RepeatRule) {
+    if (rule.rDates.isEmpty()) return
+    val values = rule.rDates.mapNotNull(::parseDateText).sorted().map { date ->
+        formatOccurrenceValue(date, event)
+    }
+    if (values.isNotEmpty()) line("RDATE${occurrenceParameter(event)}:${values.joinToString(",")}")
+}
+
+private fun StringBuilder.appendExDate(event: Event) {
+    if (event.excludedDates.isEmpty()) return
+    // Only dates that really are occurrences of the rule belong in EXDATE.
+    val probe = event.copy(excludedDates = emptyList())
+    val values = event.excludedDates
+        .distinct()
+        .sorted()
+        .mapNotNull { parseDateText(it) }
+        .filter { date -> probe.occurrenceStartOn(date)?.let { it == date } == true }
+        .map { date -> formatOccurrenceValue(date, event) }
+    if (values.isNotEmpty()) line("EXDATE${occurrenceParameter(event)}:${values.joinToString(",")}")
+}
+
+private fun occurrenceParameter(event: Event): String {
+    if (event.allDay) return ";VALUE=DATE"
+    if (event.sourceStart?.endsWith("Z", ignoreCase = true) == true) return ""
+    val id = event.timeZoneId ?: return ""
+    return if (id.equals("UTC", ignoreCase = true)) "" else ";TZID=$id"
+}
+
+private fun formatOccurrenceValue(date: LocalDate, event: Event): String {
+    if (event.allDay) return formatDate(date)
+    val sourceTime = event.sourceStart?.substringAfter('T', "")?.take(6)
+    return buildString {
+        append(formatDate(date))
+        append('T')
+        append(sourceTime?.takeIf { it.length == 6 } ?: formatTime(event.startMinutes, event.startSeconds))
+        if (event.sourceStart?.endsWith("Z", ignoreCase = true) == true) append('Z')
+    }
+}
+
+private fun buildRecurrenceValue(
+    dateText: String,
+    startMinutes: Int,
+    startSeconds: Int,
+    source: String?,
+    zoneId: String?,
+): String {
+    val date = parseDateText(dateText) ?: return dateText
+    val time = source?.substringAfter('T', "")?.take(6)?.takeIf { it.length == 6 }
+        ?: formatTime(startMinutes, startSeconds)
+    return "${formatDate(date)}T$time" + if (source?.endsWith("Z", ignoreCase = true) == true) "Z" else ""
+}
+
+private fun ruleValue(rule: RepeatRule, event: Event): String = buildString {
+    append(
+        when (rule.frequency) {
+            RepeatFrequency.Daily -> "FREQ=DAILY"
+            RepeatFrequency.Weekly, RepeatFrequency.Custom -> "FREQ=WEEKLY"
+            RepeatFrequency.Monthly -> "FREQ=MONTHLY"
+            RepeatFrequency.Yearly -> "FREQ=YEARLY"
+        },
+    )
+    if (rule.interval > 1) append(";INTERVAL=${rule.interval}")
+    if (rule.count != null && rule.count > 0) append(";COUNT=${rule.count}")
+    else rule.until?.let { until -> formatUntil(until, event)?.let { append(";UNTIL=$it") } }
+    val days = buildList {
+        rule.weekdays.filter { it in 0..6 }.distinct().sorted().forEach { add(weekdayCodes[it]) }
+        rule.byDay.forEach { entry -> add("${entry.ordinal}${weekdayCodes[entry.weekday.coerceIn(0, 6)]}") }
+    }
+    if (days.isNotEmpty()) append(";BYDAY=${days.joinToString(",")}")
+    if (rule.byMonthDay.isNotEmpty()) append(";BYMONTHDAY=${rule.byMonthDay.joinToString(",")}")
+    if (rule.byMonth.isNotEmpty()) append(";BYMONTH=${rule.byMonth.joinToString(",")}")
+    if (rule.bySetPos.isNotEmpty()) append(";BYSETPOS=${rule.bySetPos.joinToString(",")}")
+    if (rule.byYearDay.isNotEmpty()) append(";BYYEARDAY=${rule.byYearDay.joinToString(",")}")
+    if (rule.byWeekNo.isNotEmpty()) append(";BYWEEKNO=${rule.byWeekNo.joinToString(",")}")
+    rule.weekStart?.let { append(";WKST=${weekdayCodes[it.coerceIn(0, 6)]}") }
+    if (rule.byHour.isNotEmpty()) append(";BYHOUR=${rule.byHour.joinToString(",")}")
+    if (rule.byMinute.isNotEmpty()) append(";BYMINUTE=${rule.byMinute.joinToString(",")}")
+}
+
+private fun formatUntil(untilText: String, event: Event): String? {
+    val until = parseRepeatUntil(untilText) ?: return null
+    if (event.allDay) return formatDate(until.localDate())
+    until.instant?.let { return formatUtc(it) }
+    until.localDateTime?.let { return formatIcsLocalDateTime(it, utc = false) }
+    // Date-only UNTIL: the last occurrence on that date at the event's own wall-clock time.
+    val eventZone = resolveZone(event.timeZoneId, event.timeZoneDefinition)
+    val wallTime = event.sourceStart
+        ?.let(::parseSourceLocal)
+        ?.time
+        ?: LocalTime(event.startMinutes / 60, event.startMinutes % 60, event.startSeconds)
+    val last = LocalDateTime(until.date, wallTime)
+    return if (eventZone == null || eventZone is IcsZone.Floating) {
+        formatIcsLocalDateTime(last, utc = false)
+    } else {
+        formatUtc(eventZone.toInstant(last))
+    }
+}
+
+private class ContentLine(
+    val name: String,
+    val params: Map<String, String>,
+    val value: String,
+    val raw: String,
+)
+
+private class IcsComponent(val name: String, val properties: MutableList<ContentLine> = mutableListOf(), val children: MutableList<IcsComponent> = mutableListOf()) {
+    fun first(name: String): ContentLine? = properties.firstOrNull { it.name == name }
+    fun all(name: String): List<ContentLine> = properties.filter { it.name == name }
+
+    fun toText(): String = buildString {
+        append("BEGIN:${name}\r\n")
+        properties.forEach { append(it.raw).append("\r\n") }
+        children.forEach { append(it.toText()) }
+        append("END:${name}\r\n")
+    }
+}
+
+private fun normalizeComponent(text: String): String =
+    text.replace("\r\n", "\n").replace('\r', '\n').trimEnd().split('\n').joinToString("\n")
+
+private fun parseComponents(text: String): List<IcsComponent> {
+    val roots = mutableListOf<IcsComponent>()
+    val stack = ArrayDeque<IcsComponent>()
+    unfold(text).forEach { line ->
+        val parsed = parseContentLine(line) ?: return@forEach
+        when (parsed.name) {
+            "BEGIN" -> {
+                val component = IcsComponent(parsed.value.trim().uppercase())
+                if (stack.isEmpty()) roots += component else stack.last().children += component
+                stack.addLast(component)
+            }
+            "END" -> if (stack.isNotEmpty()) stack.removeLast()
+            else -> stack.lastOrNull()?.properties?.add(parsed)
+        }
+    }
+    return roots
+}
+
+private fun unfold(text: String): List<String> {
+    val normalized = text.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n')
+    val logical = mutableListOf<String>()
+    normalized.split('\n').forEach { line ->
+        if ((line.startsWith(' ') || line.startsWith('\t')) && logical.isNotEmpty()) {
+            logical[logical.lastIndex] += line.substring(1)
+        } else {
+            logical += line
+        }
+    }
+    return logical
+}
+
+private fun parseContentLine(line: String): ContentLine? {
+    var colon = -1
+    var quoted = false
+    for (index in line.indices) {
+        when (line[index]) {
+            '"' -> quoted = !quoted
+            ':' -> if (!quoted) {
+                colon = index
+                break
+            }
+        }
+    }
+    if (colon <= 0) return null
+    val head = line.substring(0, colon)
+    val value = line.substring(colon + 1)
+    val parts = splitParameters(head)
+    if (parts.isEmpty()) return null
+    val params = parts.drop(1).mapNotNull { part ->
+        val equals = part.indexOf('=')
+        if (equals <= 0) null
+        else part.substring(0, equals).trim().uppercase() to part.substring(equals + 1).trim().removeSurrounding("\"")
+    }.toMap()
+    return ContentLine(parts.first().trim().uppercase(), params, value, line)
+}
+
+private fun splitParameters(head: String): List<String> {
+    val parts = mutableListOf<String>()
+    val current = StringBuilder()
+    var quoted = false
+    head.forEach { ch ->
+        when {
+            ch == '"' -> {
+                quoted = !quoted
+                current.append(ch)
+            }
+            ch == ';' && !quoted -> {
+                parts += current.toString()
+                current.clear()
+            }
+            else -> current.append(ch)
+        }
+    }
+    parts += current.toString()
+    return parts
+}
+
+private sealed interface IcsTime {
+    data class AllDay(val date: LocalDate) : IcsTime
+    data class DateTime(val value: LocalDateTime, val zone: IcsZone, val source: String) : IcsTime
+}
+
+private sealed interface IcsZone {
+    data object Floating : IcsZone
+    data object Utc : IcsZone
+    data class Platform(override val id: String, val zone: TimeZone) : IcsZone
+    data class Custom(val zone: CustomZone) : IcsZone
+
+    val id: String?
+        get() = when (this) {
+            Floating, Utc -> null
+            is Platform -> id
+            is Custom -> zone.id
+        }
+}
+
+private fun resolveZone(tzid: String?, definition: String?): IcsZone? = when {
+    tzid == null -> null
+    tzid.equals("UTC", ignoreCase = true) || tzid.equals("GMT", ignoreCase = true) -> IcsZone.Utc
+    else -> runCatching { IcsZone.Platform(tzid, TimeZone.of(tzid)) }.getOrNull()
+        ?: definition?.let { text ->
+            parseComponents(text)
+                .firstOrNull { it.name == "VTIMEZONE" }
+                ?.let(::parseCustomZone)
+                ?.let { IcsZone.Custom(it) }
+        }
+}
+
+private data class RawRule(
+    val frequency: String,
+    val interval: Int,
+    val byDay: List<Pair<Int, Int>>,
+    val until: IcsTime?,
+    val count: Int?,
+    val byMonthDay: List<Int>,
+    val byMonth: List<Int>,
+    val bySetPos: List<Int>,
+    val byYearDay: List<Int>,
+    val byWeekNo: List<Int>,
+    val weekStart: Int?,
+    val byHour: List<Int>,
+    val byMinute: List<Int>,
+)
+
+private data class RawAlarm(
+    val action: String,
+    val triggerMinutes: Int,
+    val relatedToEnd: Boolean,
+    val repeat: Int?,
+    val durationMinutes: Int?,
+    val description: String,
+    val absoluteTrigger: String? = null,
+    val extraProperties: List<String> = emptyList(),
+)
+
+private data class RawEvent(
+    val uid: String? = null,
+    val summary: String = "",
+    val description: String = "",
+    val location: String = "",
+    val categories: List<String> = emptyList(),
+    val url: String = "",
+    val geo: String? = null,
+    val status: String? = null,
+    val transparency: String? = null,
+    val eventClass: String? = null,
+    val priority: Int? = null,
+    val organizer: String? = null,
+    val attendees: List<String> = emptyList(),
+    val organizerRaw: String? = null,
+    val attendeeRaw: List<String> = emptyList(),
+    val start: IcsTime? = null,
+    val end: IcsTime? = null,
+    val durationMinutes: Int? = null,
+    val recurrenceId: IcsTime? = null,
+    val recurrenceRange: String? = null,
+    val rule: RawRule? = null,
+    val exdates: List<IcsTime> = emptyList(),
+    val rDates: List<IcsTime> = emptyList(),
+    val created: String? = null,
+    val lastModified: String? = null,
+    val sequence: Int = 0,
+    val alarms: List<RawAlarm> = emptyList(),
+    val timeZoneDefinition: String? = null,
+    val extraProperties: List<String> = emptyList(),
+)
+
+private fun RawEvent.isCancelled(): Boolean = status.equals("CANCELLED", ignoreCase = true)
+
+private fun readEvent(
+    component: IcsComponent,
+    zones: Map<String, CustomZone>,
+    zoneDefinitions: Map<String, String>,
+    warnings: MutableSet<IcsWarning>,
+): RawEvent {
+    var uid: String? = null
+    var summary = ""
+    var description = ""
+    var location = ""
+    val categories = mutableListOf<String>()
+    var url = ""
+    var geo: String? = null
+    var status: String? = null
+    var transparency: String? = null
+    var eventClass: String? = null
+    var priority: Int? = null
+    var organizer: String? = null
+    val attendees = mutableListOf<String>()
+    var organizerRaw: String? = null
+    val attendeeRaw = mutableListOf<String>()
+    var start: IcsTime? = null
+    var end: IcsTime? = null
+    var durationMinutes: Int? = null
+    var recurrenceId: IcsTime? = null
+    var recurrenceRange: String? = null
+    var rule: RawRule? = null
+    val exdates = mutableListOf<IcsTime>()
+    val rdates = mutableListOf<IcsTime>()
+    var created: String? = null
+    var lastModified: String? = null
+    var sequence = 0
+    val extra = mutableListOf<String>()
+    var timeZoneDefinition: String? = null
+
+    component.properties.forEach { line ->
+        when (line.name) {
+            "UID" -> uid = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
+            "SUMMARY" -> summary = unescapeText(line.value).trim()
+            "DESCRIPTION" -> description = unescapeText(line.value).trim()
+            "LOCATION" -> location = unescapeText(line.value).trim()
+            "CATEGORIES" -> categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
+            "URL" -> url = unescapeText(line.value).trim()
+            "GEO" -> geo = line.value.trim().takeIf { it.isNotEmpty() }
+            "STATUS" -> status = line.value.trim().uppercase()
+            "TRANSP" -> transparency = line.value.trim().uppercase()
+            "CLASS" -> eventClass = line.value.trim().uppercase()
+            "PRIORITY" -> priority = line.value.trim().toIntOrNull()?.coerceIn(0, 9)
+            "ORGANIZER" -> {
+                organizerRaw = line.raw
+                organizer = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
+            }
+            "ATTENDEE" -> {
+                attendeeRaw += line.raw
+                unescapeText(line.value).trim().takeIf { it.isNotEmpty() }?.let { attendees += it }
+            }
+            "DTSTART" -> start = parseTime(line, zones, warnings)
+            "DTEND" -> end = parseTime(line, zones, warnings)
+            "DURATION" -> durationMinutes = parseDurationMinutes(line.value)
+            "RECURRENCE-ID" -> {
+                recurrenceId = parseTime(line, zones, warnings)
+                recurrenceRange = line.params["RANGE"]?.uppercase()
+            }
+            "RRULE" -> {
+                val parsed = parseRule(line.value, zones, warnings)
+                if (rule == null) {
+                    rule = parsed
+                } else {
+                    warnings += IcsWarning.MultipleRrules
+                }
+            }
+            "EXDATE" -> splitList(line.value).forEach { value ->
+                parseTime(ContentLine("EXDATE", line.params, value, line.raw), zones, warnings)?.let { exdates += it }
+            }
+            "RDATE" -> splitList(line.value).forEach { value ->
+                parseTime(ContentLine("RDATE", line.params, value, line.raw), zones, warnings)?.let { rdates += it }
+            }
+            "CREATED" -> created = parseIcsInstant(line.value) ?: line.value.trim()
+            "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
+            "SEQUENCE" -> sequence = line.value.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
+            "DTSTAMP", "PRODID", "VERSION", "CALSCALE", "METHOD", "X-WR-CALNAME" -> Unit
+            else -> extra += line.raw
+        }
+    }
+
+    val zoneId = (start as? IcsTime.DateTime)?.zone?.id ?: (end as? IcsTime.DateTime)?.zone?.id
+    if (zoneId != null && !zoneId.equals("UTC", ignoreCase = true)) {
+        timeZoneDefinition = zoneDefinitions[zoneId]
+    }
+
+    val alarms = component.children.filter { it.name == "VALARM" }.mapNotNull(::readAlarm)
+    return RawEvent(
+        uid = uid,
+        summary = summary,
+        description = description,
+        location = location,
+        categories = categories.distinct(),
+        url = url,
+        geo = geo,
+        status = status,
+        transparency = transparency,
+        eventClass = eventClass,
+        priority = priority,
+        organizer = organizer,
+        attendees = attendees,
+        organizerRaw = organizerRaw,
+        attendeeRaw = attendeeRaw,
+        start = start,
+        end = end,
+        durationMinutes = durationMinutes,
+        recurrenceId = recurrenceId,
+        recurrenceRange = recurrenceRange,
+        rule = rule,
+        exdates = exdates,
+        rDates = rdates,
+        created = created,
+        lastModified = lastModified,
+        sequence = sequence,
+        alarms = alarms,
+        timeZoneDefinition = timeZoneDefinition,
+        extraProperties = extra,
+    )
+}
+
+private fun readAlarm(component: IcsComponent): RawAlarm? {
+    val action = component.first("ACTION")?.value?.trim()?.uppercase() ?: "DISPLAY"
+    val trigger = component.first("TRIGGER") ?: return null
+    val triggerValue = trigger.value.trim()
+    val relative = triggerValue.startsWith("P") || triggerValue.startsWith("-P") || triggerValue.startsWith("+P")
+    val signed = if (relative) parseSignedDurationMinutes(triggerValue) else null
+    if (relative && signed == null) return null
+    if (!relative && triggerValue.isEmpty()) return null
+    val repeat = component.first("REPEAT")?.value?.trim()?.toIntOrNull()
+    val duration = component.first("DURATION")?.value?.trim()?.let(::parseDurationMinutes)
+    val description = component.first("DESCRIPTION")?.value?.let(::unescapeText).orEmpty()
+    val known = setOf("ACTION", "TRIGGER", "REPEAT", "DURATION", "DESCRIPTION")
+    return RawAlarm(
+        action = action,
+        triggerMinutes = -(signed ?: 0),
+        relatedToEnd = trigger.params["RELATED"]?.equals("END", ignoreCase = true) == true,
+        repeat = repeat,
+        durationMinutes = duration,
+        description = description,
+        absoluteTrigger = triggerValue.takeIf { !relative },
+        extraProperties = component.properties.filterNot { it.name in known }.map { it.raw },
+    )
+}
+
+private fun parseTime(
+    line: ContentLine,
+    zones: Map<String, CustomZone>,
+    warnings: MutableSet<IcsWarning>,
+): IcsTime? {
+    val text = line.value.trim()
+    if (text.isEmpty()) return null
+    val valueType = line.params["VALUE"]?.uppercase()
+    val digitsOnly = text.length == 8 && text.all { it.isDigit() }
+    if (digitsOnly) {
+        val date = parseDate(text) ?: run {
+            warnings += IcsWarning.InvalidValue
+            return null
+        }
+        return IcsTime.AllDay(date)
+    }
+    if (valueType == "DATE") {
+        warnings += IcsWarning.InvalidValue
+        return null
+    }
+    val utc = text.endsWith("Z", ignoreCase = true)
+    val body = if (utc) text.dropLast(1) else text
+    if (body.length < 13 || body[8] != 'T') {
+        warnings += IcsWarning.InvalidValue
+        return null
+    }
+    val date = parseDate(body.substring(0, 8)) ?: run {
+        warnings += IcsWarning.InvalidValue
+        return null
+    }
+    val hour = body.substring(9, 11).toIntOrNull() ?: return null
+    val minute = body.substring(11, 13).toIntOrNull() ?: return null
+    val second = if (body.length >= 15) body.substring(13, 15).toIntOrNull() ?: 0 else 0
+    if (minute !in 0..59 || second !in 0..59 || hour !in 0..24) {
+        warnings += IcsWarning.InvalidValue
+        return null
+    }
+    if (hour == 24) {
+        if (minute != 0 || second != 0) {
+            warnings += IcsWarning.InvalidValue
+            return null
+        }
+        val nextDay = date.plusDays(1)
+        val zone = resolveLineZone(utc, line.params["TZID"], zones, warnings)
+        return IcsTime.DateTime(LocalDateTime(nextDay, LocalTime(0, 0)), zone, text)
+    }
+    val local = LocalDateTime(date, LocalTime(hour, minute, second))
+    val zone = resolveLineZone(utc, line.params["TZID"], zones, warnings)
+    return IcsTime.DateTime(local, zone, text)
+}
+
+private fun resolveLineZone(
+    utc: Boolean,
+    tzid: String?,
+    zones: Map<String, CustomZone>,
+    warnings: MutableSet<IcsWarning>,
+): IcsZone {
+    if (utc) return IcsZone.Utc
+    if (tzid == null) return IcsZone.Floating
+    val id = tzid.trim().removePrefix("/")
+    zones[id]?.let { return IcsZone.Custom(it) }
+    return runCatching { IcsZone.Platform(id, TimeZone.of(id)) }.getOrElse {
+        warnings += IcsWarning.UnresolvedTimeZone
+        IcsZone.Floating
+    }
+}
+
+private fun parseRule(value: String, zones: Map<String, CustomZone>, warnings: MutableSet<IcsWarning>): RawRule? {
+    val parts = value.split(';').mapNotNull { part ->
+        val equals = part.indexOf('=')
+        if (equals <= 0) null else part.substring(0, equals).trim().uppercase() to part.substring(equals + 1).trim()
+    }.toMap()
+    val frequency = parts["FREQ"]?.uppercase() ?: return null
+    if (frequency !in setOf("DAILY", "WEEKLY", "MONTHLY", "YEARLY")) {
+        warnings += IcsWarning.UnsupportedRecurrence
+        return null
+    }
+    val interval = parts["INTERVAL"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
+    val byDay = parts["BYDAY"].orEmpty().split(',').mapNotNull { day ->
+        val code = day.trim().uppercase().takeLast(2)
+        val weekday = weekdayCodes.indexOf(code)
+        if (weekday < 0) return@mapNotNull null
+        val ordinalText = day.trim().uppercase().dropLast(2)
+        val ordinal = ordinalText.toIntOrNull() ?: 0
+        ordinal to weekday
+    }
+    val until = parts["UNTIL"]?.let { parseUntil(it, zones, warnings) }
+    val count = parts["COUNT"]?.toIntOrNull()?.takeIf { it > 0 }
+    val byMonthDay = intList(parts["BYMONTHDAY"])
+    val byMonth = intList(parts["BYMONTH"]).filter { it in 1..12 }
+    val bySetPos = intList(parts["BYSETPOS"])
+    val byYearDay = intList(parts["BYYEARDAY"])
+    val byWeekNo = intList(parts["BYWEEKNO"])
+    val weekStart = parts["WKST"]?.uppercase()?.let { weekdayCodes.indexOf(it) }?.takeIf { it >= 0 }
+    val byHour = intList(parts["BYHOUR"]).filter { it in 0..23 }
+    val byMinute = intList(parts["BYMINUTE"]).filter { it in 0..59 }
+    return RawRule(
+        frequency = frequency,
+        interval = interval,
+        byDay = byDay,
+        until = until,
+        count = count,
+        byMonthDay = byMonthDay,
+        byMonth = byMonth,
+        bySetPos = bySetPos,
+        byYearDay = byYearDay,
+        byWeekNo = byWeekNo,
+        weekStart = weekStart,
+        byHour = byHour,
+        byMinute = byMinute,
+    )
+}
+
+private fun intList(value: String?): List<Int> =
+    value.orEmpty().split(',').mapNotNull { it.trim().toIntOrNull() }.distinct()
+
+private fun parseUntil(value: String, zones: Map<String, CustomZone>, warnings: MutableSet<IcsWarning>): IcsTime? {
+    val utc = value.endsWith("Z", ignoreCase = true)
+    val line = ContentLine("UNTIL", if (utc) emptyMap() else mapOf("VALUE" to "DATE-TIME"), value, value)
+    return parseTime(line, zones, warnings)
+}
+
+private fun parseDurationMinutes(value: String): Int? {
+    val text = value.trim().uppercase()
+    if (!text.startsWith("P")) return null
+    var total = 0
+    var number = 0
+    var inTime = false
+    var sawDigit = false
+    text.drop(1).forEach { ch ->
+        when {
+            ch == 'T' -> inTime = true
+            ch.isDigit() -> {
+                number = number * 10 + (ch - '0')
+                sawDigit = true
+            }
+            else -> {
+                total += when (ch) {
+                    'W' -> number * 7 * 24 * 60
+                    'D' -> number * 24 * 60
+                    'H' -> if (inTime) number * 60 else 0
+                    'M' -> if (inTime) number else 0
+                    'S' -> if (inTime) number / 60 else 0
+                    else -> 0
+                }
+                number = 0
+            }
+        }
+    }
+    return if (sawDigit) total else null
+}
+
+private fun parseSignedDurationMinutes(value: String): Int? {
+    val trimmed = value.trim()
+    val sign = if (trimmed.startsWith('-')) -1 else 1
+    val body = trimmed.removePrefix("-").removePrefix("+")
+    val minutes = parseDurationMinutes(body) ?: return null
+    return sign * minutes
+}
+
+private fun parseDate(text: String): LocalDate? {
+    if (text.length < 8) return null
+    val year = text.substring(0, 4).toIntOrNull() ?: return null
+    val month = text.substring(4, 6).toIntOrNull() ?: return null
+    val day = text.substring(6, 8).toIntOrNull() ?: return null
+    return runCatching { LocalDate(year, month, day) }.getOrNull()
+}
+
+private fun parseDateText(text: String): LocalDate? = runCatching { LocalDate.parse(text) }.getOrNull()
+
+private fun splitList(value: String): List<String> {
+    val result = mutableListOf<String>()
+    val current = StringBuilder()
+    var escaped = false
+    value.forEach { ch ->
+        when {
+            escaped -> {
+                current.append(ch)
+                escaped = false
+            }
+            ch == '\\' -> {
+                current.append(ch)
+                escaped = true
+            }
+            ch == ',' -> {
+                result += current.toString()
+                current.clear()
+            }
+            else -> current.append(ch)
+        }
+    }
+    result += current.toString()
+    return result.filter { it.isNotEmpty() }
+}
+
+private fun IcsTime.localDateTime(deviceZone: TimeZone): LocalDateTime = when (this) {
+    is IcsTime.AllDay -> LocalDateTime(date, LocalTime(0, 0))
+    is IcsTime.DateTime -> when (val z = zone) {
+        IcsZone.Floating -> value
+        IcsZone.Utc -> value.toInstant(TimeZone.UTC).toLocalDateTime(deviceZone)
+        is IcsZone.Platform -> value.toInstant(z.zone).toLocalDateTime(deviceZone)
+        is IcsZone.Custom -> z.zone.toInstant(value).toLocalDateTime(deviceZone)
+    }
+}
+
+private fun IcsTime.localDate(deviceZone: TimeZone): LocalDate = when (this) {
+    is IcsTime.AllDay -> date
+    is IcsTime.DateTime -> localDateTime(deviceZone).date
+}
+
+private fun IcsTime.localMinutes(deviceZone: TimeZone): Int? = when (this) {
+    is IcsTime.AllDay -> null
+    is IcsTime.DateTime -> localDateTime(deviceZone).time.let { it.hour * 60 + it.minute }
+}
+
+private fun IcsZone.toInstant(local: LocalDateTime): Instant = when (this) {
+    IcsZone.Floating -> local.toInstant(TimeZone.UTC)
+    IcsZone.Utc -> local.toInstant(TimeZone.UTC)
+    is IcsZone.Platform -> local.toInstant(zone)
+    is IcsZone.Custom -> zone.toInstant(local)
+}
+
+private fun LocalDateTime.plusMinutes(minutes: Int): LocalDateTime {
+    val total = date.toEpochDays() * 1440L + time.hour * 60 + time.minute + minutes
+    val day = total.floorDiv(1440L)
+    val minuteOfDay = total.mod(1440L).toInt()
+    return LocalDateTime(LocalDate.fromEpochDays(day), LocalTime(minuteOfDay / 60, minuteOfDay % 60))
+}
+
+private fun mapSeries(
+    uid: String,
+    group: List<RawEvent>,
+    deviceZone: TimeZone,
+    untitledTitle: String,
+    zones: Map<String, CustomZone>,
+    warnings: MutableSet<IcsWarning>,
+): List<Event> {
+    val base = group.firstOrNull { it.recurrenceId == null }
+    if (base == null) {
+        return group.mapNotNull { override ->
+            mapSingle(override, deviceZone, untitledTitle, zones, warnings)?.let { event ->
+                val rid = override.recurrenceId?.localDate(deviceZone)?.toString()
+                event.copy(
+                    seriesUid = uid,
+                    recurrenceId = rid,
+                    icsUid = rid?.let { "$uid#override-$it" } ?: event.icsUid,
+                )
+            }
+        }.filterNot { it.status == EventStatus.Cancelled }
+    }
+    if (base.isCancelled()) return emptyList()
+
+    val overrides = group.filter { it.recurrenceId != null }
+    val series = mapSingle(base, deviceZone, untitledTitle, zones, warnings) ?: return emptyList()
+    val mapped = mutableListOf<Event>()
+    val splitDate = overrides
+        .filter { it.recurrenceRange == "THISANDFUTURE" && !it.isCancelled() }
+        .mapNotNull { it.recurrenceId?.localDate(deviceZone) }
+        .minOrNull()
+    val cancelledFutureDate = overrides
+        .filter { it.recurrenceRange == "THISANDFUTURE" && it.isCancelled() }
+        .mapNotNull { it.recurrenceId?.localDate(deviceZone) }
+        .minOrNull()
+    val futureRidText = splitDate?.toString()
+    val futureUid = futureRidText?.let { "$uid#future-$it" }
+    val oldExclusions = mutableListOf<String>()
+    val futureExclusions = mutableListOf<String>()
+    val normalOverrides = mutableListOf<Event>()
+    var futureSeries: Event? = null
+
+    overrides.forEach { override ->
+        val rid = override.recurrenceId?.localDate(deviceZone) ?: return@forEach
+        val ridText = rid.toString()
+        val afterSplit = splitDate != null && rid >= splitDate
+        if (override.isCancelled()) {
+            // A cancelled THISANDFUTURE is handled by the series end below; a cancelled single
+            // instance is an exclusion on whichever segment owns that occurrence.
+            if (override.recurrenceRange != "THISANDFUTURE") {
+                if (afterSplit) futureExclusions += ridText else oldExclusions += ridText
+            }
+            return@forEach
+        }
+        val isSplit = override.recurrenceRange == "THISANDFUTURE" && rid == splitDate
+        val overrideRepeat = mapRule(override.rule, override.start ?: override.recurrenceId, deviceZone, override.rDates)
+        val mappedOverride = mapSingle(
+            override,
+            deviceZone,
+            untitledTitle,
+            zones,
+            warnings,
+            repeat = if (isSplit) overrideRepeat else null,
+        ) ?: return@forEach
+        if (isSplit && futureUid != null) {
+            val inherited = series.repeat?.let { baseRule ->
+                // Without its own RRULE the future segment still has to stop where the original
+                // series would have stopped. COUNT has already consumed the earlier occurrences.
+                val remaining = baseRule.count?.let { count ->
+                    (count - countOccurrencesBefore(series, rid)).coerceAtLeast(1)
+                }
+                baseRule.copy(
+                    count = if (baseRule.until == null) remaining else null,
+                    rDates = baseRule.rDates.filter { r ->
+                        parseDateText(r)?.let { it >= rid } == true
+                    },
+                )
+            }
+            var futureRepeat = mappedOverride.repeat ?: inherited
+            if (futureRepeat != null && cancelledFutureDate != null && cancelledFutureDate > rid) {
+                val cap = cancelledFutureDate.plusDays(-1)
+                val existingUntil = futureRepeat.until?.let(::parseRepeatUntil)?.localDate()
+                val until = if (existingUntil == null || existingUntil > cap) cap else existingUntil
+                futureRepeat = futureRepeat.copy(until = until.toString(), count = null)
+            }
+            futureSeries = mappedOverride.copy(
+                repeat = futureRepeat,
+                seriesUid = uid,
+                recurrenceId = ridText,
+                thisAndFuture = true,
+                icsUid = futureUid,
+                excludedDates = emptyList(),
+            )
+            // Base EXDATEs after the split belong to the new segment, not to the truncated old one.
+            series.excludedDates.mapNotNullTo(futureExclusions) { text ->
+                parseDateText(text)?.takeIf { it > rid }?.toString()
+            }
+        } else {
+            val targetUid = if (afterSplit && futureUid != null) futureUid else uid
+            normalOverrides += mappedOverride.copy(
+                repeat = null,
+                seriesUid = targetUid,
+                recurrenceId = ridText,
+                thisAndFuture = false,
+                icsUid = "$targetUid#override-$ridText",
+            )
+            if (afterSplit) futureExclusions += ridText else oldExclusions += ridText
+        }
+    }
+
+    val seriesEnd = listOfNotNull(
+        splitDate?.plusDays(-1),
+        cancelledFutureDate?.plusDays(-1),
+    ).minOrNull()
+    val adjustedSeries = if (seriesEnd != null) {
+        // COUNT must be dropped: export prefers COUNT over UNTIL, which would undo the split.
+        series.copy(repeat = series.repeat?.copy(until = seriesEnd.toString(), count = null))
+    } else {
+        series
+    }
+    val oldSeriesExclusions = (oldExclusions + series.excludedDates.filter { text ->
+        splitDate == null || parseDateText(text)?.let { it < splitDate } == true
+    }).distinct()
+    mapped += adjustedSeries.copy(excludedDates = oldSeriesExclusions)
+    // RDATE without RRULE is a list of additional one-off occurrences.
+    if (base.rule == null) {
+        val span = series.day.daysTo(series.endDay)
+        val duration = span * 1440 + series.endMinutes - series.startMinutes
+        base.rDates.forEachIndexed { index, time ->
+            val date = time.localDate(deviceZone)
+            val copy = if (series.allDay) {
+                series.copy(
+                    date = date.toString(),
+                    endDate = date.plusDays(span).takeIf { span != 0 }?.toString(),
+                )
+            } else {
+                val sourceTime = time.localDateTime(deviceZone).time
+                val startMinutes = sourceTime.hour * 60 + sourceTime.minute
+                val endTotal = date.toEpochDays() * 1440L + startMinutes + duration
+                val endDate = LocalDate.fromEpochDays(endTotal.floorDiv(1440L))
+                val endMinutes = endTotal.mod(1440L).toInt()
+                series.copy(
+                    date = date.toString(),
+                    startMinutes = startMinutes,
+                    endMinutes = endMinutes,
+                    startSeconds = sourceTime.second,
+                    endDate = endDate.takeIf { it != date }?.toString(),
+                )
+            }
+            mapped += copy.copy(
+                excludedDates = emptyList(),
+                icsUid = "$uid#rdate-$index",
+                sourceStart = null,
+                sourceEnd = null,
+                timeZoneId = null,
+                timeZoneDefinition = null,
+            )
+        }
+    }
+    futureSeries?.let { future ->
+        mapped += future.copy(excludedDates = futureExclusions.distinct())
+    }
+    normalOverrides.forEach { mapped += it }
+    return mapped.filterNot { it.status == EventStatus.Cancelled }
+}
+
+/** Occurrences of [event]'s RRULE before [before], ignoring EXDATE and RDATE; used for COUNT splits. */
+private fun countOccurrencesBefore(event: Event, before: LocalDate): Int {
+    val rule = event.repeat ?: return 0
+    val probe = event.copy(excludedDates = emptyList(), repeat = rule.copy(rDates = emptyList()))
+    var count = 0
+    var cursor = event.day
+    val limit = rule.count ?: Int.MAX_VALUE
+    val untilDate = rule.until?.let(::parseRepeatUntil)?.localDate()
+    while (cursor < before && count < limit) {
+        if (untilDate != null && cursor > untilDate) break
+        if (probe.isOccurrenceStart(cursor, rule)) count++
+        cursor = cursor.plusDays(1)
+        if (event.day.daysTo(cursor) > 100_000) break
+    }
+    return count
+}
+
+private fun mapSingle(
+    raw: RawEvent,
+    deviceZone: TimeZone,
+    untitledTitle: String,
+    zones: Map<String, CustomZone>,
+    warnings: MutableSet<IcsWarning>,
+    repeat: RepeatRule? = mapRule(raw.rule, raw.start, deviceZone, raw.rDates),
+): Event? {
+    val start = raw.start ?: raw.recurrenceId ?: return null
+    val title = raw.summary.ifBlank { untitledTitle }
+    val uid = raw.uid
+    val allDay = start is IcsTime.AllDay
+    val startLocal = start.localDateTime(deviceZone)
+    val startTimed = (start as? IcsTime.DateTime)?.takeIf { it.zone !is IcsZone.Floating }
+    val endTimed = (raw.end as? IcsTime.DateTime)?.takeIf { it.zone !is IcsZone.Floating }
+    val sourceStart = startTimed?.source
+    val sourceEnd = endTimed?.source
+    val timeZoneId = startTimed?.let { timed ->
+        when (val zone = timed.zone) {
+            IcsZone.Utc -> "UTC"
+            else -> zone.id
+        }
+    }
+
+    if (allDay) {
+        val endExclusive = when (val end = raw.end) {
+            is IcsTime.AllDay -> if (end.date > start.date) end.date else start.date.plusDays(1)
+            is IcsTime.DateTime -> end.localDate(deviceZone).takeIf { it > start.date } ?: start.date.plusDays(1)
+            null -> raw.durationMinutes?.let { minutes ->
+                start.date.plusDays((minutes / (24 * 60)).coerceAtLeast(1))
+            } ?: start.date.plusDays(1)
+        }
+        val endInclusive = if (endExclusive > start.date) endExclusive.plusDays(-1) else start.date
+        val exclusions = mappedExclusions(raw, deviceZone, allDay = true, startMinutes = 0)
+        return Event(
+            id = null,
+            title = title,
+            date = start.date.toString(),
+            startMinutes = 0,
+            endMinutes = 0,
+            startSeconds = 0,
+            endSeconds = 0,
+            note = raw.description,
+            endDate = endInclusive.takeIf { it != start.date }?.toString(),
+            allDay = true,
+            location = raw.location,
+            categories = raw.categories,
+            url = raw.url,
+            geo = raw.geo,
+            status = rawStatus(raw.status),
+            transparency = rawTransparency(raw.transparency),
+            eventClass = rawClass(raw.eventClass),
+            priority = raw.priority,
+            organizer = raw.organizer,
+            attendees = raw.attendees,
+            organizerRaw = raw.organizerRaw,
+            attendeeRaw = raw.attendeeRaw,
+            alarms = raw.alarms.map { it.toAlarm() },
+            repeat = repeat,
+            excludedDates = exclusions,
+            icsUid = uid,
+            timeZoneDefinition = raw.timeZoneDefinition,
+            created = raw.created,
+            lastModified = raw.lastModified,
+            sequence = raw.sequence,
+            extraProperties = raw.extraProperties,
+        )
+    }
+
+    val endLocal = when {
+        raw.end != null -> raw.end.localDateTime(deviceZone)
+        raw.durationMinutes != null -> startLocal.plusMinutes(raw.durationMinutes)
+        else -> startLocal.plusMinutes(60)
+    }
+    val safeStart = startLocal
+    val safeEnd = if (endLocal > safeStart) endLocal else safeStart.plusMinutes(60)
+    val exclusions = mappedExclusions(raw, deviceZone, allDay = false, startMinutes = safeStart.time.hour * 60 + safeStart.time.minute)
+    val eventEndSource = if (sourceStart != null) {
+        sourceEnd ?: startTimed.let { timed ->
+            val sourceEndLocal = timed.value.plusMinutes(raw.durationMinutes ?: 60)
+            formatIcsLocalDateTime(sourceEndLocal, timed.zone is IcsZone.Utc)
+        }
+    } else {
+        null
+    }
+    return Event(
+        id = null,
+        title = title,
+        date = safeStart.date.toString(),
+        startMinutes = safeStart.time.hour * 60 + safeStart.time.minute,
+        endMinutes = safeEnd.time.hour * 60 + safeEnd.time.minute,
+        startSeconds = safeStart.time.second,
+        endSeconds = safeEnd.time.second,
+        note = raw.description,
+        endDate = safeEnd.date.takeIf { it != safeStart.date }?.toString(),
+        allDay = false,
+        location = raw.location,
+        categories = raw.categories,
+        url = raw.url,
+        geo = raw.geo,
+        status = rawStatus(raw.status),
+        transparency = rawTransparency(raw.transparency),
+        eventClass = rawClass(raw.eventClass),
+        priority = raw.priority,
+        organizer = raw.organizer,
+        attendees = raw.attendees,
+        organizerRaw = raw.organizerRaw,
+        attendeeRaw = raw.attendeeRaw,
+        alarms = raw.alarms.map { it.toAlarm() },
+        repeat = repeat,
+        excludedDates = exclusions,
+        icsUid = uid,
+        sourceStart = sourceStart,
+        sourceEnd = eventEndSource,
+        timeZoneId = timeZoneId,
+        timeZoneDefinition = raw.timeZoneDefinition,
+        created = raw.created,
+        lastModified = raw.lastModified,
+        sequence = raw.sequence,
+        extraProperties = raw.extraProperties,
+    )
+}
+
+private fun mappedExclusions(raw: RawEvent, deviceZone: TimeZone, allDay: Boolean, startMinutes: Int): List<String> {
+    val dates = mutableListOf<String>()
+    raw.exdates.forEach { time ->
+        when (time) {
+            is IcsTime.AllDay -> dates += time.date.toString()
+            is IcsTime.DateTime -> {
+                val local = time.localDateTime(deviceZone)
+                val minutes = local.time.hour * 60 + local.time.minute
+                if (allDay || minutes == startMinutes) dates += local.date.toString()
+            }
+        }
+    }
+    raw.recurrenceId?.let { dates += it.localDate(deviceZone).toString() }
+    return dates.distinct()
+}
+
+private fun mapRule(
+    raw: RawRule?,
+    start: IcsTime?,
+    deviceZone: TimeZone,
+    rDates: List<IcsTime>,
+): RepeatRule? {
+    if (raw == null) return null
+    val anchor = start?.localDate(deviceZone) ?: LocalDate(1970, 1, 1)
+    val frequency = when (raw.frequency) {
+        "DAILY" -> RepeatFrequency.Daily
+        "WEEKLY" -> {
+            val plain = raw.byDay.filter { it.first == 0 }.map { it.second }.distinct().sorted()
+            if (plain.isEmpty() || plain == listOf(anchor.mondayIndex)) RepeatFrequency.Weekly
+            else RepeatFrequency.Custom
+        }
+        "MONTHLY" -> RepeatFrequency.Monthly
+        "YEARLY" -> RepeatFrequency.Yearly
+        else -> return null
+    }
+    val weekdays = raw.byDay.filter { it.first == 0 }.map { it.second }.distinct().sorted()
+    val ordinals = raw.byDay.filter { it.first != 0 }
+        .map { OrdinalWeekday(it.first, it.second) }
+    val until = raw.until?.let { time ->
+        when (time) {
+            is IcsTime.AllDay -> time.date.toString()
+            is IcsTime.DateTime -> when (time.zone) {
+                IcsZone.Floating -> time.value.toString()
+                // UNTIL of a UTC/TZID event is an instant; keep it absolute so the time of day
+                // survives import even when the device zone differs.
+                else -> time.zone.toInstant(time.value).toString()
+            }
+        }
+    }
+    val rDatesText = rDates.mapNotNull { time ->
+        when (time) {
+            is IcsTime.AllDay -> time.date.toString()
+            is IcsTime.DateTime -> time.localDateTime(deviceZone).date.toString()
+        }
+    }
+    return RepeatRule(
+        frequency = frequency,
+        weekdays = weekdays,
+        interval = raw.interval,
+        count = raw.count,
+        until = until,
+        byDay = ordinals,
+        byMonthDay = raw.byMonthDay,
+        byMonth = raw.byMonth,
+        bySetPos = raw.bySetPos,
+        byYearDay = raw.byYearDay,
+        byWeekNo = raw.byWeekNo,
+        weekStart = raw.weekStart,
+        byHour = raw.byHour,
+        byMinute = raw.byMinute,
+        rDates = rDatesText,
+    )
+}
+
+private fun rawStatus(value: String?): EventStatus = when (value?.uppercase()) {
+    "TENTATIVE" -> EventStatus.Tentative
+    "CANCELLED" -> EventStatus.Cancelled
+    else -> EventStatus.Confirmed
+}
+
+private fun rawTransparency(value: String?): EventTransparency =
+    if (value.equals("TRANSPARENT", ignoreCase = true)) EventTransparency.Transparent else EventTransparency.Opaque
+
+private fun rawClass(value: String?): EventClass? = when (value?.uppercase()) {
+    "PUBLIC" -> EventClass.Public
+    "PRIVATE" -> EventClass.Private
+    "CONFIDENTIAL" -> EventClass.Confidential
+    else -> null
+}
+
+private fun RawAlarm.toAlarm(): Alarm = Alarm(
+    action = action,
+    triggerMinutes = triggerMinutes,
+    relatedToEnd = relatedToEnd,
+    repeat = repeat,
+    durationMinutes = durationMinutes,
+    description = description,
+    absoluteTrigger = absoluteTrigger,
+    extraProperties = extraProperties,
+)
+
+private fun readTodo(
+    component: IcsComponent,
+    deviceZone: TimeZone,
+    warning: (IcsWarning) -> Unit,
+): Todo? {
+    var uid: String? = null
+    var title = ""
+    var note = ""
+    var due: String? = null
+    var rawStatus: String? = null
+    var percent = 0
+    var priority = 0
+    var completed: String? = null
+    var completedTime: String? = null
+    var created: String? = null
+    var lastModified: String? = null
+    var sequence = 0
+    val extra = mutableListOf<String>()
+    component.properties.forEach { line ->
+        when (line.name) {
+            "UID" -> uid = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
+            "SUMMARY" -> title = unescapeText(line.value).trim()
+            "DESCRIPTION" -> note = unescapeText(line.value).trim()
+            "DUE" -> {
+                val time = parseTime(line, emptyMap(), mutableSetOf())
+                due = when (time) {
+                    is IcsTime.AllDay -> time.date.toString()
+                    is IcsTime.DateTime -> time.localDate(deviceZone).toString()
+                    null -> null
+                }
+                if (time == null) warning(IcsWarning.InvalidValue)
+            }
+            "STATUS" -> rawStatus = line.value.trim().uppercase()
+            "PERCENT-COMPLETE" -> percent = line.value.trim().toIntOrNull()?.coerceIn(0, 100) ?: 0
+            "PRIORITY" -> priority = line.value.trim().toIntOrNull()?.coerceIn(0, 9) ?: 0
+            "COMPLETED" -> {
+                val time = parseTime(line, emptyMap(), mutableSetOf())
+                completed = time?.localDate(deviceZone)?.toString()
+                completedTime = (time as? IcsTime.DateTime)
+                    ?.let { it.zone.toInstant(it.value) }
+                    ?.toString()
+            }
+            "CREATED" -> created = parseIcsInstant(line.value) ?: line.value.trim()
+            "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
+            "SEQUENCE" -> sequence = line.value.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
+            "DTSTAMP" -> Unit
+            else -> extra += line.raw
+        }
+    }
+    if (title.isBlank() && uid == null) return null
+    val status = when (rawStatus) {
+        "COMPLETED" -> TodoStatus.Completed
+        "IN-PROCESS" -> TodoStatus.InProcess
+        "CANCELLED" -> TodoStatus.Cancelled
+        "NEEDS-ACTION" -> TodoStatus.NeedsAction
+        else -> when {
+            percent >= 100 -> TodoStatus.Completed
+            percent > 0 -> TodoStatus.InProcess
+            else -> TodoStatus.NeedsAction
+        }
+    }
+    val done = status == TodoStatus.Completed ||
+        status == TodoStatus.Cancelled ||
+        percent >= 100 ||
+        completed != null
+    return Todo(
+        id = "",
+        title = title.ifBlank { uid ?: "" },
+        done = done,
+        priority = when {
+            priority in 1..4 -> TodoPriority.High
+            priority in 5..7 -> TodoPriority.Normal
+            priority in 8..9 -> TodoPriority.Low
+            else -> TodoPriority.Normal
+        },
+        due = due,
+        note = note,
+        icsUid = uid,
+        createdAt = parseInstant(created)?.toEpochMilliseconds() ?: 0L,
+        completedAt = completed,
+        sequence = sequence,
+        lastModified = lastModified,
+        extraProperties = extra,
+        status = status,
+        percentComplete = percent,
+        completedTime = completedTime,
+    )
+}
+
+private fun todoPriorityToIcs(priority: TodoPriority): Int = when (priority) {
+    TodoPriority.High -> 1
+    TodoPriority.Normal -> 5
+    TodoPriority.Low -> 9
+}
+
+// ----- custom VTIMEZONE ----------------------------------------------------
+
+private class CustomZone(val id: String, val observances: List<Observance>) {
+    fun toInstant(local: LocalDateTime): Instant {
+        val offset = offsetMinutesAt(local)
+        return local.toInstant(TimeZone.UTC).minusMinutes(offset)
+    }
+
+    fun offsetMinutesAt(local: LocalDateTime): Int {
+        val candidates = mutableListOf<Pair<LocalDateTime, Int>>()
+        observances.forEach { observance ->
+            observance.transitionsAround(local.year).forEach { transition ->
+                candidates += transition to observance.offsetTo
+            }
+        }
+        if (candidates.isEmpty()) return observances.firstOrNull()?.offsetTo ?: 0
+        val latest = candidates.filter { it.first <= local }.maxByOrNull { it.first }
+        return latest?.second ?: candidates.minByOrNull { it.first }!!.second
+    }
+}
+
+private class Observance(
+    val start: LocalDateTime,
+    val offsetFrom: Int,
+    val offsetTo: Int,
+    val rule: RawRule?,
+) {
+    fun transitionsAround(year: Int): List<LocalDateTime> {
+        val rule = rule ?: return listOf(start)
+        val transitionDates = mutableListOf<LocalDate>()
+        val anchor = start.date
+        for (y in (year - 1)..(year + 1)) {
+            if (y < anchor.year) continue
+            val candidates = when (rule.frequency) {
+                "YEARLY" -> yearCandidates(
+                    RepeatRule(
+                        frequency = RepeatFrequency.Yearly,
+                        weekdays = rule.byDay.filter { it.first == 0 }.map { it.second },
+                        interval = rule.interval,
+                        byDay = rule.byDay.filter { it.first != 0 }.map { OrdinalWeekday(it.first, it.second) },
+                        byMonthDay = rule.byMonthDay,
+                        byMonth = rule.byMonth,
+                        bySetPos = rule.bySetPos,
+                        byYearDay = rule.byYearDay,
+                        byWeekNo = rule.byWeekNo,
+                    ),
+                    anchor = anchor,
+                    year = y,
+                    withSetPos = true,
+                )
+                "MONTHLY" -> (1..12).flatMap { month ->
+                    monthCandidates(
+                        RepeatRule(
+                            frequency = RepeatFrequency.Monthly,
+                            weekdays = rule.byDay.filter { it.first == 0 }.map { it.second },
+                            interval = rule.interval,
+                            byDay = rule.byDay.filter { it.first != 0 }.map { OrdinalWeekday(it.first, it.second) },
+                            byMonthDay = rule.byMonthDay,
+                            byMonth = rule.byMonth,
+                            bySetPos = rule.bySetPos,
+                        ),
+                        anchor = anchor,
+                        year = y,
+                        month = month,
+                    )
+                }
+                else -> emptyList()
+            }
+            transitionDates += candidates.filter { it >= anchor }
+        }
+        if (transitionDates.isEmpty() && start.date.year in (year - 1)..(year + 1)) transitionDates += start.date
+        return transitionDates.map { LocalDateTime(it, start.time) }.distinct().sorted()
+    }
+}
+
+private fun parseCustomZone(component: IcsComponent): CustomZone? {
+    val id = component.first("TZID")?.value?.trim()?.removePrefix("/") ?: return null
+    val observances = component.children.mapNotNull { child ->
+        if (child.name != "STANDARD" && child.name != "DAYLIGHT") return@mapNotNull null
+        val startLine = child.first("DTSTART") ?: return@mapNotNull null
+        val start = parseTime(startLine, emptyMap(), mutableSetOf()) as? IcsTime.DateTime ?: return@mapNotNull null
+        val from = child.first("TZOFFSETFROM")?.value?.let(::parseUtcOffset) ?: 0
+        val to = child.first("TZOFFSETTO")?.value?.let(::parseUtcOffset) ?: from
+        val rule = child.first("RRULE")?.value?.let { parseRule(it, emptyMap(), mutableSetOf()) }
+        Observance(start.value, from, to, rule)
+    }
+    if (observances.isEmpty()) return null
+    return CustomZone(id, observances)
+}
+
+private fun parseUtcOffset(value: String): Int? {
+    val text = value.trim()
+    if (text.isEmpty()) return null
+    val sign = if (text.startsWith('-')) -1 else 1
+    val digits = text.removePrefix("+").removePrefix("-").filter { it.isDigit() }
+    if (digits.length < 4) return null
+    val hours = digits.substring(0, 2).toIntOrNull() ?: return null
+    val minutes = digits.substring(2, 4).toIntOrNull() ?: return null
+    return sign * (hours * 60 + minutes)
+}
+
+private fun parseSourceLocal(source: String): LocalDateTime? {
+    val body = if (source.endsWith("Z", ignoreCase = true)) source.dropLast(1) else source
+    if (body.length < 13 || body[8] != 'T') return null
+    val date = parseDate(body.substring(0, 8)) ?: return null
+    val hour = body.substring(9, 11).toIntOrNull() ?: return null
+    val minute = body.substring(11, 13).toIntOrNull() ?: return null
+    val second = if (body.length >= 15) body.substring(13, 15).toIntOrNull() ?: 0 else 0
+    // RFC 5545 allows 24:00 as the exclusive end of a day.
+    if (hour == 24 && minute == 0 && second == 0) return LocalDateTime(date.plusDays(1), LocalTime(0, 0))
+    return runCatching { LocalDateTime(date, LocalTime(hour, minute, second)) }.getOrNull()
+}
+
+private fun formatDate(date: LocalDate): String = buildString {
     append(date.year.toString().padStart(4, '0'))
     append(date.month.number.toString().padStart(2, '0'))
     append(date.day.toString().padStart(2, '0'))
-    append('T')
-    append((minutes / 60).toString().padStart(2, '0'))
-    append((minutes % 60).toString().padStart(2, '0'))
-    append("00")
 }
+
+private fun formatDateTime(date: LocalDate, minutes: Int, seconds: Int = 0): String {
+    val resolved = if (minutes >= 24 * 60) date.plusDays(1) to (minutes - 24 * 60) else date to minutes
+    return "${formatDate(resolved.first)}T${formatTime(resolved.second, seconds)}"
+}
+
+private fun formatTime(minutes: Int, seconds: Int = 0): String =
+    "${(minutes / 60).toString().padStart(2, '0')}${(minutes % 60).toString().padStart(2, '0')}${seconds.coerceIn(0, 59).toString().padStart(2, '0')}"
 
 private fun formatUtc(instant: Instant): String {
     val local = instant.toLocalDateTime(TimeZone.UTC)
@@ -152,6 +1749,52 @@ private fun formatUtc(instant: Instant): String {
         append('Z')
     }
 }
+
+private fun parseInstant(value: String?): Instant? =
+    value?.let { runCatching { Instant.parse(it) }.getOrNull() }
+
+private fun parseIcsInstant(value: String): String? {
+    val line = ContentLine("VALUE", emptyMap(), value.trim(), value.trim())
+    val time = parseTime(line, emptyMap(), mutableSetOf()) as? IcsTime.DateTime ?: return null
+    return time.zone.toInstant(time.value).toString()
+}
+
+/** Trigger duration with the RFC sign: positive minutes mean before the start. */
+private fun formatTriggerDuration(minutes: Int): String = when {
+    minutes > 0 -> "-${formatDuration(minutes)}"
+    minutes < 0 -> "+${formatDuration(-minutes)}"
+    else -> "PT0M"
+}
+
+private fun formatDuration(minutes: Int): String {
+    if (minutes == 0) return "PT0M"
+    val sign = if (minutes < 0) "-" else ""
+    var remaining = kotlin.math.abs(minutes)
+    val days = remaining / (24 * 60)
+    remaining %= 24 * 60
+    val hours = remaining / 60
+    remaining %= 60
+    return buildString {
+        append(sign).append('P')
+        if (days > 0) append(days).append('D')
+        if (hours > 0 || remaining > 0 || days == 0) {
+            append('T')
+            if (hours > 0) append(hours).append('H')
+            if (remaining > 0 || (hours == 0 && days == 0)) append(remaining).append('M')
+        }
+    }
+}
+
+private fun formatIcsLocalDateTime(value: LocalDateTime, utc: Boolean): String = buildString {
+    append(formatDate(value.date))
+    append('T')
+    append(value.time.hour.toString().padStart(2, '0'))
+    append(value.time.minute.toString().padStart(2, '0'))
+    append(value.time.second.toString().padStart(2, '0'))
+    if (utc) append('Z')
+}
+
+private fun Instant.minusMinutes(minutes: Int): Instant = this - minutes.minutes
 
 /** Folds at 75 octets without splitting UTF-8 sequences or surrogate pairs. */
 private fun foldLine(line: String): String {
@@ -186,7 +1829,6 @@ private fun escapeText(value: String): String = buildString(value.length) {
             ',' -> append("\\,")
             '\n' -> append("\\n")
             '\r' -> {
-                // CRLF is one logical newline; the LF half is escaped on the next iteration.
                 if (index + 1 >= value.length || value[index + 1] != '\n') append("\\n")
             }
             else -> append(ch)
@@ -211,465 +1853,4 @@ private fun unescapeText(value: String): String = buildString(value.length) {
             index++
         }
     }
-}
-
-private fun parseDateText(text: String): LocalDate? =
-    runCatching { LocalDate.parse(text) }.getOrNull()
-
-private fun unfold(text: String): List<String> {
-    val normalized = text.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n')
-    val logical = mutableListOf<String>()
-    normalized.split('\n').forEach { line ->
-        if ((line.startsWith(' ') || line.startsWith('\t')) && logical.isNotEmpty()) {
-            logical[logical.lastIndex] += line.substring(1)
-        } else {
-            logical += line
-        }
-    }
-    return logical
-}
-
-private class ContentLine(val name: String, val params: Map<String, String>, val value: String)
-
-private fun parseContentLine(line: String): ContentLine? {
-    var colon = -1
-    var quoted = false
-    for (index in line.indices) {
-        when (line[index]) {
-            '"' -> quoted = !quoted
-            ':' -> if (!quoted) {
-                colon = index
-                break
-            }
-        }
-    }
-    if (colon <= 0) return null
-    val head = line.substring(0, colon)
-    val value = line.substring(colon + 1)
-    val parts = splitParameters(head)
-    if (parts.isEmpty()) return null
-    val params = parts.drop(1).mapNotNull { part ->
-        val equals = part.indexOf('=')
-        if (equals <= 0) {
-            null
-        } else {
-            part.substring(0, equals).trim().uppercase() to part.substring(equals + 1).trim().removeSurrounding("\"")
-        }
-    }.toMap()
-    return ContentLine(parts.first().trim().uppercase(), params, value)
-}
-
-private fun splitParameters(head: String): List<String> {
-    val parts = mutableListOf<String>()
-    val current = StringBuilder()
-    var quoted = false
-    head.forEach { ch ->
-        when {
-            ch == '"' -> {
-                quoted = !quoted
-                current.append(ch)
-            }
-            ch == ';' && !quoted -> {
-                parts += current.toString()
-                current.clear()
-            }
-            else -> current.append(ch)
-        }
-    }
-    parts += current.toString()
-    return parts
-}
-
-private sealed interface IcsTime {
-    data class AllDay(val date: LocalDate) : IcsTime
-    data class DateTime(val value: LocalDateTime, val zone: TimeZone?) : IcsTime
-}
-
-private data class RawRule(
-    val frequency: String,
-    val interval: Int,
-    val byDay: List<Int>,
-    val until: IcsTime?,
-    val count: Int?,
-)
-
-private data class RawEvent(
-    val uid: String? = null,
-    val summary: String = "",
-    val description: String = "",
-    val start: IcsTime? = null,
-    val end: IcsTime? = null,
-    val durationMinutes: Int? = null,
-    val recurrenceId: IcsTime? = null,
-    val status: String? = null,
-    val rule: RawRule? = null,
-    val exdates: List<IcsTime> = emptyList(),
-)
-
-private fun RawEvent.isCancelled(): Boolean = status.equals("CANCELLED", ignoreCase = true)
-
-private class RawEventBuilder {
-    var uid: String? = null
-    var summary = ""
-    var description = ""
-    var start: IcsTime? = null
-    var end: IcsTime? = null
-    var durationMinutes: Int? = null
-    var recurrenceId: IcsTime? = null
-    var status: String? = null
-    var rule: RawRule? = null
-    val exdates = mutableListOf<IcsTime>()
-
-    fun build() = RawEvent(
-        uid = uid,
-        summary = summary,
-        description = description,
-        start = start,
-        end = end,
-        durationMinutes = durationMinutes,
-        recurrenceId = recurrenceId,
-        status = status,
-        rule = rule,
-        exdates = exdates.toList(),
-    )
-}
-
-private fun readEvents(text: String): List<RawEvent> {
-    val events = mutableListOf<RawEvent>()
-    var builder: RawEventBuilder? = null
-    var nestedDepth = 0
-    unfold(text).forEach { line ->
-        val parsed = parseContentLine(line) ?: return@forEach
-        when (parsed.name) {
-            "BEGIN" -> {
-                val component = parsed.value.trim()
-                if (builder == null && component.equals("VEVENT", ignoreCase = true)) {
-                    builder = RawEventBuilder()
-                    nestedDepth = 0
-                } else if (builder != null) {
-                    nestedDepth++
-                }
-            }
-            "END" -> {
-                val component = parsed.value.trim()
-                when {
-                    builder == null -> Unit
-                    component.equals("VEVENT", ignoreCase = true) && nestedDepth == 0 -> {
-                        events += builder.build()
-                        builder = null
-                    }
-                    nestedDepth > 0 -> nestedDepth--
-                }
-            }
-            else -> if (builder != null && nestedDepth == 0) applyProperty(builder, parsed)
-        }
-    }
-    return events
-}
-
-private fun applyProperty(target: RawEventBuilder, line: ContentLine) {
-    when (line.name) {
-        "UID" -> target.uid = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
-        "SUMMARY" -> target.summary = unescapeText(line.value).trim()
-        "DESCRIPTION" -> target.description = unescapeText(line.value).trim()
-        "DTSTART" -> target.start = parseIcsTime(line.value, line.params)
-        "DTEND" -> target.end = parseIcsTime(line.value, line.params)
-        "DURATION" -> target.durationMinutes = parseDurationMinutes(line.value)
-        "RECURRENCE-ID" -> target.recurrenceId = parseIcsTime(line.value, line.params)
-        "STATUS" -> target.status = line.value.trim().uppercase()
-        "RRULE" -> target.rule = parseRule(line.value)
-        "EXDATE" -> line.value.split(',').forEach { value ->
-            parseIcsTime(value, line.params)?.let { target.exdates += it }
-        }
-    }
-}
-
-private fun parseRule(value: String): RawRule? {
-    val parts = value.split(';').mapNotNull { part ->
-        val equals = part.indexOf('=')
-        if (equals <= 0) null else part.substring(0, equals).trim().uppercase() to part.substring(equals + 1).trim()
-    }.toMap()
-    val frequency = parts["FREQ"]?.uppercase() ?: return null
-    val interval = parts["INTERVAL"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
-    val byDay = parts["BYDAY"].orEmpty().split(',').mapNotNull { day ->
-        val code = day.trim().uppercase().takeLast(2)
-        weekdayCodes.indexOf(code).takeIf { it >= 0 }
-    }.distinct().sorted()
-    val until = parts["UNTIL"]?.let { parseIcsTime(it, emptyMap()) }
-    val count = parts["COUNT"]?.toIntOrNull()?.takeIf { it > 0 }
-    return RawRule(frequency, interval, byDay, until, count)
-}
-
-private fun parseDurationMinutes(value: String): Int? {
-    val text = value.trim().uppercase()
-    if (!text.startsWith("P")) return null
-    var total = 0
-    var number = 0
-    var inTime = false
-    var sawDigit = false
-    text.drop(1).forEach { ch ->
-        when {
-            ch == 'T' -> inTime = true
-            ch.isDigit() -> {
-                number = number * 10 + (ch - '0')
-                sawDigit = true
-            }
-            else -> {
-                total += when (ch) {
-                    'W' -> number * 7 * 24 * 60
-                    'D' -> number * 24 * 60
-                    'H' -> if (inTime) number * 60 else 0
-                    'M' -> if (inTime) number else 0
-                    else -> 0
-                }
-                number = 0
-            }
-        }
-    }
-    return if (sawDigit) total else null
-}
-
-private fun parseIcsTime(value: String, params: Map<String, String>): IcsTime? {
-    val text = value.trim()
-    if (text.isEmpty()) return null
-    val dateOnly = params["VALUE"]?.equals("DATE", ignoreCase = true) == true ||
-        (text.length == 8 && text.all { it.isDigit() })
-    if (dateOnly) {
-        val date = parseDate(text.take(8)) ?: return null
-        return IcsTime.AllDay(date)
-    }
-    val utc = text.endsWith("Z", ignoreCase = true)
-    val body = if (utc) text.dropLast(1) else text
-    if (body.length < 15 || body[8] != 'T') return null
-    val date = parseDate(body.substring(0, 8)) ?: return null
-    val hour = body.substring(9, 11).toIntOrNull() ?: return null
-    val minute = body.substring(11, 13).toIntOrNull() ?: return null
-    val second = body.substring(13, 15).toIntOrNull() ?: return null
-    if (hour !in 0..23 || minute !in 0..59 || second !in 0..59) return null
-    val time = LocalTime(hour, minute, second)
-    val zone = when {
-        utc -> TimeZone.UTC
-        params["TZID"] != null -> runCatching { TimeZone.of(params.getValue("TZID")) }.getOrNull()
-        else -> null
-    }
-    return IcsTime.DateTime(LocalDateTime(date, time), zone)
-}
-
-private fun parseDate(text: String): LocalDate? {
-    if (text.length < 8) return null
-    val year = text.substring(0, 4).toIntOrNull() ?: return null
-    val month = text.substring(4, 6).toIntOrNull() ?: return null
-    val day = text.substring(6, 8).toIntOrNull() ?: return null
-    return runCatching { LocalDate(year, month, day) }.getOrNull()
-}
-
-private fun IcsTime.localDateIn(deviceZone: TimeZone): LocalDate = when (this) {
-    is IcsTime.AllDay -> date
-    is IcsTime.DateTime -> zone?.let { sourceZone ->
-        runCatching { value.toInstant(sourceZone).toLocalDateTime(deviceZone).date }.getOrNull()
-    } ?: value.date
-}
-
-private fun IcsTime.localMinutesIn(deviceZone: TimeZone): Pair<LocalDate, Int?> = when (this) {
-    is IcsTime.AllDay -> date to null
-    is IcsTime.DateTime -> {
-        val resolved = zone?.let { sourceZone ->
-            runCatching { value.toInstant(sourceZone).toLocalDateTime(deviceZone) }.getOrNull()
-        }
-        if (resolved == null) {
-            value.date to value.time.minutesOfDay()
-        } else {
-            resolved.date to resolved.time.minutesOfDay()
-        }
-    }
-}
-
-private fun mapBase(
-    raw: RawEvent,
-    overrides: List<RawEvent>,
-    deviceZone: TimeZone,
-    untitledTitle: String,
-): List<Event> {
-    val start = raw.start ?: return emptyList()
-    val title = raw.summary.ifBlank { untitledTitle }
-    val uid = raw.uid
-    val anchor = start.localDateIn(deviceZone)
-    val exclusions = (raw.exdates.map { it.localDateIn(deviceZone) } +
-        overrides.mapNotNull { it.recurrenceId?.localDateIn(deviceZone) })
-        .distinct()
-        .sorted()
-    val rule = raw.rule
-    val repeatsForever = rule != null && rule.count == null && rule.until == null
-    val series = if (repeatsForever) mapInfiniteRule(rule, anchor) else null
-    val expanded = if (series == null && rule != null && (rule.count != null || rule.until != null)) {
-        expandDates(anchor, rule, deviceZone)
-    } else {
-        null
-    }
-
-    if (start is IcsTime.AllDay) {
-        val endExclusive = when (val end = raw.end) {
-            is IcsTime.AllDay -> if (end.date > start.date) end.date else start.date.plusDays(1)
-            else -> start.date.plusDays(1)
-        }
-        if (series != null) {
-            return listOf(
-                Event(
-                    id = null,
-                    title = title,
-                    date = start.date.toString(),
-                    startMinutes = 0,
-                    endMinutes = MaxEndMinutes,
-                    note = raw.description,
-                    repeat = series,
-                    excludedDates = exclusions.map { it.toString() },
-                    icsUid = uid,
-                ),
-            )
-        }
-        if (expanded != null) {
-            return expanded.filterNot { it in exclusions }.map { date ->
-                Event(
-                    id = null,
-                    title = title,
-                    date = date.toString(),
-                    startMinutes = 0,
-                    endMinutes = MaxEndMinutes,
-                    note = raw.description,
-                    icsUid = occurrenceUid(uid, date),
-                )
-            }
-        }
-        val days = generateSequence(start.date) { it.plusDays(1) }
-            .takeWhile { it < endExclusive }
-            .take(MaxAllDaySpanDays)
-            .toList()
-            .ifEmpty { listOf(start.date) }
-        return days.map { date ->
-            Event(
-                id = null,
-                title = title,
-                date = date.toString(),
-                startMinutes = 0,
-                endMinutes = MaxEndMinutes,
-                note = raw.description,
-                icsUid = if (days.size == 1) uid else uid?.let { "$it#part-$date" },
-            )
-        }
-    }
-
-    val (startDate, startValue) = start.localMinutesIn(deviceZone)
-    val endLocal = raw.end?.localMinutesIn(deviceZone)
-    val rawStart = startValue ?: 0
-    val endMinutes = when {
-        endLocal == null -> (rawStart + (raw.durationMinutes ?: 60)).coerceAtMost(MaxEndMinutes)
-        endLocal.first > startDate -> MaxEndMinutes
-        endLocal.first < startDate -> (rawStart + (raw.durationMinutes ?: 60)).coerceAtMost(MaxEndMinutes)
-        else -> endLocal.second ?: rawStart
-    }
-    val safeStart = rawStart.coerceIn(0, MaxEndMinutes - 1)
-    val safeEnd = if (endMinutes > safeStart) {
-        endMinutes.coerceAtMost(MaxEndMinutes)
-    } else {
-        (safeStart + 60).coerceAtMost(MaxEndMinutes)
-    }
-    val base = Event(
-        id = null,
-        title = title,
-        date = startDate.toString(),
-        startMinutes = safeStart,
-        endMinutes = safeEnd,
-        note = raw.description,
-        repeat = series,
-        excludedDates = if (series != null) exclusions.map { it.toString() } else emptyList(),
-        icsUid = uid,
-    )
-    if (series != null) return listOf(base)
-    if (expanded != null) {
-        return expanded.filterNot { it in exclusions }.map { date ->
-            base.copy(date = date.toString(), icsUid = occurrenceUid(uid, date))
-        }
-    }
-    return listOf(base.copy(excludedDates = emptyList()))
-}
-
-private fun occurrenceUid(uid: String?, date: LocalDate): String? = uid?.let { "$it#$date" }
-
-private fun mapOverride(raw: RawEvent, deviceZone: TimeZone, untitledTitle: String): Event? {
-    if (raw.isCancelled()) return null
-    val normalized = raw.copy(
-        rule = null,
-        exdates = emptyList(),
-        recurrenceId = null,
-        start = raw.start ?: raw.recurrenceId,
-    )
-    val mapped = mapBase(normalized, emptyList(), deviceZone, untitledTitle).firstOrNull() ?: return null
-    val suffix = raw.recurrenceId?.localDateIn(deviceZone)?.toString() ?: mapped.date
-    return mapped.copy(icsUid = raw.uid?.let { "$it#override-$suffix" })
-}
-
-private fun mapInfiniteRule(rule: RawRule, anchor: LocalDate): RepeatRule? {
-    if (rule.interval != 1) return null
-    return when (rule.frequency) {
-        "DAILY" -> if (rule.byDay.isEmpty()) {
-            RepeatRule(RepeatFrequency.Daily)
-        } else {
-            weekdaysRule(rule.byDay, anchor)
-        }
-        "WEEKLY" -> if (rule.byDay.isEmpty()) {
-            RepeatRule(RepeatFrequency.Weekly)
-        } else {
-            weekdaysRule(rule.byDay, anchor)
-        }
-        else -> null
-    }
-}
-
-private fun weekdaysRule(days: List<Int>, anchor: LocalDate): RepeatRule {
-    val normalized = days.filter { it in 0..6 }.distinct().sorted()
-    return if (normalized.isEmpty() || normalized == listOf(anchor.mondayIndex)) {
-        RepeatRule(RepeatFrequency.Weekly)
-    } else {
-        RepeatRule(RepeatFrequency.Custom, normalized)
-    }
-}
-
-private fun expandDates(anchor: LocalDate, rule: RawRule, deviceZone: TimeZone): List<LocalDate>? {
-    val interval = rule.interval.coerceAtLeast(1)
-    val until = rule.until?.localDateIn(deviceZone)
-    val limit = minOf(rule.count ?: MaxExpandedOccurrences, MaxExpandedOccurrences)
-    if (limit <= 0) return emptyList()
-    val dates = mutableListOf<LocalDate>()
-    val guardLimit = MaxExpandedOccurrences * 8
-    when (rule.frequency) {
-        "DAILY" -> {
-            if (rule.byDay.isNotEmpty() && interval != 1) return null
-            var cursor = anchor
-            var guard = 0
-            while (dates.size < limit && guard <= guardLimit) {
-                if (until != null && cursor > until) break
-                if (rule.byDay.isEmpty() || cursor.mondayIndex in rule.byDay) dates += cursor
-                cursor = cursor.plusDays(interval)
-                guard++
-            }
-        }
-        "WEEKLY" -> {
-            val weekdays = rule.byDay.ifEmpty { listOf(anchor.mondayIndex) }.sorted()
-            var weekStart = anchor.startOfWeek()
-            var guard = 0
-            while (dates.size < limit && guard <= guardLimit) {
-                for (weekday in weekdays) {
-                    if (dates.size >= limit) break
-                    val date = weekStart.plusDays(weekday)
-                    if (date < anchor) continue
-                    if (until != null && date > until) return dates
-                    dates += date
-                }
-                weekStart = weekStart.plusDays(7 * interval)
-                guard++
-            }
-        }
-        else -> return null
-    }
-    return dates
 }

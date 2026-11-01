@@ -2,6 +2,7 @@ package com.crko.ui.schedule
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,9 +35,10 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 @Composable
 internal fun AgendaEventRow(
     event: Event,
+    date: LocalDate,
     tones: List<Pair<Color, Color>>,
     strings: Strings,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
 ) {
     val (container, content) = tones[eventToneIndex(event, tones.size)]
     Row(
@@ -45,27 +47,43 @@ internal fun AgendaEventRow(
             .padding(horizontal = 16.dp, vertical = 2.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(container)
-            .clickable { onOpen(event) }
+            .clickable { onOpen(event, date) }
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = timeRangeText(event, strings),
+            text = timeRangeText(event, date, strings),
             style = MiuixTheme.textStyles.footnote1,
             fontSize = 12.sp,
             color = content,
             maxLines = 1,
         )
         Spacer(Modifier.width(10.dp))
-        Text(
-            text = event.title,
-            style = MiuixTheme.textStyles.body1,
-            fontWeight = FontWeight.Medium,
-            color = content,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = event.title,
+                style = MiuixTheme.textStyles.body1,
+                fontWeight = FontWeight.Medium,
+                color = content,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val detail = listOfNotNull(
+                event.location.takeIf { it.isNotBlank() },
+                eventDateLabel(event, date, strings),
+                event.categories.takeIf { it.isNotEmpty() }?.joinToString(", "),
+            ).joinToString(" · ")
+            if (detail.isNotEmpty()) {
+                Text(
+                    text = detail,
+                    style = MiuixTheme.textStyles.footnote2,
+                    fontSize = 10.sp,
+                    color = content.copy(alpha = 0.8f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 
@@ -126,8 +144,9 @@ internal fun DayHeadingRow(
 @Composable
 internal fun DayAgendaList(
     events: List<Event>,
+    date: LocalDate,
     strings: Strings,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
     onSwipeToTimeline: (travel: Float) -> Unit,
 ) {
     val tones = eventTones()
@@ -144,7 +163,7 @@ internal fun DayAgendaList(
         contentPadding = PaddingValues(bottom = GlassNavigationBarDefaults.clearance()),
     ) {
         items(events, key = { "event-${it.id}" }) { event ->
-            AgendaEventRow(event = event, tones = tones, strings = strings, onOpen = onOpen)
+            AgendaEventRow(event = event, date = date, tones = tones, strings = strings, onOpen = onOpen)
         }
     }
 }

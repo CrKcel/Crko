@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
+import com.crko.domain.TodoStatus
 import com.crko.i18n.Strings
 import com.crko.i18n.todoPriorityLabel
 import com.crko.ui.schedule.isOverdue
@@ -59,7 +60,7 @@ fun TodoTab(
     val today = state.today
     val active = state.activeTodos()
     val completed = state.completedTodos()
-    var completedExpanded by rememberSaveable { mutableStateOf(true) }
+    var completedExpanded by rememberSaveable { mutableStateOf(false) }
     val layoutDirection = LocalLayoutDirection.current
 
     Column(
@@ -182,6 +183,17 @@ private fun TodoCard(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (todo.note.isNotBlank()) {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = todo.note,
+                    style = MiuixTheme.textStyles.footnote2,
+                    fontSize = 11.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             if (todo.due != null) {
                 Spacer(Modifier.height(3.dp))
                 val due = LocalDate.parse(todo.due)
@@ -191,6 +203,27 @@ private fun TodoCard(
                     style = MiuixTheme.textStyles.footnote2,
                     fontSize = 11.sp,
                     color = if (overdue) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+            if (todo.status == TodoStatus.InProcess || todo.status == TodoStatus.Cancelled) {
+                Spacer(Modifier.height(3.dp))
+                val label = if (todo.status == TodoStatus.InProcess) {
+                    buildString {
+                        append(strings.todoStatusInProgress)
+                        if (todo.percentComplete in 1..99) append(' ').append(todo.percentComplete).append('%')
+                    }
+                } else {
+                    strings.todoStatusCancelled
+                }
+                Text(
+                    text = label,
+                    style = MiuixTheme.textStyles.footnote2,
+                    fontSize = 11.sp,
+                    color = if (todo.status == TodoStatus.Cancelled) {
+                        MiuixTheme.colorScheme.error
+                    } else {
+                        MiuixTheme.colorScheme.primary
+                    },
                 )
             }
         }

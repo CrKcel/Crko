@@ -31,8 +31,9 @@ import androidx.compose.ui.zIndex
 import com.crko.domain.Event
 import com.crko.domain.LocalClock
 import com.crko.domain.MaxEndMinutes
-import com.crko.domain.exportIcs
-import com.crko.domain.importIcs
+import com.crko.domain.exportCalendar
+import com.crko.domain.importCalendar
+import com.crko.domain.occurrenceStartOn
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
 import com.crko.state.WriteResult
@@ -54,6 +55,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Duration.Companion.seconds
@@ -64,12 +66,14 @@ import kotlin.time.Clock
 import com.crko.ui.icons.AppIcons
 
 
+private data class EventEditorTarget(val event: Event, val occurrenceDate: LocalDate?)
+
 @Composable
 fun CrkoApp(state: AppStateHolder) {
     val strings = state.strings
     // The schedule is the primary surface, so the middle tab is the launch destination.
     var tab by rememberSaveable { mutableIntStateOf(1) }
-    var eventEditor by remember { mutableStateOf<Event?>(null) }
+    var eventEditor by remember { mutableStateOf<EventEditorTarget?>(null) }
     var showTodoEditor by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
@@ -88,7 +92,13 @@ fun CrkoApp(state: AppStateHolder) {
                 AppMessage.Deleted -> currentStrings.deleted
                 AppMessage.TodoAdded -> currentStrings.todoAdded
                 is AppMessage.EventsImported -> {
-                    if (message.count == 0) currentStrings.nothingToImport else currentStrings.importedEvents(message.count)
+                    if (message.events == 0 && message.todos == 0) {
+                        currentStrings.nothingToImport
+                    } else {
+                        val summary = currentStrings.importedItems(message.events, message.todos)
+                        val warnings = message.warnings.distinct().map(currentStrings::importWarning)
+                        (listOf(summary) + warnings).joinToString("; ")
+                    }
                 }
                 AppMessage.ImportFailed -> currentStrings.importFailed
                 AppMessage.Exported -> currentStrings.exported
@@ -103,15 +113,16 @@ fun CrkoApp(state: AppStateHolder) {
         fileBridge.openImport(
             onPicked = { text ->
                 scope.launch {
-                    val events = runCatching {
+                    val imported = runCatching {
                         withContext(Dispatchers.Default) {
-                            importIcs(text, TimeZone.currentSystemDefault(), untitled)
+                            importCalendar(text, TimeZone.currentSystemDefault(), untitled)
                         }
                     }.getOrNull()
-                    if (events == null) {
+                    if (imported == null) {
                         state.notify(AppMessage.ImportFailed)
                     } else {
-                        state.notify(AppMessage.EventsImported(state.importEvents(events)))
+                        val (events, todos) = state.importCalendar(imported)
+                        state.notify(AppMessage.EventsImported(events, todos, imported.warnings))
                     }
                 }
             },
@@ -121,9 +132,10 @@ fun CrkoApp(state: AppStateHolder) {
 
     fun exportCalendar() {
         val events = state.appState.events
+        val todos = state.appState.todos
         val fileName = "crko-${state.today}.ics"
         scope.launch {
-            val content = withContext(Dispatchers.Default) { exportIcs(events) }
+            val content = withContext(Dispatchers.Default) { exportCalendar(events, todos) }
             fileBridge.saveExport(
                 fileName = fileName,
                 content = content,
@@ -185,7 +197,12 @@ fun CrkoApp(state: AppStateHolder) {
                         now = now,
                         strings = strings,
                         contentPadding = tabPadding,
-                        onOpenEvent = { eventEditor = it },
+                        onOpenEvent = { event, date ->
+                            // Only a repeating series needs the occurrence slot; a one-off event
+                            // keeps its own start date even when opened from a later day.
+                            val occurrence = if (event.repeat != null) event.occurrenceStartOn(date) else null
+                            eventEditor = EventEditorTarget(event, occurrence)
+                        },
                     )
                 }
                 TabPage(visible = tab == 2) {
@@ -204,7 +221,7 @@ fun CrkoApp(state: AppStateHolder) {
                 onClick = {
                     when (tab) {
                         0 -> showTodoEditor = true
-                        1 -> eventEditor = newEvent(state, now.value)
+                        1 -> eventEditor = EventEditorTarget(newEvent(state, now.value), null)
                         else -> showSettings = true
                     }
                 },
@@ -227,17 +244,26 @@ fun CrkoApp(state: AppStateHolder) {
     }
 
     EventEditorDialog(
-        event = eventEditor,
+        event = eventEditor?.event,
+        occurrenceDate = eventEditor?.occurrenceDate,
         strings = strings,
         today = state.today,
         onDismiss = { eventEditor = null },
-        onSave = { event ->
-            val saved = state.saveEvent(event) == WriteResult.Success
+        onSave = { event, scope ->
+            val saved = state.saveEvent(
+                event,
+                occurrenceDate = eventEditor?.occurrenceDate,
+                scope = scope,
+            ) == WriteResult.Success
             if (saved) state.notify(AppMessage.Saved)
             saved
         },
-        onDelete = {
-            state.deleteEvent(it.id)
+        onDelete = { event, scope ->
+            state.deleteEvent(
+                event,
+                occurrenceDate = eventEditor?.occurrenceDate,
+                scope = scope,
+            )
             state.notify(AppMessage.Deleted)
         },
     )

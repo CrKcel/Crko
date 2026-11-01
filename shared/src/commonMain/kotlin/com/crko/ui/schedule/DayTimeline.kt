@@ -45,6 +45,7 @@ import androidx.compose.ui.zIndex
 import com.crko.domain.Event
 import com.crko.domain.LocalClock
 import com.crko.domain.minutesOfDay
+import com.crko.domain.timeRangeOn
 import com.crko.i18n.Strings
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
@@ -115,12 +116,14 @@ internal fun DayTimelineGrid(
     date: LocalDate,
     events: List<Event>,
     onAdd: (LocalDate, Int?) -> Unit,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
 ) {
     val layout = HourLayout
     val alarmColor = MiuixTheme.colorScheme.error
     val hourLineColor = hourDividerColor()
     val currentOnAdd by rememberUpdatedState(onAdd)
+    val timedEvents = remember(events) { events.filterNot { it.allDay } }
+    val allDayEvents = remember(events) { events.filter { it.allDay } }
 
     Row(
         modifier = Modifier
@@ -174,10 +177,14 @@ internal fun DayTimelineGrid(
                 },
         ) {
             EventBlocks(
-                events = events,
+                events = timedEvents,
+                date = date,
                 hours = layout,
                 onOpen = onOpen,
             )
+            if (allDayEvents.isNotEmpty()) {
+                AllDayStrip(events = allDayEvents, date = date, onOpen = onOpen)
+            }
         }
     }
 }
@@ -186,12 +193,13 @@ internal fun DayTimelineGrid(
 @Composable
 private fun EventBlocks(
     events: List<Event>,
+    date: LocalDate,
     hours: HourLayout,
-    onOpen: (Event) -> Unit,
+    onOpen: (Event, LocalDate) -> Unit,
 ) {
     if (events.isEmpty()) return
     val tones = eventTones()
-    val placed = remember(events) { layoutEvents(events) }
+    val placed = remember(events, date) { layoutEvents(events, date) }
     val totalColumns = remember(placed) { placed.maxOf { it.totalColumns } }
     // Width and position are resolved while measuring: the calendar above animates its height, and
     // a BoxWithConstraints here would recompose every block whenever the viewport changes.
@@ -208,7 +216,7 @@ private fun EventBlocks(
                         .padding(end = 1.dp)
                         .clip(RoundedCornerShape(6.dp))
                         .background(container)
-                        .clickable { onOpen(item.event) }
+                        .clickable { onOpen(item.event, date) }
                         .padding(horizontal = 2.dp, vertical = 1.dp),
                 ) {
                     Text(
@@ -224,7 +232,7 @@ private fun EventBlocks(
                     if (!compact) {
                         Spacer(Modifier.weight(1f))
                         Text(
-                            text = clockRange(item.event),
+                            text = clockRange(item.event, date),
                             style = MiuixTheme.textStyles.footnote2,
                             fontSize = 9.sp,
                             color = content.copy(alpha = 0.85f),
@@ -257,50 +265,104 @@ private fun EventBlocks(
     }
 }
 
+/** All-day events as compact chips over the top of the day grid. */
+@Composable
+private fun AllDayStrip(
+    events: List<Event>,
+    date: LocalDate,
+    onOpen: (Event, LocalDate) -> Unit,
+) {
+    val tones = eventTones()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .zIndex(2f)
+            .padding(horizontal = 2.dp, vertical = 2.dp),
+    ) {
+        events.take(3).forEach { event ->
+            val (container, content) = tones[eventToneIndex(event, tones.size)]
+            Text(
+                text = event.title,
+                style = MiuixTheme.textStyles.footnote2,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
+                color = content,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 2.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(container)
+                    .clickable { onOpen(event, date) }
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+            )
+        }
+    }
+}
+
 /** Block height for [item]; short slots can be thinner than a readable one-line block. */
 private fun eventBlockHeight(item: PlacedEvent, hours: HourLayout): Dp =
     (hours.offsetOf(item.endMinutes) - hours.offsetOf(item.startMinutes)).coerceAtLeast(20.dp)
 
 
-internal class PlacedEvent(val event: Event, val column: Int, val totalColumns: Int) {
-    val startMinutes: Int get() = event.startMinutes
-    val endMinutes: Int get() = event.endMinutes
-}
+internal class PlacedEvent(
+    val event: Event,
+    val column: Int,
+    val totalColumns: Int,
+    val startMinutes: Int,
+    val endMinutes: Int,
+)
 
-/** Greedy column packing inside each cluster of overlapping events. */
-internal fun layoutEvents(events: List<Event>): List<PlacedEvent> {
-    val sorted = events.sortedWith(compareBy({ it.startMinutes }, { it.endMinutes }))
+private data class EventSlice(val event: Event, val start: Int, val end: Int)
+
+/** Greedy column packing inside each cluster of overlapping events, clipped to [date]. */
+internal fun layoutEvents(events: List<Event>, date: LocalDate): List<PlacedEvent> {
+    val slices = events.map { event ->
+        val (start, end) = event.timeRangeOn(date)
+        EventSlice(event, start, end)
+    }.sortedWith(compareBy({ it.start }, { it.end }))
     val result = mutableListOf<PlacedEvent>()
-    var cluster = mutableListOf<Event>()
+    var cluster = mutableListOf<EventSlice>()
     var clusterEnd = -1
 
     fun flush() {
         if (cluster.isEmpty()) return
         val columnOf = assignColumns(cluster)
         val total = (columnOf.values.maxOrNull() ?: 0) + 1
-        cluster.forEach { result += PlacedEvent(it, columnOf.getValue(it.id ?: it.title), total) }
+        cluster.forEach { slice ->
+            result += PlacedEvent(
+                event = slice.event,
+                column = columnOf.getValue(slice.event.id ?: slice.event.title),
+                totalColumns = total,
+                startMinutes = slice.start,
+                endMinutes = slice.end,
+            )
+        }
         cluster = mutableListOf()
     }
 
-    for (event in sorted) {
-        if (cluster.isNotEmpty() && event.startMinutes >= clusterEnd) {
+    for (slice in slices) {
+        if (cluster.isNotEmpty() && slice.start >= clusterEnd) {
             flush()
             clusterEnd = -1
         }
-        cluster += event
-        clusterEnd = maxOf(clusterEnd, event.endMinutes)
+        cluster += slice
+        clusterEnd = maxOf(clusterEnd, slice.end)
     }
     flush()
     return result
 }
 
-private fun assignColumns(events: List<Event>): Map<String, Int> {
-    val columns = mutableListOf<MutableList<Event>>()
-    for (event in events) {
-        val free = columns.indexOfFirst { column -> column.none { it.endMinutes > event.startMinutes } }
-        if (free >= 0) columns[free] += event else columns += mutableListOf(event)
+private fun assignColumns(events: List<EventSlice>): Map<String, Int> {
+    val columns = mutableListOf<MutableList<EventSlice>>()
+    for (slice in events) {
+        val free = columns.indexOfFirst { column -> column.none { it.end > slice.start } }
+        if (free >= 0) columns[free] += slice else columns += mutableListOf(slice)
     }
     return buildMap {
-        columns.forEachIndexed { index, column -> column.forEach { put(it.id ?: it.title, index) } }
+        columns.forEachIndexed { index, column ->
+            column.forEach { put(it.event.id ?: it.event.title, index) }
+        }
     }
 }

@@ -8,15 +8,19 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.crko.domain.EndOfDayMinutes
 import com.crko.domain.Event
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
 import com.crko.domain.daysTo
 import com.crko.domain.mondayIndex
+import com.crko.domain.occurrenceStartOn
 import com.crko.domain.plusDays
 import com.crko.domain.startOfWeek
+import com.crko.domain.timeRangeOn
 import com.crko.i18n.Strings
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalTime
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal val HourHeight = 56.dp
@@ -165,10 +169,15 @@ internal fun eventTones(): List<Pair<Color, Color>> {
 /** Stable per-event tone assignment so colors do not shift when other events change. */
 internal fun eventToneIndex(event: Event, count: Int): Int {
     if (count <= 0) return 0
-    val key = event.id ?: event.title
+    val key = event.categories.firstOrNull() ?: event.id ?: event.title
     var hash = 7
     for (c in key) hash = hash * 31 + c.code
     return (hash and Int.MAX_VALUE) % count
+}
+
+internal fun minuteLabel(minutes: Int): String {
+    if (minutes >= EndOfDayMinutes) return "24:00"
+    return "${(minutes / 60).toString().padStart(2, '0')}:${(minutes % 60).toString().padStart(2, '0')}"
 }
 
 @Composable
@@ -178,18 +187,24 @@ internal fun priorityColor(priority: TodoPriority): Color = when (priority) {
     TodoPriority.Low -> MiuixTheme.colorScheme.onSurfaceVariantSummary
 }
 
-internal fun timeRangeText(event: Event, strings: Strings): String =
-    strings.timeRange(
-        kotlinx.datetime.LocalTime(event.startMinutes / 60, event.startMinutes % 60),
-        kotlinx.datetime.LocalTime(event.endMinutes / 60, event.endMinutes % 60),
-    )
+/** Time label for the slice of [event] shown on [date]. */
+internal fun timeRangeText(event: Event, date: LocalDate, strings: Strings): String {
+    if (event.allDay) return strings.allDay
+    val (start, end) = event.timeRangeOn(date)
+    if (start == 0 && end >= EndOfDayMinutes) return strings.allDay
+    return "${strings.time(LocalTime(start / 60, start % 60))} – ${minuteLabel(end)}"
+}
 
 /** Compact "09:00–10:00" label used inside timeline blocks where the full format is clipped. */
-internal fun clockRange(event: Event): String {
-    fun fmt(minutes: Int): String {
-        val h = minutes / 60
-        val m = minutes % 60
-        return if (m == 0) "$h:00" else "$h:${m.toString().padStart(2, '0')}"
-    }
-    return "${fmt(event.startMinutes)}–${fmt(event.endMinutes)}"
+internal fun clockRange(event: Event, date: LocalDate): String {
+    if (event.allDay) return ""
+    val (start, end) = event.timeRangeOn(date)
+    return "${minuteLabel(start)}–${minuteLabel(end)}"
+}
+
+internal fun eventDateLabel(event: Event, date: LocalDate, strings: Strings): String? {
+    val span = event.day.daysTo(event.endDay)
+    if (span <= 0) return null
+    val start = event.occurrenceStartOn(date) ?: event.day
+    return "${strings.dayMonth(start)} – ${strings.dayMonth(start.plusDays(span))}"
 }
