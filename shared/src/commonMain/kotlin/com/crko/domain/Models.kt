@@ -61,6 +61,8 @@ data class RepeatRule(
     val byHour: List<Int> = emptyList(),
     /** `BYMINUTE`, in minutes of the hour. */
     val byMinute: List<Int> = emptyList(),
+    /** `BYSECOND`, in seconds of the minute. Kept for round trips; occurrences are day-granular. */
+    val bySecond: List<Int> = emptyList(),
     /** `RDATE` dates, ISO-8601. */
     val rDates: List<String> = emptyList(),
 )
@@ -169,6 +171,8 @@ data class Todo(
     /** Creation time in epoch milliseconds; used only for ordering. */
     val createdAt: Long = 0L,
     val due: String? = null,
+    /** ISO-8601 instant of `DUE` when it carried a time; [due] stays the date used for ordering. */
+    val dueTime: String? = null,
     val note: String = "",
     /** UID from an imported ICS file. */
     val icsUid: String? = null,
@@ -183,6 +187,7 @@ data class Todo(
     val percentComplete: Int = 0,
     /** Exact `COMPLETED` instant from ICS when available. */
     val completedTime: String? = null,
+    val alarms: List<Alarm> = emptyList(),
 )
 
 @Serializable

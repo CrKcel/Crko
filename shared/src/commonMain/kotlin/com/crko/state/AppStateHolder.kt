@@ -8,6 +8,7 @@ import com.crko.domain.AppState
 import com.crko.domain.Event
 import com.crko.domain.EventStatus
 import com.crko.domain.IcsImport
+import com.crko.domain.IcsImportFailure
 import com.crko.domain.IcsWarning
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.PersistedSettings
@@ -59,7 +60,7 @@ sealed interface AppMessage {
         val todos: Int = 0,
         val warnings: List<IcsWarning> = emptyList(),
     ) : AppMessage
-    data object ImportFailed : AppMessage
+    data class ImportFailed(val failure: IcsImportFailure) : AppMessage
     data object Exported : AppMessage
     data object ExportFailed : AppMessage
 

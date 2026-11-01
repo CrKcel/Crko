@@ -1,5 +1,6 @@
 package com.crko.i18n
 
+import com.crko.domain.IcsImportFailure
 import com.crko.domain.IcsWarning
 import com.crko.domain.TodoPriority
 import kotlinx.datetime.LocalDate
@@ -149,6 +150,7 @@ interface Strings {
     val exportFailed: String
     val exported: String
     fun importedItems(events: Int, todos: Int): String
+    fun importFailure(failure: IcsImportFailure): String
     fun importWarning(warning: IcsWarning): String
     fun storageRecovered(droppedRecords: Int): String
     val untitledEvent: String
@@ -302,6 +304,12 @@ object ZhStrings : Strings {
         todos > 0 -> "已导入 $todos 项待办"
         else -> "已导入 $events 项日程"
     }
+    override fun importFailure(failure: IcsImportFailure): String = when (failure) {
+        IcsImportFailure.TooLarge -> "文件超过 5 MB，无法导入；请先在原日历中缩小导出范围后重试"
+        IcsImportFailure.InvalidEncoding -> "文件不是 UTF-8 编码，无法导入；请重新导出为 UTF-8 文件"
+        IcsImportFailure.Unreadable -> "无法读取所选文件"
+        IcsImportFailure.InvalidFormat -> importFailed
+    }
     override fun importWarning(warning: IcsWarning): String = when (warning) {
         IcsWarning.UnresolvedTimeZone -> "部分日程的时区无法识别，已按本地时间导入"
         IcsWarning.InvalidValue -> "部分日期或时间格式无效，已跳过"
@@ -309,6 +317,9 @@ object ZhStrings : Strings {
         IcsWarning.MultipleRrules -> "单个日程包含多条重复规则，只使用了第一条"
         IcsWarning.MissingStart -> "部分日程没有可用的开始时间，已跳过"
         IcsWarning.AmbiguousRecurrenceId -> "同一天有多次重复改动无法区分，已按独立日程保留"
+        IcsWarning.ExruleIgnored -> "部分日程包含已废弃的 EXRULE 排除规则，已忽略"
+        IcsWarning.UnknownSubcomponent -> "部分日程包含不支持的子组件，已忽略"
+        IcsWarning.ExdateMismatch -> "部分排除日期的时刻与日程开始时间不一致，已忽略"
     }
     override fun storageRecovered(droppedRecords: Int): String =
         if (droppedRecords > 0) {
@@ -471,6 +482,12 @@ object EnStrings : Strings {
         todos > 0 -> if (todos == 1) "1 todo imported" else "$todos todos imported"
         else -> if (events == 1) "1 event imported" else "$events events imported"
     }
+    override fun importFailure(failure: IcsImportFailure): String = when (failure) {
+        IcsImportFailure.TooLarge -> "The file is larger than 5 MB. Export a shorter date range and try again."
+        IcsImportFailure.InvalidEncoding -> "The file is not UTF-8 encoded. Export it again as UTF-8."
+        IcsImportFailure.Unreadable -> "The selected file could not be read"
+        IcsImportFailure.InvalidFormat -> importFailed
+    }
     override fun importWarning(warning: IcsWarning): String = when (warning) {
         IcsWarning.UnresolvedTimeZone -> "Some time zones were unknown; those events use local time"
         IcsWarning.InvalidValue -> "Some dates or times were invalid and were skipped"
@@ -478,6 +495,9 @@ object EnStrings : Strings {
         IcsWarning.MultipleRrules -> "An event had several recurrence rules; only the first was used"
         IcsWarning.MissingStart -> "Some events had no usable start date and were skipped"
         IcsWarning.AmbiguousRecurrenceId -> "Several changes shared one occurrence date; they are kept as separate events"
+        IcsWarning.ExruleIgnored -> "Some events contain deprecated EXRULE exclusions, which were ignored"
+        IcsWarning.UnknownSubcomponent -> "Some events contain unsupported subcomponents, which were ignored"
+        IcsWarning.ExdateMismatch -> "Some excluded dates did not match the event start time and were ignored"
     }
     override fun storageRecovered(droppedRecords: Int): String =
         if (droppedRecords > 0) {

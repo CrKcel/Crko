@@ -718,6 +718,35 @@ class IcsTest {
     }
 
     @Test
+    fun vtodoDueTimeAndAlarmRoundTrip() {
+        val text = calendar(
+            """
+            BEGIN:VTODO
+            UID:todo-timed
+            SUMMARY:Call bank
+            DUE:20261101T093000Z
+            BEGIN:VALARM
+            ACTION:DISPLAY
+            TRIGGER:-PT30M
+            DESCRIPTION:Reminder
+            END:VALARM
+            END:VTODO
+            """,
+        )
+        val todo = importCalendar(text, utc, "Untitled").todos.single()
+        assertEquals("2026-11-01", todo.due)
+        assertEquals("2026-11-01T09:30:00Z", todo.dueTime)
+        assertEquals(1, todo.alarms.size)
+        assertEquals(30, todo.alarms.single().triggerMinutes)
+        assertEquals("Reminder", todo.alarms.single().description)
+
+        val exported = exportCalendar(emptyList(), listOf(todo), now)
+        assertTrue(exported.contains("DUE:20261101T093000Z\r\n"), exported)
+        assertTrue(exported.contains("BEGIN:VALARM\r\n"), exported)
+        assertTrue(exported.contains("TRIGGER:-PT30M\r\n"), exported)
+    }
+
+    @Test
     fun vtodoInProcessAndPercentRoundTrip() {
         val text = calendar(
             """
@@ -999,6 +1028,82 @@ class IcsTest {
     }
 
     @Test
+    fun windowsNamesAndDomainPrefixedTzidsResolveToIanaZones() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:windows-zone
+            SUMMARY:Windows name
+            DTSTART;TZID=China Standard Time:20261027T090000
+            DTEND;TZID=China Standard Time:20261027T100000
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:prefixed-zone
+            SUMMARY:Prefixed id
+            DTSTART;TZID=/mozilla.org/20050126_1/America/New_York:20261027T090000
+            DTEND;TZID=/mozilla.org/20050126_1/America/New_York:20261027T100000
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        assertFalse(IcsWarning.UnresolvedTimeZone in imported.warnings, imported.warnings.toString())
+        val windows = imported.events.first { it.icsUid == "windows-zone" }
+        assertEquals("Asia/Shanghai", windows.timeZoneId)
+        assertEquals(60, windows.startMinutes)
+        val prefixed = imported.events.first { it.icsUid == "prefixed-zone" }
+        assertEquals("America/New_York", prefixed.timeZoneId)
+        assertEquals(13 * 60, prefixed.startMinutes)
+        assertEquals("20261027T090000", prefixed.sourceStart)
+    }
+
+    @Test
+    fun rdatePeriodsKeepTheirOwnDuration() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:rdate-periods
+            SUMMARY:Periods
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            RDATE;VALUE=PERIOD:20261105T140000Z/PT1H,20261106T090000Z/20261106T120000Z
+            END:VEVENT
+            """,
+        )
+        val events = importIcs(text, utc, "Untitled")
+        assertEquals(3, events.size)
+        val hour = events.first { it.date == "2026-11-05" }
+        assertEquals(14 * 60, hour.startMinutes)
+        assertEquals(15 * 60, hour.endMinutes)
+        val threeHours = events.first { it.date == "2026-11-06" }
+        assertEquals(9 * 60, threeHours.startMinutes)
+        assertEquals(12 * 60, threeHours.endMinutes)
+    }
+
+    @Test
+    fun recurringRdatePeriodWithAnotherLengthBecomesItsOwnEvent() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:rdate-period-series
+            SUMMARY:Series
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            RRULE:FREQ=DAILY;COUNT=2
+            RDATE;VALUE=PERIOD:20261105T140000Z/PT30M
+            END:VEVENT
+            """,
+        )
+        val events = importIcs(text, utc, "Untitled")
+        assertEquals(2, events.size)
+        val series = events.first { it.repeat != null }
+        assertTrue(series.repeat?.rDates.isNullOrEmpty(), series.repeat?.rDates.toString())
+        val extra = events.first { it.date == "2026-11-05" }
+        assertNull(extra.repeat)
+        assertEquals(14 * 60, extra.startMinutes)
+        assertEquals(14 * 60 + 30, extra.endMinutes)
+    }
+
+    @Test
     fun invalidTimeZoneFallsBackToFloatingWithAWarning() {
         val text = calendar(
             """
@@ -1145,6 +1250,91 @@ class IcsTest {
         )
         val event = importIcs(text, utc, "Untitled").single()
         assertEquals("https://example.com/a,b", event.url)
+    }
+
+    @Test
+    fun bysecondRoundTripsWithoutLosingItsValue() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:by-second
+            SUMMARY:Second aligned
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            RRULE:FREQ=DAILY;COUNT=2;BYSECOND=0,30
+            END:VEVENT
+            """,
+        )
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals(listOf(0, 30), event.repeat?.bySecond)
+        val exported = exportIcs(listOf(event), now)
+        assertTrue(exported.contains(";BYSECOND=0,30\r\n"), exported)
+    }
+
+    @Test
+    fun exruleIsKeptButReportedAsIgnored() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:exrule
+            SUMMARY:Old exclusion rule
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            RRULE:FREQ=DAILY;COUNT=2
+            EXRULE:FREQ=WEEKLY;COUNT=1
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        assertTrue(IcsWarning.ExruleIgnored in imported.warnings, imported.warnings.toString())
+        val exported = exportIcs(imported.events, now)
+        assertTrue(exported.contains("EXRULE:FREQ=WEEKLY;COUNT=1\r\n"), exported)
+    }
+
+    @Test
+    fun unknownSubcomponentWarnsWithoutDroppingTheEvent() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:with-venue
+            SUMMARY:At a venue
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            BEGIN:VVENUE
+            UID:venue-1
+            END:VVENUE
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        assertEquals(1, imported.events.size)
+        assertTrue(IcsWarning.UnknownSubcomponent in imported.warnings, imported.warnings.toString())
+    }
+
+    @Test
+    fun exdateWithAnotherTimeOfDayIsReported() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:exdate-mismatch
+            SUMMARY:Mismatched exclusion
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            RRULE:FREQ=DAILY;COUNT=3
+            EXDATE:20261028T080000
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        val event = imported.events.single()
+        assertTrue(IcsWarning.ExdateMismatch in imported.warnings, imported.warnings.toString())
+        assertTrue(event.excludedDates.isEmpty(), event.excludedDates.toString())
+    }
+
+    @Test
+    fun exportWritesTheCalendarName() {
+        val exported = exportCalendar(listOf(baseEvent), emptyList(), now, calendarName = "Crko")
+        assertTrue(exported.contains("X-WR-CALNAME:Crko\r\n"), exported)
     }
 
     @Test

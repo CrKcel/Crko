@@ -21,6 +21,65 @@ private const val FoldLimit = 75
 
 private val weekdayCodes = listOf("MO", "TU", "WE", "TH", "FR", "SA", "SU")
 
+/**
+ * Windows time zone names that Outlook and Exchange write instead of IANA ids. Zone rules are
+ * shared by several cities, so each name points at the most common representative.
+ */
+private val windowsTimeZones = mapOf(
+    "dateline standard time" to "Etc/GMT+12",
+    "utc-11" to "Etc/GMT+11",
+    "aleutian standard time" to "America/Adak",
+    "hawaiian standard time" to "Pacific/Honolulu",
+    "alaskan standard time" to "America/Anchorage",
+    "pacific standard time" to "America/Los_Angeles",
+    "pacific standard time (mexico)" to "America/Tijuana",
+    "us mountain standard time" to "America/Phoenix",
+    "mountain standard time" to "America/Denver",
+    "central standard time" to "America/Chicago",
+    "central america standard time" to "America/Guatemala",
+    "canada central standard time" to "America/Regina",
+    "central standard time (mexico)" to "America/Mexico_City",
+    "eastern standard time" to "America/New_York",
+    "us eastern standard time" to "America/Indiana/Indianapolis",
+    "atlantic standard time" to "America/Halifax",
+    "newfoundland standard time" to "America/St_Johns",
+    "sa eastern standard time" to "America/Cayenne",
+    "argentina standard time" to "America/Argentina/Buenos_Aires",
+    "brasilia standard time" to "America/Sao_Paulo",
+    "gmt standard time" to "Europe/London",
+    "greenwich standard time" to "Atlantic/Reykjavik",
+    "w. europe standard time" to "Europe/Berlin",
+    "central europe standard time" to "Europe/Budapest",
+    "central european standard time" to "Europe/Warsaw",
+    "romance standard time" to "Europe/Paris",
+    "e. europe standard time" to "Europe/Chisinau",
+    "fle standard time" to "Europe/Kiev",
+    "gtb standard time" to "Europe/Bucharest",
+    "turkey standard time" to "Europe/Istanbul",
+    "israel standard time" to "Asia/Jerusalem",
+    "south africa standard time" to "Africa/Johannesburg",
+    "russian standard time" to "Europe/Moscow",
+    "arabian standard time" to "Asia/Dubai",
+    "iran standard time" to "Asia/Tehran",
+    "india standard time" to "Asia/Kolkata",
+    "sri lanka standard time" to "Asia/Colombo",
+    "nepal standard time" to "Asia/Kathmandu",
+    "bangladesh standard time" to "Asia/Dhaka",
+    "se asia standard time" to "Asia/Bangkok",
+    "china standard time" to "Asia/Shanghai",
+    "taipei standard time" to "Asia/Taipei",
+    "singapore standard time" to "Asia/Singapore",
+    "w. australia standard time" to "Australia/Perth",
+    "tokyo standard time" to "Asia/Tokyo",
+    "korea standard time" to "Asia/Seoul",
+    "cen. australia standard time" to "Australia/Adelaide",
+    "aus eastern standard time" to "Australia/Sydney",
+    "e. australia standard time" to "Australia/Brisbane",
+    "tasmania standard time" to "Australia/Hobart",
+    "new zealand standard time" to "Pacific/Auckland",
+    "fiji standard time" to "Pacific/Fiji",
+)
+
 enum class IcsWarning {
     UnresolvedTimeZone,
     InvalidValue,
@@ -32,6 +91,15 @@ enum class IcsWarning {
 
     /** Several exceptions shared one occurrence date, which the single-start model cannot tell apart. */
     AmbiguousRecurrenceId,
+
+    /** An `EXRULE` was found; it is deprecated and its exclusions are not applied. */
+    ExruleIgnored,
+
+    /** A component carried child components other than `VALARM`, which are not supported. */
+    UnknownSubcomponent,
+
+    /** An `EXDATE` fell on an occurrence date but at a different time of day. */
+    ExdateMismatch,
 }
 
 data class IcsImport(
@@ -39,6 +107,21 @@ data class IcsImport(
     val todos: List<Todo> = emptyList(),
     val warnings: List<IcsWarning> = emptyList(),
 )
+
+/** Why a calendar file could not be imported; each case has its own user-facing message. */
+enum class IcsImportFailure {
+    /** The picked file is larger than the platform limit. */
+    TooLarge,
+
+    /** The bytes are not valid UTF-8. */
+    InvalidEncoding,
+
+    /** The file or its provider could not be read. */
+    Unreadable,
+
+    /** The text was read but is not a calendar the parser accepts. */
+    InvalidFormat,
+}
 
 /** Serializes every event into one VCALENDAR with CRLF line endings. */
 fun exportIcs(
@@ -428,7 +511,12 @@ private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
     }
     line("SUMMARY:${escapeText(todo.title)}")
     if (todo.note.isNotBlank()) line("DESCRIPTION:${escapeText(todo.note)}")
-    todo.due?.let { parseDateText(it)?.let { date -> line("DUE;VALUE=DATE:${formatDate(date)}") } }
+    val dueInstant = todo.dueTime?.let(::parseInstant)
+    if (dueInstant != null) {
+        line("DUE:${formatUtc(dueInstant)}")
+    } else {
+        todo.due?.let { parseDateText(it)?.let { date -> line("DUE;VALUE=DATE:${formatDate(date)}") } }
+    }
     val exportStatus = when {
         todo.status != TodoStatus.NeedsAction -> todo.status
         todo.done -> TodoStatus.Completed
@@ -456,6 +544,22 @@ private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
     line("PRIORITY:${todoPriorityToIcs(todo.priority)}")
     todo.lastModified?.let { line("LAST-MODIFIED:${formatUtc(parseInstant(it) ?: now)}") }
     if (todo.sequence > 0) line("SEQUENCE:${todo.sequence}")
+    todo.alarms.forEach { alarm ->
+        line("BEGIN:VALARM")
+        line("ACTION:${alarm.action.ifBlank { "DISPLAY" }}")
+        val absolute = alarm.absoluteTrigger
+        if (absolute != null) {
+            line("TRIGGER;VALUE=DATE-TIME:$absolute")
+        } else {
+            val related = if (alarm.relatedToEnd) ";RELATED=END" else ""
+            line("TRIGGER$related:${formatTriggerDuration(alarm.triggerMinutes)}")
+        }
+        alarm.repeat?.let { line("REPEAT:$it") }
+        alarm.durationMinutes?.let { line("DURATION:${formatDuration(it)}") }
+        if (alarm.description.isNotBlank()) line("DESCRIPTION:${escapeText(alarm.description)}")
+        alarm.extraProperties.forEach { line(it) }
+        line("END:VALARM")
+    }
     todo.extraProperties.forEach { line(it) }
     line("END:VTODO")
 }
@@ -542,6 +646,7 @@ private fun ruleValue(rule: RepeatRule, event: Event): String = buildString {
     rule.weekStart?.let { append(";WKST=${weekdayCodes[it.coerceIn(0, 6)]}") }
     if (rule.byHour.isNotEmpty()) append(";BYHOUR=${rule.byHour.joinToString(",")}")
     if (rule.byMinute.isNotEmpty()) append(";BYMINUTE=${rule.byMinute.joinToString(",")}")
+    if (rule.bySecond.isNotEmpty()) append(";BYSECOND=${rule.bySecond.joinToString(",")}")
 }
 
 private fun formatUntil(untilText: String, event: Event): String? {
@@ -685,7 +790,13 @@ private fun splitParameters(head: String): List<String> {
 
 private sealed interface IcsTime {
     data class AllDay(val date: LocalDate) : IcsTime
-    data class DateTime(val value: LocalDateTime, val zone: IcsZone, val source: String) : IcsTime
+    data class DateTime(
+        val value: LocalDateTime,
+        val zone: IcsZone,
+        val source: String,
+        /** Length of an `RDATE;VALUE=PERIOD` occurrence; null for a plain DATE-TIME. */
+        val periodMinutes: Int? = null,
+    ) : IcsTime
 }
 
 private sealed interface IcsZone {
@@ -705,13 +816,37 @@ private sealed interface IcsZone {
 private fun resolveZone(tzid: String?, definition: String?): IcsZone? = when {
     tzid == null -> null
     tzid.equals("UTC", ignoreCase = true) || tzid.equals("GMT", ignoreCase = true) -> IcsZone.Utc
-    else -> runCatching { IcsZone.Platform(tzid, TimeZone.of(tzid)) }.getOrNull()
+    else -> resolvePlatformZone(tzid)
         ?: definition?.let { text ->
             parseComponents(text)
                 .firstOrNull { it.name == "VTIMEZONE" }
                 ?.let(::parseCustomZone)
                 ?.let { IcsZone.Custom(it) }
         }
+}
+
+/**
+ * Resolves a platform zone for [tzid]. Exchange writes Windows names ("China Standard Time") and
+ * some clients prefix the real id with their own domain, e.g.
+ * `/mozilla.org/20050126_1/America/New_York`; both have to become a real [TimeZone] or the event
+ * would silently fall back to floating time.
+ */
+private fun resolvePlatformZone(tzid: String): IcsZone.Platform? {
+    val normalized = tzid.trim().removePrefix("/")
+    if (normalized.isEmpty()) return null
+    val candidates = buildList {
+        add(normalized)
+        windowsTimeZones[normalized.lowercase()]?.let { add(it) }
+        var slash = normalized.indexOf('/')
+        while (slash >= 0 && slash + 1 < normalized.length) {
+            add(normalized.substring(slash + 1))
+            slash = normalized.indexOf('/', slash + 1)
+        }
+    }
+    candidates.forEach { id ->
+        runCatching { TimeZone.of(id) }.getOrNull()?.let { return IcsZone.Platform(id, it) }
+    }
+    return null
 }
 
 private data class RawRule(
@@ -728,6 +863,7 @@ private data class RawRule(
     val weekStart: Int?,
     val byHour: List<Int>,
     val byMinute: List<Int>,
+    val bySecond: List<Int>,
 )
 
 private data class RawAlarm(
@@ -849,6 +985,10 @@ private fun readEvent(
                     warnings += IcsWarning.MultipleRrules
                 }
             }
+            "EXRULE" -> {
+                warnings += IcsWarning.ExruleIgnored
+                extra += line.raw
+            }
             "EXDATE" -> splitList(line.value).forEach { value ->
                 parseTime(ContentLine("EXDATE", line.params, value, line.raw), zones, warnings)?.let { exdates += it }
             }
@@ -870,6 +1010,9 @@ private fun readEvent(
     }
 
     val alarms = component.children.filter { it.name == "VALARM" }.mapNotNull(::readAlarm)
+    if (component.children.any { it.name != "VALARM" }) {
+        warnings += IcsWarning.UnknownSubcomponent
+    }
     return RawEvent(
         uid = uid,
         summary = summary,
@@ -936,6 +1079,7 @@ private fun parseTime(
     val text = line.value.trim()
     if (text.isEmpty()) return null
     val valueType = line.params["VALUE"]?.uppercase()
+    if (valueType == "PERIOD") return parsePeriod(line, text, zones, warnings)
     val digitsOnly = text.length == 8 && text.all { it.isDigit() }
     if (digitsOnly) {
         val date = parseDate(text) ?: run {
@@ -979,6 +1123,44 @@ private fun parseTime(
     return IcsTime.DateTime(local, zone, text)
 }
 
+/**
+ * Parses `start/end` and `start/duration` periods. The occurrence keeps its start; the length is
+ * carried so an RDATE instance can end at its own time instead of inheriting the series duration.
+ */
+private fun parsePeriod(
+    line: ContentLine,
+    text: String,
+    zones: Map<String, CustomZone>,
+    warnings: MutableSet<IcsWarning>,
+): IcsTime? {
+    val slash = text.indexOf('/')
+    if (slash <= 0 || slash == text.lastIndex) {
+        warnings += IcsWarning.InvalidValue
+        return null
+    }
+    val startText = text.substring(0, slash).trim()
+    val endText = text.substring(slash + 1).trim()
+    val start = parseTime(ContentLine(line.name, line.params - "VALUE", startText, line.raw), zones, warnings)
+        as? IcsTime.DateTime ?: return null
+    val duration = if (endText.startsWith("P", ignoreCase = true) || endText.startsWith("+P", ignoreCase = true)) {
+        parseSignedDurationMinutes(endText)
+    } else {
+        val end = parseTime(ContentLine(line.name, line.params - "VALUE", endText, line.raw), zones, warnings)
+            as? IcsTime.DateTime ?: return null
+        val seconds = end.zone.toInstant(end.value).epochSeconds - start.zone.toInstant(start.value).epochSeconds
+        (seconds / 60).toInt()
+    }
+    return IcsTime.DateTime(
+        value = start.value,
+        zone = start.zone,
+        source = startText,
+        periodMinutes = duration?.takeIf { it > 0 } ?: run {
+            warnings += IcsWarning.InvalidValue
+            null
+        },
+    )
+}
+
 private fun resolveLineZone(
     utc: Boolean,
     tzid: String?,
@@ -989,7 +1171,7 @@ private fun resolveLineZone(
     if (tzid == null) return IcsZone.Floating
     val id = tzid.trim().removePrefix("/")
     zones[id]?.let { return IcsZone.Custom(it) }
-    return runCatching { IcsZone.Platform(id, TimeZone.of(id)) }.getOrElse {
+    return resolvePlatformZone(id) ?: run {
         warnings += IcsWarning.UnresolvedTimeZone
         IcsZone.Floating
     }
@@ -1024,6 +1206,7 @@ private fun parseRule(value: String, zones: Map<String, CustomZone>, warnings: M
     val weekStart = parts["WKST"]?.uppercase()?.let { weekdayCodes.indexOf(it) }?.takeIf { it >= 0 }
     val byHour = intList(parts["BYHOUR"]).filter { it in 0..23 }
     val byMinute = intList(parts["BYMINUTE"]).filter { it in 0..59 }
+    val bySecond = intList(parts["BYSECOND"]).filter { it in 0..59 }
     return RawRule(
         frequency = frequency,
         interval = interval,
@@ -1038,6 +1221,7 @@ private fun parseRule(value: String, zones: Map<String, CustomZone>, warnings: M
         weekStart = weekStart,
         byHour = byHour,
         byMinute = byMinute,
+        bySecond = bySecond,
     )
 }
 
@@ -1300,11 +1484,32 @@ private fun mapSeries(
         splitDate?.plusDays(-1),
         cancelledFutureDate?.plusDays(-1),
     ).minOrNull()
-    val adjustedSeries = if (seriesEnd != null) {
+    val seriesDuration = series.day.daysTo(series.endDay) * 1440 + series.endMinutes - series.startMinutes
+    // An RDATE PERIOD carries its own length. The single-duration model keeps it in the series only
+    // when it matches, so differing periods become one-off events instead of silently changing.
+    val periodRdates = if (base.rule == null) {
+        emptyList()
+    } else {
+        base.rDates.mapIndexedNotNull { index, time ->
+            val minutes = (time as? IcsTime.DateTime)?.periodMinutes ?: return@mapIndexedNotNull null
+            if (minutes == seriesDuration) null else index to time
+        }
+    }
+    val periodRdateDates = periodRdates.mapTo(mutableSetOf()) { (_, time) ->
+        time.localDate(deviceZone).toString()
+    }
+    val truncatedSeries = if (seriesEnd != null) {
         // COUNT must be dropped: export prefers COUNT over UNTIL, which would undo the split.
         series.copy(repeat = series.repeat?.copy(until = seriesEnd.toString(), count = null))
     } else {
         series
+    }
+    val adjustedSeries = if (periodRdateDates.isEmpty()) {
+        truncatedSeries
+    } else {
+        truncatedSeries.repeat?.let { rule ->
+            truncatedSeries.copy(repeat = rule.copy(rDates = rule.rDates.filterNot { it in periodRdateDates }))
+        } ?: truncatedSeries
     }
     val oldSeriesExclusions = (oldExclusions + series.excludedDates.filter { text ->
         splitDate == null || parseDateText(text)?.let { it < splitDate } == true
@@ -1312,37 +1517,12 @@ private fun mapSeries(
     mapped += adjustedSeries.copy(excludedDates = oldSeriesExclusions)
     // RDATE without RRULE is a list of additional one-off occurrences.
     if (base.rule == null) {
-        val span = series.day.daysTo(series.endDay)
-        val duration = span * 1440 + series.endMinutes - series.startMinutes
         base.rDates.forEachIndexed { index, time ->
-            val date = time.localDate(deviceZone)
-            val copy = if (series.allDay) {
-                series.copy(
-                    date = date.toString(),
-                    endDate = date.plusDays(span).takeIf { span != 0 }?.toString(),
-                )
-            } else {
-                val sourceTime = time.localDateTime(deviceZone).time
-                val startMinutes = sourceTime.hour * 60 + sourceTime.minute
-                val endTotal = date.toEpochDays() * 1440L + startMinutes + duration
-                val endDate = LocalDate.fromEpochDays(endTotal.floorDiv(1440L))
-                val endMinutes = endTotal.mod(1440L).toInt()
-                series.copy(
-                    date = date.toString(),
-                    startMinutes = startMinutes,
-                    endMinutes = endMinutes,
-                    startSeconds = sourceTime.second,
-                    endDate = endDate.takeIf { it != date }?.toString(),
-                )
-            }
-            mapped += copy.copy(
-                excludedDates = emptyList(),
-                icsUid = "$uid#rdate-$index",
-                sourceStart = null,
-                sourceEnd = null,
-                timeZoneId = null,
-                timeZoneDefinition = null,
-            )
+            mapped += rDateEvent(series, uid, time, index, deviceZone, seriesDuration)
+        }
+    } else {
+        periodRdates.forEach { (index, time) ->
+            mapped += rDateEvent(series, uid, time, index, deviceZone, seriesDuration)
         }
     }
     futureSeries?.let { future ->
@@ -1350,6 +1530,51 @@ private fun mapSeries(
     }
     normalOverrides.forEach { mapped += it }
     return mapped.filterNot { it.status == EventStatus.Cancelled }
+}
+
+/**
+ * One-off record for an `RDATE` instance. A PERIOD keeps its own length; everything else uses the
+ * series duration, matching how the recurrence engine would place it.
+ */
+private fun rDateEvent(
+    series: Event,
+    uid: String,
+    time: IcsTime,
+    index: Int,
+    deviceZone: TimeZone,
+    seriesDuration: Int,
+): Event {
+    val date = time.localDate(deviceZone)
+    val duration = (time as? IcsTime.DateTime)?.periodMinutes ?: seriesDuration
+    val copy = if (series.allDay) {
+        val span = duration / (24 * 60)
+        series.copy(
+            date = date.toString(),
+            endDate = date.plusDays(span).takeIf { span != 0 }?.toString(),
+        )
+    } else {
+        val sourceTime = time.localDateTime(deviceZone).time
+        val startMinutes = sourceTime.hour * 60 + sourceTime.minute
+        val endTotal = date.toEpochDays() * 1440L + startMinutes + duration
+        val endDate = LocalDate.fromEpochDays(endTotal.floorDiv(1440L))
+        val endMinutes = endTotal.mod(1440L).toInt()
+        series.copy(
+            date = date.toString(),
+            startMinutes = startMinutes,
+            endMinutes = endMinutes,
+            startSeconds = sourceTime.second,
+            endDate = endDate.takeIf { it != date }?.toString(),
+        )
+    }
+    return copy.copy(
+        repeat = null,
+        excludedDates = emptyList(),
+        icsUid = "$uid#rdate-$index",
+        sourceStart = null,
+        sourceEnd = null,
+        timeZoneId = null,
+        timeZoneDefinition = null,
+    )
 }
 
 /**
@@ -1431,7 +1656,7 @@ private fun mapSingle(
             } ?: start.date.plusDays(1)
         }
         val endInclusive = if (endExclusive > start.date) endExclusive.plusDays(-1) else start.date
-        val exclusions = mappedExclusions(raw, deviceZone, allDay = true, startMinutes = 0)
+        val exclusions = mappedExclusions(raw, deviceZone, allDay = true, startMinutes = 0, warnings = warnings)
         return Event(
             id = null,
             title = title,
@@ -1474,7 +1699,13 @@ private fun mapSingle(
     }
     val safeStart = startLocal
     val safeEnd = if (endLocal > safeStart) endLocal else safeStart.plusMinutes(60)
-    val exclusions = mappedExclusions(raw, deviceZone, allDay = false, startMinutes = safeStart.time.hour * 60 + safeStart.time.minute)
+    val exclusions = mappedExclusions(
+        raw,
+        deviceZone,
+        allDay = false,
+        startMinutes = safeStart.time.hour * 60 + safeStart.time.minute,
+        warnings = warnings,
+    )
     val eventEndSource = if (sourceStart != null) {
         sourceEnd ?: startTimed.let { timed ->
             val sourceEndLocal = timed.value.plusMinutes(raw.durationMinutes ?: 60)
@@ -1521,18 +1752,30 @@ private fun mapSingle(
     )
 }
 
-private fun mappedExclusions(raw: RawEvent, deviceZone: TimeZone, allDay: Boolean, startMinutes: Int): List<String> {
+private fun mappedExclusions(
+    raw: RawEvent,
+    deviceZone: TimeZone,
+    allDay: Boolean,
+    startMinutes: Int,
+    warnings: MutableSet<IcsWarning>,
+): List<String> {
     val dates = mutableListOf<String>()
+    var mismatched = false
     raw.exdates.forEach { time ->
         when (time) {
             is IcsTime.AllDay -> dates += time.date.toString()
             is IcsTime.DateTime -> {
                 val local = time.localDateTime(deviceZone)
                 val minutes = local.time.hour * 60 + local.time.minute
-                if (allDay || minutes == startMinutes) dates += local.date.toString()
+                if (allDay || minutes == startMinutes) {
+                    dates += local.date.toString()
+                } else {
+                    mismatched = true
+                }
             }
         }
     }
+    if (mismatched) warnings += IcsWarning.ExdateMismatch
     raw.recurrenceId?.let { dates += it.localDate(deviceZone).toString() }
     return dates.distinct()
 }
@@ -1604,6 +1847,7 @@ private fun mapRule(
         weekStart = raw.weekStart,
         byHour = raw.byHour,
         byMinute = raw.byMinute,
+        bySecond = raw.bySecond,
         rDates = rDatesText,
     )
 }
@@ -1644,6 +1888,7 @@ private fun readTodo(
     var title = ""
     var note = ""
     var due: String? = null
+    var dueTime: String? = null
     var rawStatus: String? = null
     var percent = 0
     var priority = 0
@@ -1665,6 +1910,9 @@ private fun readTodo(
                     is IcsTime.DateTime -> time.localDate(deviceZone).toString()
                     null -> null
                 }
+                dueTime = (time as? IcsTime.DateTime)
+                    ?.let { it.zone.toInstant(it.value) }
+                    ?.toString()
                 if (time == null) warning(IcsWarning.InvalidValue)
             }
             "STATUS" -> rawStatus = line.value.trim().uppercase()
@@ -1681,10 +1929,18 @@ private fun readTodo(
             "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
             "SEQUENCE" -> sequence = line.value.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
             "DTSTAMP" -> Unit
+            "EXRULE" -> {
+                warning(IcsWarning.ExruleIgnored)
+                extra += line.raw
+            }
             else -> extra += line.raw
         }
     }
     if (title.isBlank() && uid == null) return null
+    val alarms = component.children.filter { it.name == "VALARM" }.mapNotNull(::readAlarm)
+    if (component.children.any { it.name != "VALARM" }) {
+        warning(IcsWarning.UnknownSubcomponent)
+    }
     val status = when (rawStatus) {
         "COMPLETED" -> TodoStatus.Completed
         "IN-PROCESS" -> TodoStatus.InProcess
@@ -1711,6 +1967,7 @@ private fun readTodo(
             else -> TodoPriority.Normal
         },
         due = due,
+        dueTime = dueTime,
         note = note,
         icsUid = uid,
         createdAt = parseInstant(created)?.toEpochMilliseconds() ?: 0L,
@@ -1721,6 +1978,7 @@ private fun readTodo(
         status = status,
         percentComplete = percent,
         completedTime = completedTime,
+        alarms = alarms.map { it.toAlarm() },
     )
 }
 

@@ -29,6 +29,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.crko.domain.Event
+import com.crko.domain.IcsImportFailure
 import com.crko.domain.LocalClock
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.exportCalendar
@@ -100,7 +101,7 @@ fun CrkoApp(state: AppStateHolder) {
                         (listOf(summary) + warnings).joinToString("; ")
                     }
                 }
-                AppMessage.ImportFailed -> currentStrings.importFailed
+                is AppMessage.ImportFailed -> currentStrings.importFailure(message.failure)
                 AppMessage.Exported -> currentStrings.exported
                 AppMessage.ExportFailed -> currentStrings.exportFailed
                 is AppMessage.StorageRecovered -> currentStrings.storageRecovered(message.droppedRecords)
@@ -120,14 +121,14 @@ fun CrkoApp(state: AppStateHolder) {
                         }
                     }.getOrNull()
                     if (imported == null) {
-                        state.notify(AppMessage.ImportFailed)
+                        state.notify(AppMessage.ImportFailed(IcsImportFailure.InvalidFormat))
                     } else {
                         val (events, todos) = state.importCalendar(imported)
                         state.notify(AppMessage.EventsImported(events, todos, imported.warnings))
                     }
                 }
             },
-            onError = { state.notify(AppMessage.ImportFailed) },
+            onError = { failure -> state.notify(AppMessage.ImportFailed(failure)) },
         )
     }
 
@@ -136,7 +137,9 @@ fun CrkoApp(state: AppStateHolder) {
         val todos = state.appState.todos
         val fileName = "crko-${state.today}.ics"
         scope.launch {
-            val content = withContext(Dispatchers.Default) { exportCalendar(events, todos) }
+            val content = withContext(Dispatchers.Default) {
+                exportCalendar(events, todos, calendarName = "Crko")
+            }
             fileBridge.saveExport(
                 fileName = fileName,
                 content = content,

@@ -606,6 +606,7 @@ private fun buildRule(
         weekStart = keep?.weekStart,
         byHour = keep?.byHour ?: emptyList(),
         byMinute = keep?.byMinute ?: emptyList(),
+        bySecond = keep?.bySecond ?: emptyList(),
         rDates = keep?.rDates ?: emptyList(),
     )
 }

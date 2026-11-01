@@ -7,12 +7,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
+import com.crko.domain.IcsImportFailure
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 
 private const val MaxImportBytes = 5 * 1024 * 1024
+
+private class CalendarImportException(val failure: IcsImportFailure) : Exception()
 
 private val IcsMimeTypes = arrayOf(
     "text/calendar",
@@ -23,7 +26,7 @@ private val IcsMimeTypes = arrayOf(
 )
 
 private class PendingTransfer {
-    var importCallbacks: Pair<(String) -> Unit, () -> Unit>? = null
+    var importCallbacks: Pair<(String) -> Unit, (IcsImportFailure) -> Unit>? = null
     var exportContent: String? = null
     var exportCallbacks: Pair<() -> Unit, () -> Unit>? = null
 }
@@ -39,10 +42,15 @@ actual fun rememberCalendarFileBridge(): CalendarFileBridge {
         pending.importCallbacks = null
         if (uri == null || callbacks == null) return@rememberLauncherForActivityResult
         scope.launch {
-            val text = runCatching {
+            val result = runCatching {
                 withContext(Dispatchers.IO) { readText(context, uri) }
-            }.getOrNull()
-            if (text != null) callbacks.first(text) else callbacks.second()
+            }
+            result.fold(
+                onSuccess = callbacks.first,
+                onFailure = { error ->
+                    callbacks.second((error as? CalendarImportException)?.failure ?: IcsImportFailure.Unreadable)
+                },
+            )
         }
     }
 
@@ -64,7 +72,7 @@ actual fun rememberCalendarFileBridge(): CalendarFileBridge {
 
     return remember(openDocument, createDocument) {
         object : CalendarFileBridge {
-            override fun openImport(onPicked: (String) -> Unit, onError: () -> Unit) {
+            override fun openImport(onPicked: (String) -> Unit, onError: (IcsImportFailure) -> Unit) {
                 pending.importCallbacks = onPicked to onError
                 openDocument.launch(IcsMimeTypes)
             }
@@ -85,7 +93,7 @@ actual fun rememberCalendarFileBridge(): CalendarFileBridge {
 
 private fun readText(context: Context, uri: android.net.Uri): String {
     val stream = context.contentResolver.openInputStream(uri)
-        ?: error("Unable to open the selected file")
+        ?: throw CalendarImportException(IcsImportFailure.Unreadable)
     stream.use {
         val output = ByteArrayOutputStream()
         val buffer = ByteArray(16 * 1024)
@@ -94,12 +102,12 @@ private fun readText(context: Context, uri: android.net.Uri): String {
             val read = it.read(buffer)
             if (read < 0) break
             total += read
-            check(total <= MaxImportBytes) { "Calendar file is too large" }
+            if (total > MaxImportBytes) throw CalendarImportException(IcsImportFailure.TooLarge)
             output.write(buffer, 0, read)
         }
         // Rejecting an undecodable file beats importing replacement characters as if it were fine.
         return decodeCalendarBytes(output.toByteArray())
-            ?: error("Calendar file is not valid UTF-8")
+            ?: throw CalendarImportException(IcsImportFailure.InvalidEncoding)
     }
 }
 

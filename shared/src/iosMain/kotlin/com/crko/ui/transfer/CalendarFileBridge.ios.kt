@@ -5,6 +5,7 @@ package com.crko.ui.transfer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import com.crko.IosViewControllerHolder
+import com.crko.domain.IcsImportFailure
 import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -37,8 +38,8 @@ actual fun rememberCalendarFileBridge(): CalendarFileBridge = remember { IosCale
 private class IosCalendarFileBridge : CalendarFileBridge {
     private var importDelegate: ImportDelegate? = null
 
-    override fun openImport(onPicked: (String) -> Unit, onError: () -> Unit) {
-        val presenter = IosViewControllerHolder.root ?: return onError()
+    override fun openImport(onPicked: (String) -> Unit, onError: (IcsImportFailure) -> Unit) {
+        val presenter = IosViewControllerHolder.root ?: return onError(IcsImportFailure.Unreadable)
         val picker = UIDocumentPickerViewController(
             documentTypes = listOf("public.calendar-event", "public.text", "public.data"),
             inMode = UIDocumentPickerMode.UIDocumentPickerModeImport,
@@ -90,7 +91,7 @@ private class IosCalendarFileBridge : CalendarFileBridge {
 
 private class ImportDelegate(
     private val onPicked: (String) -> Unit,
-    private val onError: () -> Unit,
+    private val onError: (IcsImportFailure) -> Unit,
     private val onFinished: () -> Unit,
 ) : NSObject(), UIDocumentPickerDelegateProtocol {
 
@@ -101,7 +102,7 @@ private class ImportDelegate(
         onFinished()
         val url = didPickDocumentsAtURLs.firstOrNull() as? NSURL
         if (url == null) {
-            onError()
+            onError(IcsImportFailure.Unreadable)
             return
         }
         val scoped = url.startAccessingSecurityScopedResource()
@@ -110,16 +111,27 @@ private class ImportDelegate(
             // useless and let an oversized file exhaust memory instead of reporting an error.
             val declaredSize = fileSizeBytes(url)
             if (declaredSize != null && declaredSize > MaxImportBytes) {
-                onError()
+                onError(IcsImportFailure.TooLarge)
                 return
             }
             val data = NSData.dataWithContentsOfURL(url)
-                ?: error("Unable to read the selected file")
-            check(data.length <= MaxImportBytes.toULong()) { "Calendar file is too large" }
+            if (data == null) {
+                onError(IcsImportFailure.Unreadable)
+                return
+            }
+            if (data.length > MaxImportBytes.toULong()) {
+                onError(IcsImportFailure.TooLarge)
+                return
+            }
             // An undecodable file is rejected rather than imported with replacement characters.
-            onPicked(decodeCalendarBytes(data.toByteArray()) ?: error("Calendar file is not valid UTF-8"))
+            val text = decodeCalendarBytes(data.toByteArray())
+            if (text == null) {
+                onError(IcsImportFailure.InvalidEncoding)
+                return
+            }
+            onPicked(text)
         } catch (_: Throwable) {
-            onError()
+            onError(IcsImportFailure.Unreadable)
         } finally {
             if (scoped) url.stopAccessingSecurityScopedResource()
         }

@@ -1,13 +1,14 @@
 package com.crko.ui.transfer
 
 import androidx.compose.runtime.Composable
+import com.crko.domain.IcsImportFailure
 
 /**
  * Host-provided access to calendar files. Implementations present the platform picker/saver and
  * report back on the main thread.
  */
 interface CalendarFileBridge {
-    fun openImport(onPicked: (String) -> Unit, onError: () -> Unit)
+    fun openImport(onPicked: (String) -> Unit, onError: (IcsImportFailure) -> Unit)
 
     fun saveExport(fileName: String, content: String, onExported: () -> Unit, onError: () -> Unit)
 }
