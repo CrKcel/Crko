@@ -117,4 +117,19 @@ class TodoForestTest {
         val mid = forest.single().children.single()
         assertEquals("leaf", mid.children.single().todo.id)
     }
+
+    @Test
+    fun duplicateUidsKeepTheirOwnParentsAndChildren() {
+        val forest = listOf(
+            todo("x1", icsUid = "shared"),
+            todo("x2", relatedTo = listOf("p@crko"), icsUid = "shared"),
+            todo("p"),
+            todo("c1", relatedTo = listOf("shared"), icsUid = "ext-c1"),
+        ).todoForest()
+        // The duplicate without RELATED-TO stays a root, and the child that names "shared" nests
+        // under the one record it resolves to instead of appearing under both duplicates.
+        assertEquals(listOf("x1", "p"), forest.map { it.todo.id })
+        assertEquals("c1", forest[0].children.single().todo.id)
+        assertEquals("x2", forest[1].children.single().todo.id)
+    }
 }

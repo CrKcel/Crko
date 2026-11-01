@@ -2688,7 +2688,13 @@ private fun readTodo(
             "CATEGORIES" -> categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
             "URL" -> url = unescapeText(line.value).trim()
             "ATTACH" -> attachments += readAttachment(line)
-            "RELATED-TO" -> unescapeText(line.value).trim().takeIf { it.isNotEmpty() }?.let { relatedTo += it }
+            "RELATED-TO" -> when (line.params["RELTYPE"]?.trim()?.uppercase()) {
+                // Absent RELTYPE is the default PARENT the hierarchy is built on.
+                null, "", "PARENT" -> unescapeText(line.value).trim().takeIf { it.isNotEmpty() }?.let { relatedTo += it }
+                // CHILD and SIBLING name the same link in the other direction; keeping the raw line
+                // preserves the parameter for the next export instead of inverting the hierarchy.
+                else -> extra += line.raw
+            }
             "STATUS" -> rawStatus = line.value.trim().uppercase()
             "PERCENT-COMPLETE" -> percent = line.value.trim().toIntOrNull()?.coerceIn(0, 100) ?: 0
             "PRIORITY" -> priority = line.value.trim().toIntOrNull()?.coerceIn(0, 9) ?: 0

@@ -1964,6 +1964,34 @@ class IcsTest {
     }
 
     @Test
+    fun vtodoNonParentRelatedToKeepsItsDirection() {
+        val text = calendar(
+            """
+            BEGIN:VTODO
+            UID:todo-reltype
+            SUMMARY:Linked either way
+            RELATED-TO:parent-todo
+            RELATED-TO;RELTYPE=CHILD:child-todo
+            RELATED-TO;RELTYPE=SIBLING:sibling-todo
+            END:VTODO
+            """,
+        )
+        val todo = importCalendar(text, utc, "Untitled").todos.single()
+        // Only the default PARENT relation drives the sub-task hierarchy.
+        assertEquals(listOf("parent-todo"), todo.relatedTo)
+        val exported = exportCalendar(emptyList(), listOf(todo), now)
+        // The other relations keep their parameter instead of being re-written as parent links.
+        assertTrue(exported.contains("RELATED-TO;RELTYPE=CHILD:child-todo\r\n"), exported)
+        assertTrue(exported.contains("RELATED-TO;RELTYPE=SIBLING:sibling-todo\r\n"), exported)
+        val back = importCalendar(exported, utc, "Untitled").todos.single()
+        assertEquals(todo.relatedTo, back.relatedTo)
+        assertEquals(
+            todo.extraProperties.filter { it.startsWith("RELATED-TO") },
+            back.extraProperties.filter { it.startsWith("RELATED-TO") },
+        )
+    }
+
+    @Test
     fun quotedPrintableCalendarValuesAreDecoded() {
         val text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n" +
             "BEGIN:VEVENT\r\nUID:qp\r\n" +

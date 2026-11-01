@@ -30,8 +30,10 @@ data class TodoNode(
 fun List<Todo>.todoForest(): List<TodoNode> {
     val byUid = LinkedHashMap<String, Todo>()
     forEach { todo -> if (todo.effectiveUid !in byUid) byUid[todo.effectiveUid] = todo }
-    // The first resolvable related value that is not the todo itself wins; RELTYPE is not modelled,
-    // so every value is treated as the default `PARENT` relation the export writes.
+    // The first resolvable related value that is not the todo itself wins; import keeps only the
+    // default `PARENT` relation in [Todo.relatedTo], so every value here names a parent. Links are
+    // kept per record (by id), not per UID: two records may share a UID, and neither inherits the
+    // other's parent or children.
     val parentOf = HashMap<String, Todo>()
     forEach { todo ->
         val self = todo.effectiveUid
@@ -39,18 +41,17 @@ fun List<Todo>.todoForest(): List<TodoNode> {
             .asSequence()
             .mapNotNull(byUid::get)
             .firstOrNull { it.effectiveUid != self }
-        if (parent != null) parentOf[self] = parent
+        if (parent != null) parentOf[todo.id] = parent
     }
 
     // A todo whose parent chain is acyclic and ends at a root hangs under its parent; a todo inside
     // or below a cycle becomes a root instead of disappearing with the loop.
-    fun reachesRoot(uid: String): Boolean {
-        val seen = mutableSetOf(uid)
-        var current = parentOf[uid]
+    fun reachesRoot(todo: Todo): Boolean {
+        val seen = mutableSetOf(todo.id)
+        var current = parentOf[todo.id]
         while (current != null) {
-            val parentUid = current.effectiveUid
-            if (!seen.add(parentUid)) return false
-            current = parentOf[parentUid]
+            if (!seen.add(current.id)) return false
+            current = parentOf[current.id]
         }
         return true
     }
@@ -58,16 +59,15 @@ fun List<Todo>.todoForest(): List<TodoNode> {
     val childrenOf = HashMap<String, MutableList<Todo>>()
     val roots = mutableListOf<Todo>()
     forEach { todo ->
-        val uid = todo.effectiveUid
-        val parent = parentOf[uid]
-        if (parent != null && reachesRoot(uid)) {
-            childrenOf.getOrPut(parent.effectiveUid) { mutableListOf() }.add(todo)
+        val parent = parentOf[todo.id]
+        if (parent != null && reachesRoot(todo)) {
+            childrenOf.getOrPut(parent.id) { mutableListOf() }.add(todo)
         } else {
             roots += todo
         }
     }
     // Each todo has at most one resolved parent, so building downward visits every child once.
     fun build(todo: Todo): TodoNode =
-        TodoNode(todo, childrenOf[todo.effectiveUid].orEmpty().map(::build))
+        TodoNode(todo, childrenOf[todo.id].orEmpty().map(::build))
     return roots.map(::build)
 }

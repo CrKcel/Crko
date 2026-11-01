@@ -127,8 +127,7 @@ internal fun JournalSection(state: AppStateHolder, strings: Strings) {
             journal = journal,
             onDismiss = { editing = null },
             onSave = { title, note, date ->
-                state.updateJournal(journal.copy(title = title.trim(), note = note, date = date?.toString())) ==
-                    WriteResult.Success
+                state.updateJournal(journalWithEdits(journal, title, note, date)) == WriteResult.Success
             },
             onDelete = {
                 state.deleteJournal(journal.id)
@@ -141,6 +140,15 @@ internal fun JournalSection(state: AppStateHolder, strings: Strings) {
 /** Parses a stored journal date; malformed values fall back to the untitled placeholder. */
 private fun parseJournalDate(text: String): LocalDate? =
     runCatching { LocalDate.parse(text) }.getOrNull()
+
+/**
+ * The journal with the editor's changes applied. The editor picks a date only, so an imported
+ * `DTSTART` instant tied to the old date is dropped rather than exported over the picked date.
+ */
+internal fun journalWithEdits(journal: Journal, title: String, note: String, date: LocalDate?): Journal {
+    val startTime = journal.startTime?.takeIf { date != null && date.toString() == journal.date }
+    return journal.copy(title = title.trim(), note = note, date = date?.toString(), startTime = startTime)
+}
 
 /** The journal's own date, or the placeholder the import preview uses for undated records. */
 private fun journalDateLabel(journal: Journal, strings: Strings): String =

@@ -39,6 +39,7 @@ import com.crko.ui.schedule.endMinutesAfterStartChange
 import com.crko.ui.schedule.updateReminderAlarms
 import com.crko.ui.transfer.importSelection
 import com.crko.ui.transfer.toIcsImport
+import com.crko.ui.more.journalWithEdits
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.datetime.LocalDate
@@ -319,6 +320,28 @@ class StateHolderTest {
         assertEquals(WriteResult.Success, f.holder.updateJournal(stored))
         f.holder.deleteJournal("missing")
         assertEquals(1, f.holder.journalsSorted().size)
+    }
+
+    @Test
+    fun editingAJournalKeepsItsInstantOnlyWhileTheDateStays() {
+        val imported = Journal(
+            id = "j1",
+            title = "Trip",
+            note = "Notes",
+            date = "2026-10-27",
+            startTime = "2026-10-27T09:30:00Z",
+        )
+        // An untouched date keeps the imported instant.
+        val kept = journalWithEdits(imported, "Trip 2026", "Revised", LocalDate.parse("2026-10-27"))
+        assertEquals("2026-10-27T09:30:00Z", kept.startTime)
+        // A changed or cleared date drops the instant instead of exporting it over the picked date.
+        val moved = journalWithEdits(imported, "Trip 2026", "Revised", LocalDate.parse("2026-11-01"))
+        assertNull(moved.startTime)
+        assertEquals("2026-11-01", moved.date)
+        assertNull(journalWithEdits(imported, "Trip 2026", "Revised", null).startTime)
+        // The title is trimmed; a journal without an instant is untouched by the rule.
+        assertEquals("Trip 2026", kept.title)
+        assertEquals("T", journalWithEdits(imported.copy(startTime = null), "  T  ", "n", null).title)
     }
 
     @Test
