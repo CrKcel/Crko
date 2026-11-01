@@ -2,9 +2,13 @@ package com.crko.state
 
 import com.crko.domain.Alarm
 import com.crko.domain.Event
+import com.crko.domain.OccurrenceTime
 import com.crko.domain.Todo
 import com.crko.domain.daysTo
-import com.crko.domain.isOccurrenceStart
+import com.crko.domain.occurrenceDate
+import com.crko.domain.occurrenceEnd
+import com.crko.domain.occurrenceStartsBetween
+import com.crko.domain.occurrenceTimesOn
 import com.crko.domain.plusDays
 import com.crko.i18n.Strings
 import com.crko.i18n.alarmLabel
@@ -63,7 +67,9 @@ fun planReminders(
     events.forEach { event ->
         collectEventReminders(event, today, horizonEnd, horizonDays, zone, nowMillis, strings, reminders)
     }
-    todos.forEach { todo -> collectTodoReminders(todo, zone, nowMillis, strings, reminders) }
+    todos.forEach { todo ->
+        collectTodoReminders(todo, today, horizonEnd, zone, nowMillis, strings, reminders)
+    }
     return reminders
         .filter { it.triggerAtMillis > nowMillis }
         .sortedBy { it.triggerAtMillis }
@@ -107,33 +113,34 @@ private fun collectEventReminders(
     // `COUNT` rules are computed from the real anchor regardless of where the walk starts.
     val span = event.day.daysTo(event.endDay)
 
-    fun emitOccurrence(candidate: LocalDate) {
-        val startAt = candidate.atTime(event.startMinutes.toLocalTime(event.startSeconds)).toInstant(zone)
-        val endDay = candidate.plusDays(span)
-        val endAt = when {
-            // All-day ranges are inclusive on the stored end date and end at the next midnight.
-            event.allDay -> endDay.plusDays(1).atTime(LocalTime(0, 0)).toInstant(zone)
-            else -> endDay.atTime(event.endMinutes.toLocalTime(event.endSeconds)).toInstant(zone)
-        }
-        relative.forEach { (index, alarm) ->
-            val base = if (alarm.relatedToEnd) endAt else startAt
-            emitWithRepeat(event, index, alarm, base, candidate, event.allDay, event.startMinutes, nowMillis, strings, output)
+    fun emitOccurrence(candidate: LocalDate, times: List<OccurrenceTime>) {
+        times.forEach { time ->
+            val startAt = candidate.atTime(time.minutes.toLocalTime(time.seconds)).toInstant(zone)
+            val endAt = when {
+                // All-day ranges are inclusive on the stored end date and end at the next midnight.
+                event.allDay -> candidate.plusDays(span).plusDays(1).atTime(LocalTime(0, 0)).toInstant(zone)
+                // A `BYHOUR`/`BYMINUTE` instance keeps the anchor's length, so its end follows its start.
+                else -> event.occurrenceEnd(candidate, time).toInstant(zone)
+            }
+            relative.forEach { (index, alarm) ->
+                val base = if (alarm.relatedToEnd) endAt else startAt
+                emitWithRepeat(event, index, alarm, base, candidate, event.allDay, time.minutes, nowMillis, strings, output)
+            }
         }
     }
 
     if (event.repeat == null) {
         // A one-off event has exactly one occurrence; no walk over the horizon.
-        if (event.day <= horizonEnd) emitOccurrence(event.day)
+        if (event.day <= horizonEnd) emitOccurrence(event.day, event.occurrenceTimesOn(event.day))
         return
     }
 
     val lookback = minOf(span + horizonDays, MaxLookbackDays)
-    val excluded = event.excludedDates.toSet()
     var candidate = maxOf(event.day, today.plusDays(-1 - lookback))
     while (candidate <= horizonEnd) {
-        if (candidate.toString() !in excluded && event.isOccurrenceStart(candidate, event.repeat)) {
-            emitOccurrence(candidate)
-        }
+        // Skipped dates and expanded start times are both resolved here.
+        val times = event.occurrenceTimesOn(candidate)
+        if (times.isNotEmpty()) emitOccurrence(candidate, times)
         candidate = candidate.plusDays(1)
     }
 }
@@ -173,6 +180,8 @@ private fun emitWithRepeat(
 
 private fun collectTodoReminders(
     todo: Todo,
+    today: LocalDate,
+    horizonEnd: LocalDate,
     zone: TimeZone,
     nowMillis: Long,
     strings: Strings,
@@ -180,24 +189,72 @@ private fun collectTodoReminders(
 ) {
     if (todo.done) return
     todo.alarms.forEachIndexed { index, alarm ->
-        val base = when {
+        val anchor = when {
             alarm.absoluteTrigger != null -> parseTriggerInstant(alarm.absoluteTrigger, zone)
             alarm.relatedToEnd -> todo.dueTime?.let(::parseStoredInstant)
             else -> todo.startTime?.let(::parseStoredInstant)
         } ?: return@forEachIndexed
-        val atMillis = if (alarm.absoluteTrigger != null) {
-            base.toEpochMilliseconds()
-        } else {
-            base.toEpochMilliseconds() - alarm.triggerMinutes * 60_000L
+        // An absolute trigger fires once regardless of the occurrences.
+        if (alarm.absoluteTrigger != null) {
+            emitTodoReminder(todo, index, alarm, anchor.toEpochMilliseconds(), null, nowMillis, strings, output)
+            return@forEachIndexed
         }
-        if (atMillis <= nowMillis) return@forEachIndexed
-        output += ScheduledReminder(
-            key = "t:${todo.id}:$index:${atMillis / 60_000L}",
-            triggerAtMillis = atMillis,
-            title = todo.title,
-            body = alarm.description.ifBlank { strings.alarmLabel(alarm.triggerMinutes, alarm.relatedToEnd) },
-        )
+        val rule = todo.repeat
+        if (rule == null) {
+            emitTodoReminder(
+                todo,
+                index,
+                alarm,
+                anchor.toEpochMilliseconds() - alarm.triggerMinutes * 60_000L,
+                null,
+                nowMillis,
+                strings,
+                output,
+            )
+            return@forEachIndexed
+        }
+        // A series plans one trigger per occurrence inside the window; the time of day comes from
+        // the stored instant of the first one.
+        val wall = anchor.toLocalDateTime(zone).time
+        val lookback = minOf(ReminderHorizonDays, MaxLookbackDays)
+        val windowStart = today.plusDays(-1 - lookback)
+        todo.occurrenceStartsBetween(windowStart, horizonEnd).forEach { occStart ->
+            val base = when {
+                alarm.relatedToEnd -> LocalDateTime(todo.occurrenceDate(occStart), wall)
+                else -> LocalDateTime(occStart, wall)
+            }.toInstant(zone)
+            emitTodoReminder(
+                todo,
+                index,
+                alarm,
+                base.toEpochMilliseconds() - alarm.triggerMinutes * 60_000L,
+                occStart,
+                nowMillis,
+                strings,
+                output,
+            )
+        }
     }
+}
+
+/** One reminder for a todo occurrence, dropped when it would fire in the past. */
+private fun emitTodoReminder(
+    todo: Todo,
+    index: Int,
+    alarm: Alarm,
+    triggerMillis: Long,
+    occurrence: LocalDate?,
+    nowMillis: Long,
+    strings: Strings,
+    output: MutableList<ScheduledReminder>,
+) {
+    if (triggerMillis <= nowMillis) return
+    output += ScheduledReminder(
+        key = "t:${todo.id}:$index:${occurrence ?: "once"}:${triggerMillis / 60_000L}",
+        triggerAtMillis = triggerMillis,
+        title = todo.title,
+        body = alarm.description.ifBlank { strings.alarmLabel(alarm.triggerMinutes, alarm.relatedToEnd) },
+    )
 }
 
 private fun alarmMoment(allDay: Boolean, date: LocalDate, startMinutes: Int, strings: Strings): String = when {

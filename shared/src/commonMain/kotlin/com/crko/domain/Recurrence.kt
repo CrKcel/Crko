@@ -9,27 +9,124 @@ import kotlinx.datetime.toInstant
 
 private const val OccurrenceGuard = 100_000
 
+/** Largest `COUNT` whose rule-generated occurrence days are worth caching on the record. */
+internal const val CountIndexLimit = 5_000
+
 internal fun Event.isOccurrenceStart(candidate: LocalDate, rule: RepeatRule): Boolean {
-    if (candidate < day) return false
+    val count = rule.count
+    val index = if (count != null) countOccurrenceIndex else null
+    return isRuleOccurrence(
+        day,
+        rule,
+        excludedDates,
+        candidate,
+        startMinutes to startSeconds,
+        count,
+        // The index belongs to this exact rule instance; a modified copy keeps the ordinal walk.
+        index?.takeIf { it.first === rule }?.second,
+    )
+}
+
+/**
+ * Whether [candidate] starts an occurrence of [rule] anchored on [anchor]. [excludedDates] are ISO
+ * dates the series skips. [startTime] is the occurrence's time of day, used to compare against a
+ * timed `UNTIL`; null compares by date alone. [countIndex] holds the rule-generated days of a
+ * `COUNT` series, replacing the ordinal walk when it matches.
+ */
+internal fun isRuleOccurrence(
+    anchor: LocalDate,
+    rule: RepeatRule,
+    excludedDates: List<String>,
+    candidate: LocalDate,
+    startTime: Pair<Int, Int>? = null,
+    count: Int? = null,
+    countIndex: LongArray? = null,
+): Boolean {
+    if (candidate < anchor) return false
     if (candidate.toString() in excludedDates) return false
     if (rule.rDates.any { it == candidate.toString() }) return true
     // RFC 5545 treats DTSTART as part of the recurrence set even when it predates or misses BY* filters.
-    if (candidate == day) return true
+    if (candidate == anchor) return true
     val until = rule.until?.let(::parseRepeatUntil)
-    if (until != null && !occursBeforeUntil(until, candidate)) return false
-    if (!matchesRule(rule, day, candidate)) return false
-    val count = rule.count ?: return true
-    val ordinal = occurrenceOrdinal(rule, day, candidate, count) ?: return false
-    return ordinal <= count
+    if (until != null && !occursBeforeUntil(until, candidate, startTime)) return false
+    // The index was built from the same rule's matches, so membership decides without matching again.
+    if (countIndex != null) return countIndex.binaryFind(candidate.toEpochDays()) >= 0
+    if (!matchesRule(rule, anchor, candidate)) return false
+    val limit = count ?: return true
+    val ordinal = occurrenceOrdinal(rule, anchor, candidate, limit) ?: return false
+    return ordinal <= limit
+}
+
+/** Position of [day] in the sorted [days], or -1; the stdlib array search is JVM-only. */
+private fun LongArray.binaryFind(day: Long): Int {
+    var low = 0
+    var high = size - 1
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        when {
+            this[mid] < day -> low = mid + 1
+            this[mid] > day -> high = mid - 1
+            else -> return mid
+        }
+    }
+    return -1
+}
+
+/**
+ * Epoch days of the rule-generated occurrences a `COUNT` series is made of, sorted. DTSTART is the
+ * first occurrence and is not listed, so a day's ordinal is its position in the array plus two.
+ *
+ * Null when there is no usable `COUNT`, the series is too large to index, or the enumeration could
+ * not prove it ran to the end — the caller then keeps answering by the ordinal walk.
+ */
+internal fun buildCountIndex(rule: RepeatRule, anchor: LocalDate): LongArray? {
+    val count = rule.count ?: return null
+    if (count <= 0 || count > CountIndexLimit) return null
+    // The period enumeration mirrors the ordinal walk of MONTHLY and YEARLY rules; the other
+    // frequencies answer through their own ordinal paths and keep the walk.
+    if (rule.frequency != RepeatFrequency.Monthly && rule.frequency != RepeatFrequency.Yearly) return null
+    val days = mutableListOf<Long>()
+    val complete = runCatching {
+        // The sentinel keeps the enumeration running until COUNT is exhausted; the period walk
+        // treats an unreachable period as an incomplete answer. DTSTART is ordinal one and lives
+        // outside the array, so a candidate belongs in the series while its ordinal is within COUNT.
+        countPeriodMatches(
+            rule,
+            anchor,
+            LocalDate(999999, 12, 31),
+            count,
+            datesInPeriod = { index ->
+                // The same per-period enumeration the ordinal walk uses, so both answer alike.
+                if (rule.frequency == RepeatFrequency.Monthly) {
+                    val month = anchor.startOfMonth().plusMonths(index * rule.interval.coerceAtLeast(1))
+                    if (rule.byMonth.isNotEmpty() && month.month.number !in rule.byMonth) {
+                        emptyList()
+                    } else {
+                        monthCandidates(rule, anchor, month.year, month.month.number)
+                            .filter { it > anchor && matchesRule(rule, anchor, it) }
+                    }
+                } else {
+                    yearCandidates(rule, anchor, anchor.year + index * rule.interval.coerceAtLeast(1), withSetPos = true)
+                        .filter { it > anchor && matchesRule(rule, anchor, it) }
+                }
+            },
+            collect = { date, ordinal ->
+                if (ordinal <= count) days += date.toEpochDays()
+            },
+        ) != null
+    }.getOrDefault(false)
+    if (!complete) return null
+    return days.toLongArray().also { it.sort() }
 }
 
 /** Whether the occurrence starting on [candidate] is not after `UNTIL` (inclusive). */
-private fun Event.occursBeforeUntil(until: RepeatUntil, candidate: LocalDate): Boolean {
+private fun occursBeforeUntil(until: RepeatUntil, candidate: LocalDate, startTime: Pair<Int, Int>?): Boolean {
     val instant = until.instant
     val local = until.localDateTime
     if (instant == null && local == null) return candidate <= until.date
-    val minutes = startMinutes.coerceIn(0, 24 * 60 - 1)
-    val start = LocalDateTime(candidate, LocalTime(minutes / 60, minutes % 60, startSeconds.coerceIn(0, 59)))
+    val minutes = (startTime?.first ?: 0).coerceIn(0, 24 * 60 - 1)
+    val seconds = (startTime?.second ?: 0).coerceIn(0, 59)
+    val start = LocalDateTime(candidate, LocalTime(minutes / 60, minutes % 60, seconds))
     if (instant != null) return start.toInstant(TimeZone.currentSystemDefault()) <= instant
     if (local != null) return start <= local
     return candidate <= until.date
@@ -332,7 +429,7 @@ internal fun occurrenceOrdinal(
                     if (date == expected) monthDiff / interval + 1 else null
                 }
             } else {
-                countPeriodMatches(rule, anchor, date, limit) { monthIndex ->
+                countPeriodMatches(rule, anchor, date, limit, datesInPeriod = { monthIndex ->
                     val month = anchor.startOfMonth().plusMonths(monthIndex * interval)
                     if (rule.byMonth.isNotEmpty() && month.month.number !in rule.byMonth) {
                         emptyList()
@@ -340,7 +437,7 @@ internal fun occurrenceOrdinal(
                         monthCandidates(rule, anchor, month.year, month.month.number)
                             .filter { it > anchor && matchesRule(rule, anchor, it) }
                     }
-                }
+                })
             }
         }
         RepeatFrequency.Yearly -> {
@@ -356,10 +453,10 @@ internal fun occurrenceOrdinal(
                     yearDiff / interval + 1
                 }
             } else {
-                countPeriodMatches(rule, anchor, date, limit) { yearIndex ->
+                countPeriodMatches(rule, anchor, date, limit, datesInPeriod = { yearIndex ->
                     yearCandidates(rule, anchor, anchor.year + yearIndex * interval, withSetPos = true)
                         .filter { it > anchor && matchesRule(rule, anchor, it) }
-                }
+                })
             }
         }
     }
@@ -449,6 +546,7 @@ private fun countPeriodMatches(
     date: LocalDate,
     limit: Int?,
     datesInPeriod: (Int) -> List<LocalDate>,
+    collect: ((LocalDate, Int) -> Unit)? = null,
 ): Int? {
     var index = 0
     // DTSTART counts as the first occurrence.
@@ -456,21 +554,20 @@ private fun countPeriodMatches(
     // A week at a year boundary can appear in two yearly periods; it is still one occurrence.
     val counted = mutableSetOf<LocalDate>()
     while (index < OccurrenceGuard) {
-        val dates = datesInPeriod(index)
+        // An interval or anchor far outside the supported year range makes a period unreachable;
+        // it yields no dates and the walk stops instead of crashing.
+        val dates = runCatching { datesInPeriod(index) }.getOrDefault(emptyList())
         val nextPeriodStart = if (dates.isEmpty()) null else dates.first()
         if (nextPeriodStart != null && nextPeriodStart > date) return null
         // Stop once the period itself is past the target even if it produced no dates.
-        val periodGuess = if (rule.frequency == RepeatFrequency.Monthly) {
-            anchor.startOfMonth().plusMonths(index * rule.interval.coerceAtLeast(1))
-        } else {
-            LocalDate(anchor.year + index * rule.interval.coerceAtLeast(1), 1, 1)
-        }
+        val periodGuess = periodStartGuess(rule, anchor, index) ?: return null
         // An empty period past the target proves the date is not in the rule. A non-empty period
         // may legitimately start in the previous year when BYWEEKNO selects week one.
         if (dates.isEmpty() && periodGuess > date) return null
         for (candidate in dates) {
             if (!counted.add(candidate)) continue
             count++
+            collect?.invoke(candidate, count)
             if (candidate == date) return count
             if (limit != null && count > limit) return count
         }
@@ -478,3 +575,196 @@ private fun countPeriodMatches(
     }
     return null
 }
+
+/** First day of period [index], or null when the arithmetic leaves the supported year range. */
+private fun periodStartGuess(rule: RepeatRule, anchor: LocalDate, index: Int): LocalDate? = try {
+    if (rule.frequency == RepeatFrequency.Monthly) {
+        anchor.startOfMonth().plusMonths(index * rule.interval.coerceAtLeast(1))
+    } else {
+        LocalDate(anchor.year + index * rule.interval.coerceAtLeast(1), 1, 1)
+    }
+} catch (_: IllegalArgumentException) {
+    null
+} catch (_: ArithmeticException) {
+    null
+}
+
+// ----- time-of-day expansion (`BYHOUR` / `BYMINUTE` / `BYSECOND`) -----
+
+/** One start time of an occurrence: minutes and seconds after midnight. */
+data class OccurrenceTime(val minutes: Int, val seconds: Int)
+
+/**
+ * Start times [rule] puts on a rule-generated date: `BYHOUR` / `BYMINUTE` / `BYSECOND` multiply
+ * the single start into several (RFC 5545 expands the time of day), and parts the rule omits keep
+ * the anchor's own time. [startTime] is that anchor time.
+ */
+internal fun expandedStartTimes(rule: RepeatRule, startTime: OccurrenceTime): List<OccurrenceTime> {
+    if (rule.byHour.isEmpty() && rule.byMinute.isEmpty() && rule.bySecond.isEmpty()) {
+        return listOf(startTime)
+    }
+    val hours = rule.byHour.ifEmpty { listOf(startTime.minutes / 60) }
+    val minutes = rule.byMinute.ifEmpty { listOf(startTime.minutes % 60) }
+    val seconds = rule.bySecond.ifEmpty { listOf(startTime.seconds) }
+    return hours.flatMap { hour ->
+        minutes.flatMap { minute ->
+            seconds.map { second -> OccurrenceTime(hour * 60 + minute, second) }
+        }
+    }.distinct().sortedBy { it.minutes * 60 + it.seconds }
+}
+
+/**
+ * Start times of the occurrence starting on [date]. One per expanded time of day when the rule
+ * carries `BYHOUR` / `BYMINUTE` / `BYSECOND`, otherwise the event's own start. `RDATE` days and a
+ * `DTSTART` that misses the `BY*` filters keep the single stored start, since only rule-generated
+ * dates are expanded. Empty when [date] does not start an occurrence.
+ */
+fun Event.occurrenceTimesOn(date: LocalDate): List<OccurrenceTime> {
+    val rule = repeat ?: return if (occursOn(date)) {
+        listOf(OccurrenceTime(startMinutes, startSeconds))
+    } else {
+        emptyList()
+    }
+    if (allDay) return if (isOccurrenceStart(date, rule)) listOf(OccurrenceTime(0, 0)) else emptyList()
+    if (!isOccurrenceStart(date, rule)) return emptyList()
+    if (!matchesRule(rule, day, date)) return listOf(OccurrenceTime(startMinutes, startSeconds))
+    return expandedStartTimes(rule, OccurrenceTime(startMinutes, startSeconds))
+}
+
+/** Wall-clock length of one occurrence, in seconds, derived from the anchor's start and end. */
+val Event.occurrenceDurationSeconds: Long
+    get() = when {
+        allDay -> (day.daysTo(endDay) + 1) * 86_400L
+        else -> day.daysTo(endDay) * 86_400L + endMinutes * 60L + endSeconds - startMinutes * 60L - startSeconds
+    }
+
+/** End of the occurrence starting on [startDay] at [time], from the anchor's length. */
+fun Event.occurrenceEnd(startDay: LocalDate, time: OccurrenceTime): LocalDateTime {
+    val endTotal = startDay.toEpochDays() * 86_400L + time.minutes * 60L + time.seconds + occurrenceDurationSeconds
+    val endDay = LocalDate.fromEpochDays(endTotal.floorDiv(86_400))
+    val seconds = endTotal.mod(86_400).toInt()
+    return LocalDateTime(endDay, LocalTime(seconds / 3600, seconds % 3600 / 60, seconds % 60))
+}
+
+/**
+ * Slices of [event] on [date]: one range per occurrence instance covering the day, clipped to it.
+ * Rules without `BYHOUR` / `BYMINUTE` / `BYSECOND` — and all-day events — keep the single slice
+ * [timeRangeOn] computes, so nothing changes for them.
+ */
+fun Event.occurrenceRangesOn(date: LocalDate): List<Pair<Int, Int>> {
+    val rule = repeat ?: return listOf(timeRangeOn(date))
+    val expands = rule.byHour.isNotEmpty() || rule.byMinute.isNotEmpty() || rule.bySecond.isNotEmpty()
+    if (allDay || !expands) return listOf(timeRangeOn(date))
+    val ranges = mutableListOf<Pair<Int, Int>>()
+    // An instance occupies as many days as the anchor does, so the covering instance starts at
+    // most a whole span earlier.
+    val span = day.daysTo(lastOccupiedDay).coerceAtLeast(0)
+    for (offset in span downTo 0) {
+        val startDay = date.plusDays(-offset)
+        if (startDay < day) break
+        for (time in occurrenceTimesOn(startDay)) {
+            occurrenceRangeOn(date, startDay, time)?.let { ranges += it }
+        }
+    }
+    // Not an occurrence day, or a slice the day cannot hold: keep the raw range for callers that
+    // bypass occursOn.
+    return ranges.ifEmpty { listOf(timeRangeOn(date)) }
+}
+
+/** The slice of the instance starting on [startDay] at [time] that falls on [date], or null. */
+private fun Event.occurrenceRangeOn(
+    date: LocalDate,
+    startDay: LocalDate,
+    time: OccurrenceTime,
+): Pair<Int, Int>? {
+    val end = occurrenceEnd(startDay, time)
+    // An end at exactly midnight occupies the previous day through 24:00, like the stored model.
+    val lastDay = if (end.time.hour == 0 && end.time.minute == 0 && end.time.second == 0) {
+        end.date.plusDays(-1)
+    } else {
+        end.date
+    }
+    if (date < startDay || date > lastDay) return null
+    val offset = startDay.daysTo(date)
+    val lastOffset = startDay.daysTo(lastDay)
+    val start = if (offset == 0) time.minutes else 0
+    val endMinutes = when {
+        offset < lastOffset -> EndOfDayMinutes
+        lastDay != end.date -> EndOfDayMinutes
+        else -> end.time.hour * 60 + end.time.minute
+    }
+    return start to endMinutes
+}
+
+// ----- recurring todos (VTODO) -----
+
+/** Anchor of a todo series: `DTSTART`, falling back to `DUE`; null when the todo has no dates. */
+val Todo.seriesAnchor: LocalDate?
+    get() = (start ?: due)?.let(::parseStoredDate)
+
+/** Whole days from the series anchor to the date an occurrence is shown under. */
+private fun Todo.displayOffset(anchor: LocalDate): Int =
+    due?.let(::parseStoredDate)?.let { anchor.daysTo(it) } ?: 0
+
+/** Date an occurrence starting on [occStart] is shown under: its due, or the start without a due. */
+fun Todo.occurrenceDate(occStart: LocalDate): LocalDate {
+    val anchor = seriesAnchor ?: return occStart
+    return occStart.plusDays(displayOffset(anchor))
+}
+
+/**
+ * Whether [todo] is shown on [date]: the stored date for a one-off todo, and the display date of
+ * an occurrence for a series.
+ */
+fun Todo.occursOn(date: LocalDate): Boolean {
+    val anchor = seriesAnchor ?: return false
+    val rule = repeat ?: return date == occurrenceDate(anchor)
+    val occStart = date.plusDays(-displayOffset(anchor))
+    return isRuleOccurrence(anchor, rule, excludedDates, occStart, count = rule.count)
+}
+
+/**
+ * Occurrence start dates whose display date falls inside [from]..[to] (inclusive), ordered. Empty
+ * for one-off todos, which are anchored on their stored date alone.
+ */
+fun Todo.occurrenceStartsBetween(from: LocalDate, to: LocalDate): List<LocalDate> {
+    val rule = repeat ?: return emptyList()
+    val anchor = seriesAnchor ?: return emptyList()
+    val offset = displayOffset(anchor)
+    // Occurrences are shown under their display date, so the window sits offset days earlier here.
+    val dates = mutableListOf<LocalDate>()
+    var candidate = maxOf(anchor, from.plusDays(-offset))
+    val last = to.plusDays(-offset)
+    var steps = 0
+    while (candidate <= last && steps <= NextOccurrenceSearchDays) {
+        if (isRuleOccurrence(anchor, rule, excludedDates, candidate, count = rule.count)) dates += candidate
+        candidate = candidate.plusDays(1)
+        steps++
+    }
+    return dates
+}
+
+/**
+ * Display date of the next occurrence on or after [today]; the stored due date is the fallback
+ * when the series has already ended or the search window ran out.
+ */
+fun Todo.nextOccurrenceDate(today: LocalDate): LocalDate? {
+    val anchor = seriesAnchor ?: return null
+    val rule = repeat ?: return occurrenceDate(anchor)
+    val offset = displayOffset(anchor)
+    // An occurrence is shown under its display date, so the first candidate starts that many days
+    // before today.
+    var candidate = maxOf(anchor, today.plusDays(-offset))
+    var steps = 0
+    while (steps <= NextOccurrenceSearchDays) {
+        if (isRuleOccurrence(anchor, rule, excludedDates, candidate, count = rule.count)) {
+            return candidate.plusDays(offset)
+        }
+        candidate = candidate.plusDays(1)
+        steps++
+    }
+    return null
+}
+
+/** Days the next-occurrence search walks before giving up and falling back to the stored due. */
+private const val NextOccurrenceSearchDays = 366 * 5

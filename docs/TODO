@@ -9,12 +9,6 @@
 - [ ] 内嵌 `ENCODING=BASE64` 附件另存为文件、状态里只留引用：目前 payload 进入 SharedPreferences / UserDefaults 的全量 JSON，多次导入会持续累积。
 - [ ] `RECURRENCE-ID;RANGE=THISANDPRIOR` 拆分保留时区：过去与未来两段目前清空 `sourceStart` / `timeZoneId`，再次导出会退化为浮动时间。
 
-## 重复规则与展开
-
-- [ ] 秒级时间与极端历史系列的性能：`MONTHLY` / `YEARLY` 且带 `COUNT` 的规则仍可能从锚点线性扫描。
-- [ ] `BYHOUR` / `BYMINUTE` 展开为同一天多个开始时间（当前模型只有单个开始时间）。
-- [ ] VTODO 的 `RRULE` / `RDATE` / `EXDATE` 展开（重复待办目前只保留原始行，显示为一条）。
-
 ## 日历互操作与同步
 
 - [ ] `METHOD` / iTIP 邀请流程（`REQUEST` / `REPLY` / `CANCEL`）。

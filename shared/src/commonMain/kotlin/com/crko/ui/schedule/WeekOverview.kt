@@ -428,8 +428,9 @@ internal fun WeekAgendaList(
                     )
                 }
             } else {
-                items(dayEvents, key = { "week-event-$date-${it.id ?: it.title}" }) { event ->
-                    AgendaEventRow(event = event, date = date, tones = tones, strings = strings, onOpen = onOpen)
+                val entries = agendaEntries(dayEvents, date)
+                items(entries, key = { "week-event-$date-${it.event.id ?: it.event.title}-${it.instance}" }) { entry ->
+                    AgendaEventRow(entry = entry, date = date, tones = tones, strings = strings, onOpen = onOpen)
                 }
             }
         }

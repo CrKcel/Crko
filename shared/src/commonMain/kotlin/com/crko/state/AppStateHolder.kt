@@ -23,6 +23,7 @@ import com.crko.domain.daysTo
 import com.crko.domain.localDate
 import com.crko.domain.normalizedForZone
 import com.crko.domain.occurrenceStartOn
+import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.occursOn
 import com.crko.domain.occurringOn
 import com.crko.domain.parseRepeatUntil
@@ -699,14 +700,26 @@ class AppStateHolder(
 
     // ----- todos -----
 
-    fun activeTodos(): List<Todo> = appState.todos
-        .filterNot { it.done }
-        .sortedWith(
-            compareBy<Todo> { it.due == null }
-                .thenBy { it.due ?: "" }
-                .thenBy { it.priority.ordinal }
-                .thenByDescending { it.createdAt },
-        )
+    fun activeTodos(): List<Todo> {
+        // A series is shown under its next occurrence, so it sorts by that date instead of the
+        // stale stored due; computed once per todo rather than per comparison.
+        val today = today
+        val shownDue = appState.todos.associate { todo ->
+            todo.id to if (todo.repeat != null) {
+                todo.nextOccurrenceDate(today)?.toString()
+            } else {
+                todo.due
+            }
+        }
+        return appState.todos
+            .filterNot { it.done }
+            .sortedWith(
+                compareBy<Todo> { shownDue[it.id] == null }
+                    .thenBy { shownDue[it.id] ?: "" }
+                    .thenBy { it.priority.ordinal }
+                    .thenByDescending { it.createdAt },
+            )
+    }
 
     fun completedTodos(): List<Todo> = appState.todos
         .filter { it.done }

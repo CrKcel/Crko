@@ -6,7 +6,13 @@ import com.crko.domain.Event
 import com.crko.domain.OrdinalWeekday
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
+import com.crko.domain.Todo
 import com.crko.domain.matchesRule
+import com.crko.domain.nextOccurrenceDate
+import com.crko.domain.occurrenceDate
+import com.crko.domain.occurrenceRangesOn
+import com.crko.domain.occurrenceStartsBetween
+import com.crko.domain.occurrenceTimesOn
 import com.crko.domain.occurrenceOrdinal
 import com.crko.domain.occurrenceStartOn
 import com.crko.domain.occursOn
@@ -513,6 +519,196 @@ class RecurrenceTest {
             cursor = cursor.plusDays(1)
         }
         return null
+    }
+
+    /**
+     * The `COUNT` series of [rule] listed by an independent day-by-day walk from the anchor: the
+     * set every cell query has to agree with, however the engine answers internally.
+     */
+    private fun oracleCountedDays(rule: RepeatRule, anchor: LocalDate, count: Int): Set<LocalDate> {
+        val days = mutableSetOf(anchor)
+        var ordinal = 1
+        var cursor = anchor.plusDays(1)
+        while (cursor <= LocalDate(2026, 12, 31)) {
+            if (matchesRule(rule, anchor, cursor)) {
+                ordinal++
+                if (ordinal > count) break
+                days += cursor
+            }
+            cursor = cursor.plusDays(1)
+        }
+        return days
+    }
+
+    @Test
+    fun countLimitedMonthlyAndYearlySeriesAnswerLikeTheDayWalk() {
+        val rules = listOf(
+            RepeatRule(RepeatFrequency.Monthly, byMonthDay = listOf(1, 15), count = 4),
+            RepeatRule(RepeatFrequency.Monthly, byDay = listOf(OrdinalWeekday(-1, 4)), count = 3),
+            RepeatRule(RepeatFrequency.Yearly, byMonth = listOf(3), byMonthDay = listOf(14), count = 5),
+            RepeatRule(RepeatFrequency.Yearly, weekdays = listOf(6), byWeekNo = listOf(1), weekStart = 6, count = 2),
+        )
+        rules.forEach { rule ->
+            // A decades-old anchor is exactly what made every cell query walk hundreds of periods.
+            val start = LocalDate(1971, 3, 15)
+            val record = Event(
+                id = "old",
+                title = "Old",
+                date = start.toString(),
+                startMinutes = 540,
+                endMinutes = 600,
+                repeat = rule,
+            )
+            val expected = oracleCountedDays(rule, start, rule.count ?: 0)
+            var day = LocalDate(2026, 10, 1)
+            while (day <= LocalDate(2026, 11, 30)) {
+                assertEquals(day in expected, record.occursOn(day), "$rule on $day")
+                day = day.plusDays(1)
+            }
+        }
+    }
+
+    @Test
+    fun countIndexHonoursExdatesAndRdates() {
+        val rule = RepeatRule(
+            RepeatFrequency.Monthly,
+            byMonthDay = listOf(1),
+            count = 3,
+            rDates = listOf("2026-11-20"),
+        )
+        val record = Event(
+            id = "x",
+            title = "X",
+            date = "2026-10-01",
+            startMinutes = 540,
+            endMinutes = 600,
+            repeat = rule,
+            excludedDates = listOf("2026-11-01"),
+        )
+        assertTrue(record.occursOn(LocalDate(2026, 10, 1)))
+        assertFalse(record.occursOn(LocalDate(2026, 11, 1)))
+        assertTrue(record.occursOn(LocalDate(2026, 12, 1)))
+        assertFalse(record.occursOn(LocalDate(2027, 1, 1)))
+        assertTrue(record.occursOn(LocalDate(2026, 11, 20)))
+    }
+
+    @Test
+    fun byHourExpandsOneDayIntoSeveralStarts() {
+        val event = Event(
+            id = "rounds",
+            title = "Rounds",
+            date = anchor.toString(),
+            startMinutes = 9 * 60,
+            endMinutes = 10 * 60,
+            repeat = RepeatRule(RepeatFrequency.Daily, byHour = listOf(9, 17)),
+        )
+        // Every rule day holds two starts, each keeping the anchor's one-hour length.
+        assertEquals(
+            listOf(9 * 60 to 10 * 60, 17 * 60 to 18 * 60),
+            event.occurrenceRangesOn(anchor.plusDays(1)),
+        )
+        assertEquals(listOf(540, 1020), event.occurrenceTimesOn(anchor.plusDays(1)).map { it.minutes })
+    }
+
+    @Test
+    fun byMinuteCombinesWithByHourAndFallsBackToTheAnchorTime() {
+        val event = Event(
+            id = "pulse",
+            title = "Pulse",
+            date = anchor.toString(),
+            startMinutes = 9 * 60 + 30,
+            endMinutes = 9 * 60 + 50,
+            repeat = RepeatRule(RepeatFrequency.Daily, byHour = listOf(8), byMinute = listOf(0, 45)),
+        )
+        // BYHOUR replaces the anchor hour and BYMINUTE the minute; the length stays 20 minutes.
+        assertEquals(
+            listOf(8 * 60 to 8 * 60 + 20, 8 * 60 + 45 to 9 * 60 + 5),
+            event.occurrenceRangesOn(anchor.plusDays(1)),
+        )
+    }
+
+    @Test
+    fun rdateDaysKeepTheSingleStoredStart() {
+        val event = Event(
+            id = "extra",
+            title = "Extra",
+            date = anchor.toString(),
+            startMinutes = 9 * 60,
+            endMinutes = 10 * 60,
+            // The rule only fires on Tuesdays; the RDATE adds a Friday at the stored time.
+            repeat = RepeatRule(
+                RepeatFrequency.Weekly,
+                weekdays = listOf(1),
+                byHour = listOf(9, 17),
+                rDates = listOf("2026-10-30"),
+            ),
+        )
+        assertEquals(
+            listOf(9 * 60 to 10 * 60, 17 * 60 to 18 * 60),
+            event.occurrenceRangesOn(LocalDate(2026, 11, 3)),
+        )
+        assertEquals(listOf(9 * 60 to 10 * 60), event.occurrenceRangesOn(LocalDate(2026, 10, 30)))
+    }
+
+    @Test
+    fun aDtstartThatMissesTheByFiltersKeepsItsOwnStart() {
+        val event = Event(
+            id = "anchor",
+            title = "Anchor",
+            date = anchor.toString(),
+            startMinutes = 12 * 60,
+            endMinutes = 13 * 60,
+            repeat = RepeatRule(RepeatFrequency.Monthly, byMonthDay = listOf(1, 15), byHour = listOf(8)),
+        )
+        // DTSTART (the 27th) is still the first occurrence, unexpanded; the 1st expands to 08:00.
+        assertEquals(listOf(12 * 60 to 13 * 60), event.occurrenceRangesOn(anchor))
+        assertEquals(listOf(8 * 60 to 9 * 60), event.occurrenceRangesOn(LocalDate(2026, 11, 1)))
+    }
+
+    @Test
+    fun recurringTodoAppearsOnEachOccurrence() {
+        val todo = Todo(
+            id = "t1",
+            title = "Report",
+            start = "2026-10-05",
+            due = "2026-10-06",
+            repeat = RepeatRule(RepeatFrequency.Weekly, weekdays = listOf(0)),
+        )
+        // The todo shows under its due date, one day after each Monday start.
+        assertTrue(todo.occursOn(LocalDate(2026, 10, 6)))
+        assertTrue(todo.occursOn(LocalDate(2026, 10, 13)))
+        assertFalse(todo.occursOn(LocalDate(2026, 10, 7)))
+        assertFalse(todo.occursOn(LocalDate(2026, 10, 15)))
+        assertEquals(LocalDate(2026, 10, 13), todo.nextOccurrenceDate(LocalDate(2026, 10, 9)))
+    }
+
+    @Test
+    fun todoExdateSkipsTheOccurrenceAndTheNextOneIsFound() {
+        val todo = Todo(
+            id = "t2",
+            title = "Chore",
+            due = "2026-10-05",
+            repeat = RepeatRule(RepeatFrequency.Weekly, weekdays = listOf(0)),
+            excludedDates = listOf("2026-10-12"),
+        )
+        assertFalse(todo.occursOn(LocalDate(2026, 10, 12)))
+        assertEquals(LocalDate(2026, 10, 19), todo.nextOccurrenceDate(LocalDate(2026, 10, 12)))
+    }
+
+    @Test
+    fun todoOccurrenceStartsCarryTheDueOffset() {
+        val todo = Todo(
+            id = "t3",
+            title = "Dose",
+            start = "2026-10-01",
+            due = "2026-10-02",
+            repeat = RepeatRule(RepeatFrequency.Daily, interval = 2, count = 2),
+        )
+        assertEquals(
+            listOf(LocalDate(2026, 10, 1), LocalDate(2026, 10, 3)),
+            todo.occurrenceStartsBetween(LocalDate(2026, 10, 1), LocalDate(2026, 10, 10)),
+        )
+        assertEquals(LocalDate(2026, 10, 4), todo.occurrenceDate(LocalDate(2026, 10, 3)))
     }
 
     private companion object {

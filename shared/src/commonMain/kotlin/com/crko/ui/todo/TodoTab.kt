@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
+import com.crko.domain.nextOccurrenceDate
 import com.crko.i18n.Strings
 import com.crko.i18n.todoPriorityLabel
 import com.crko.ui.schedule.isOverdue
@@ -194,16 +195,24 @@ private fun TodoCard(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (todo.due != null) {
+            if (todo.due != null || todo.repeat != null) {
                 Spacer(Modifier.height(3.dp))
-                val due = LocalDate.parse(todo.due)
-                val overdue = isOverdue(todo, today)
-                Text(
-                    text = dueText(strings, due, today),
-                    style = MiuixTheme.textStyles.footnote2,
-                    fontSize = 11.sp,
-                    color = if (overdue) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
+                // A series is shown under its next occurrence; an ended one falls back to the
+                // stored due date.
+                val shown = if (todo.repeat != null) {
+                    todo.nextOccurrenceDate(today)
+                } else {
+                    todo.due?.let { LocalDate.parse(it) }
+                }
+                if (shown != null) {
+                    val overdue = isOverdue(todo, today)
+                    Text(
+                        text = dueText(strings, shown, today),
+                        style = MiuixTheme.textStyles.footnote2,
+                        fontSize = 11.sp,
+                        color = if (overdue) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
             }
             if (todo.status == TodoStatus.InProcess || todo.status == TodoStatus.Cancelled) {
                 Spacer(Modifier.height(3.dp))

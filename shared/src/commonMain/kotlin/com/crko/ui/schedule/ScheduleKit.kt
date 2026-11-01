@@ -14,6 +14,7 @@ import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
 import com.crko.domain.daysTo
 import com.crko.domain.mondayIndex
+import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.occurrenceStartOn
 import com.crko.domain.plusDays
 import com.crko.domain.startOfWeek
@@ -129,8 +130,12 @@ internal fun rememberBlockAxis(base: LocalDate, weeks: Boolean): BlockAxis {
     return remember(baseDate, blockDays, pageCount) { BlockAxis(baseDate, blockDays, pageCount) }
 }
 
-internal fun isOverdue(todo: Todo, today: LocalDate): Boolean =
-    !todo.done && todo.due != null && LocalDate.parse(todo.due) < today
+internal fun isOverdue(todo: Todo, today: LocalDate): Boolean {
+    if (todo.done) return false
+    // A series is shown under its next occurrence once the stored due date has passed.
+    val due = if (todo.repeat != null) todo.nextOccurrenceDate(today) else todo.due?.let { LocalDate.parse(it) }
+    return due != null && due < today
+}
 
 /** Light grey rule that closes each hour cell in the day and week grids. */
 @Composable
@@ -187,20 +192,17 @@ internal fun priorityColor(priority: TodoPriority): Color = when (priority) {
     TodoPriority.Low -> MiuixTheme.colorScheme.onSurfaceVariantSummary
 }
 
-/** Time label for the slice of [event] shown on [date]. */
-internal fun timeRangeText(event: Event, date: LocalDate, strings: Strings): String {
-    if (event.allDay) return strings.allDay
-    val (start, end) = event.timeRangeOn(date)
+/** Time label for one occurrence slice; a slice covering the whole day reads as all-day. */
+internal fun timeRangeText(allDay: Boolean, range: Pair<Int, Int>, strings: Strings): String {
+    if (allDay) return strings.allDay
+    val (start, end) = range
     if (start == 0 && end >= EndOfDayMinutes) return strings.allDay
     return "${strings.time(LocalTime(start / 60, start % 60))} – ${minuteLabel(end)}"
 }
 
 /** Compact "09:00–10:00" label used inside timeline blocks where the full format is clipped. */
-internal fun clockRange(event: Event, date: LocalDate): String {
-    if (event.allDay) return ""
-    val (start, end) = event.timeRangeOn(date)
-    return "${minuteLabel(start)}–${minuteLabel(end)}"
-}
+internal fun clockRange(startMinutes: Int, endMinutes: Int): String =
+    "${minuteLabel(startMinutes)}–${minuteLabel(endMinutes)}"
 
 internal fun eventDateLabel(event: Event, date: LocalDate, strings: Strings): String? {
     val span = event.day.daysTo(event.endDay)

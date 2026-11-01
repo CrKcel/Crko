@@ -302,6 +302,46 @@ class ReminderPlanTest {
     }
 
     @Test
+    fun byHourAlarmsFireForEveryStartOfTheDay() {
+        val event = Event(
+            id = "rounds",
+            title = "Rounds",
+            date = "2026-10-28",
+            startMinutes = 9 * 60,
+            endMinutes = 10 * 60,
+            repeat = RepeatRule(RepeatFrequency.Daily, byHour = listOf(9, 17)),
+            alarms = listOf(Alarm(triggerMinutes = 15)),
+        )
+        // The first day of the series opens with both rounds; the cap keeps later days out.
+        val planned = plan(event).take(2)
+        assertEquals(
+            listOf(localAt("2026-10-28", 8, 45), localAt("2026-10-28", 16, 45)).map { it.toEpochMilliseconds() },
+            planned.map { it.triggerAtMillis },
+        )
+    }
+
+    @Test
+    fun aRecurringTodoPlansOneReminderPerOccurrence() {
+        val todo = Todo(
+            id = "t5",
+            title = "Dose",
+            priority = TodoPriority.Normal,
+            start = "2026-10-27",
+            startTime = localAt("2026-10-27", 21, 0).toString(),
+            repeat = RepeatRule(RepeatFrequency.Daily, count = 2),
+            alarms = listOf(Alarm(triggerMinutes = 30)),
+        )
+        val planned = planReminders(emptyList(), listOf(todo), strings, now, zone)
+        assertEquals(
+            listOf(localAt("2026-10-27", 20, 30), localAt("2026-10-28", 20, 30)).map { it.toEpochMilliseconds() },
+            planned.map { it.triggerAtMillis },
+        )
+        // Each occurrence carries its own key, so rescheduling replaces them separately.
+        assertTrue(planned[0].key.contains(":2026-10-27:"))
+        assertTrue(planned[1].key.contains(":2026-10-28:"))
+    }
+
+    @Test
     fun multiDayEndRelatedAlarmsFollowEachOccurrence() {
         val event = Event(
             id = "e13",

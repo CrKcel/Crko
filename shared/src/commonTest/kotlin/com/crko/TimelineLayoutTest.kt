@@ -1,6 +1,8 @@
 package com.crko
 
 import com.crko.domain.Event
+import com.crko.domain.RepeatFrequency
+import com.crko.domain.RepeatRule
 import com.crko.ui.schedule.layoutEvents
 import kotlinx.datetime.LocalDate
 import kotlin.test.Test
@@ -11,6 +13,23 @@ private val layoutDay = LocalDate(2026, 10, 27)
 private fun event(id: String, start: Int, end: Int) = Event(id, id, "2026-10-27", start, end)
 
 class TimelineLayoutTest {
+
+    @Test
+    fun expandedStartsPlaceSeparateBlocks() {
+        // A BYHOUR rule turns one event into two blocks on the same day.
+        val rounds = Event(
+            id = "rounds",
+            title = "Rounds",
+            date = "2026-10-27",
+            startMinutes = 9 * 60,
+            endMinutes = 10 * 60,
+            repeat = RepeatRule(RepeatFrequency.Daily, byHour = listOf(9, 17)),
+        )
+        val placed = layoutEvents(listOf(rounds), LocalDate(2026, 10, 28))
+        assertEquals(listOf(540, 1020), placed.map { it.startMinutes })
+        assertEquals(listOf(600, 1080), placed.map { it.endMinutes })
+        assertEquals(listOf(0, 0), placed.map { it.column })
+    }
 
     @Test
     fun nonOverlappingEventsKeepFullWidth() {

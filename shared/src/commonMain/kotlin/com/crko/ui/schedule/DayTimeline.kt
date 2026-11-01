@@ -45,7 +45,7 @@ import androidx.compose.ui.zIndex
 import com.crko.domain.Event
 import com.crko.domain.LocalClock
 import com.crko.domain.minutesOfDay
-import com.crko.domain.timeRangeOn
+import com.crko.domain.occurrenceRangesOn
 import com.crko.i18n.Strings
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
@@ -232,7 +232,7 @@ private fun EventBlocks(
                     if (!compact) {
                         Spacer(Modifier.weight(1f))
                         Text(
-                            text = clockRange(item.event, date),
+                            text = clockRange(item.startMinutes, item.endMinutes),
                             style = MiuixTheme.textStyles.footnote2,
                             fontSize = 9.sp,
                             color = content.copy(alpha = 0.85f),
@@ -308,19 +308,26 @@ private fun eventBlockHeight(item: PlacedEvent, hours: HourLayout): Dp =
 
 internal class PlacedEvent(
     val event: Event,
+    /** Index of the start time this block renders within the day's occurrence ranges. */
+    val instance: Int,
     val column: Int,
     val totalColumns: Int,
     val startMinutes: Int,
     val endMinutes: Int,
 )
 
-private data class EventSlice(val event: Event, val start: Int, val end: Int)
+private data class EventSlice(val event: Event, val instance: Int, val start: Int, val end: Int)
+
+/** Identity of a slice, so two start times of one event claim separate layout columns. */
+private fun sliceKey(slice: EventSlice): String = "${slice.event.id ?: slice.event.title}#${slice.instance}"
 
 /** Greedy column packing inside each cluster of overlapping events, clipped to [date]. */
 internal fun layoutEvents(events: List<Event>, date: LocalDate): List<PlacedEvent> {
-    val slices = events.map { event ->
-        val (start, end) = event.timeRangeOn(date)
-        EventSlice(event, start, end)
+    // A rule with BYHOUR/BYMINUTE puts several starts on one day; every one renders as its own block.
+    val slices = events.flatMap { event ->
+        event.occurrenceRangesOn(date).mapIndexed { instance, range ->
+            EventSlice(event, instance, range.first, range.second)
+        }
     }.sortedWith(compareBy({ it.start }, { it.end }))
     val result = mutableListOf<PlacedEvent>()
     var cluster = mutableListOf<EventSlice>()
@@ -333,7 +340,8 @@ internal fun layoutEvents(events: List<Event>, date: LocalDate): List<PlacedEven
         cluster.forEach { slice ->
             result += PlacedEvent(
                 event = slice.event,
-                column = columnOf.getValue(slice.event.id ?: slice.event.title),
+                instance = slice.instance,
+                column = columnOf.getValue(sliceKey(slice)),
                 totalColumns = total,
                 startMinutes = slice.start,
                 endMinutes = slice.end,
@@ -362,7 +370,7 @@ private fun assignColumns(events: List<EventSlice>): Map<String, Int> {
     }
     return buildMap {
         columns.forEachIndexed { index, column ->
-            column.forEach { put(it.event.id ?: it.event.title, index) }
+            column.forEach { put(sliceKey(it), index) }
         }
     }
 }

@@ -14,7 +14,9 @@ import com.crko.domain.exportCalendar
 import com.crko.domain.exportIcs
 import com.crko.domain.importCalendar
 import com.crko.domain.importIcs
+import com.crko.domain.occurrenceRangesOn
 import com.crko.domain.occursOn
+import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.plusDays
 import com.crko.domain.safeAttachmentFileName
 import kotlinx.datetime.LocalDate
@@ -1583,7 +1585,7 @@ class IcsTest {
     }
 
     @Test
-    fun byHourAndByMinuteAreReportedAsUnsupported() {
+    fun byHourExpandsTheDayIntoSeveralStarts() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -1596,9 +1598,51 @@ class IcsTest {
             """,
         )
         val imported = importCalendar(text, utc, "Untitled")
-        // The engine keeps one start per day, so the second round of every day would silently vanish.
-        assertTrue(IcsWarning.UnsupportedRecurrence in imported.warnings, imported.warnings.toString())
-        assertEquals(listOf(9, 17), imported.events.single().repeat?.byHour)
+        val event = imported.events.single()
+        assertEquals(listOf(9, 17), event.repeat?.byHour)
+        // The rule is honoured: the day holds both rounds, each keeping the anchor's length. COUNT
+        // stays day-granular like the rest of the model, so the series covers four days.
+        assertFalse(IcsWarning.UnsupportedRecurrence in imported.warnings, imported.warnings.toString())
+        assertEquals(
+            listOf(9 * 60 to 10 * 60, 17 * 60 to 18 * 60),
+            event.occurrenceRangesOn(LocalDate(2026, 10, 28)),
+        )
+        assertFalse(event.occursOn(LocalDate(2026, 10, 31)))
+    }
+
+    @Test
+    fun todoRecurrenceImportsAndExports() {
+        val text = calendar(
+            """
+            BEGIN:VTODO
+            UID:weekly-report
+            SUMMARY:Weekly report
+            DTSTART;VALUE=DATE:20261005
+            DUE;VALUE=DATE:20261006
+            RRULE:FREQ=WEEKLY;BYDAY=MO
+            RDATE;VALUE=DATE:20261224
+            EXDATE;VALUE=DATE:20261012
+            END:VTODO
+            """,
+        )
+        val todo = importCalendar(text, utc, "Untitled").todos.single()
+        val rule = todo.repeat
+        assertEquals(RepeatFrequency.Weekly, rule?.frequency)
+        assertEquals(listOf(0), rule?.weekdays)
+        assertEquals(listOf("2026-12-24"), rule?.rDates)
+        assertEquals(listOf("2026-10-12"), todo.excludedDates)
+        // The series expands under its due date, one day after each Monday start; the excluded
+        // Monday disappears and the RDATE Thursday appears.
+        assertTrue(todo.occursOn(LocalDate(2026, 10, 6)))
+        assertFalse(todo.occursOn(LocalDate(2026, 10, 13)))
+        assertTrue(todo.occursOn(LocalDate(2026, 10, 20)))
+        assertTrue(todo.occursOn(LocalDate(2026, 12, 25)))
+        assertEquals(LocalDate(2026, 12, 25), todo.nextOccurrenceDate(LocalDate(2026, 12, 24)))
+        // …and the lines are written back when the calendar is exported.
+        val exported = exportCalendar(emptyList(), listOf(todo), now)
+        assertTrue(exported.contains("RRULE:FREQ=WEEKLY;BYDAY=MO\r\n"), exported)
+        assertTrue(exported.contains("RDATE;VALUE=DATE:20261224\r\n"), exported)
+        assertTrue(exported.contains("EXDATE;VALUE=DATE:20261012\r\n"), exported)
     }
 
     @Test

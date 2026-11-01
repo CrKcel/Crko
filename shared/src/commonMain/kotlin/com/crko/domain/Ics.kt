@@ -542,7 +542,7 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     }
 
     event.repeat?.let { rule ->
-        line("RRULE:${ruleValue(rule, event)}")
+        line("RRULE:${ruleValue(rule) { formatUntil(it, event) }}")
         appendRDate(event, rule)
         appendExDate(event)
     }
@@ -622,6 +622,11 @@ private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
     } else {
         todo.due?.let { parseDateText(it)?.let { date -> line("DUE;VALUE=DATE:${formatDate(date)}") } }
     }
+    todo.repeat?.let { rule ->
+        line("RRULE:${ruleValue(rule, formatTodoUntil(todo))}")
+        appendTodoRDate(rule)
+        appendTodoExDate(todo, rule)
+    }
     val exportStatus = when {
         todo.status != TodoStatus.NeedsAction -> todo.status
         todo.done -> TodoStatus.Completed
@@ -667,6 +672,44 @@ private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
     }
     todo.extraProperties.forEach { line(it) }
     line("END:VTODO")
+}
+
+/**
+ * `UNTIL` renderer for a todo series: instants and floating values carry over, and a date-only
+ * `UNTIL` is written in the value type the start uses.
+ */
+private fun formatTodoUntil(todo: Todo): (String) -> String? {
+    val timed = todo.startTime != null
+    return { untilText ->
+        val until = parseRepeatUntil(untilText)
+        when {
+            until == null -> null
+            until.instant != null -> formatUtc(until.instant)
+            until.localDateTime != null -> formatIcsLocalDateTime(until.localDateTime, utc = false)
+            timed -> formatIcsLocalDateTime(LocalDateTime(until.date, LocalTime(0, 0)), utc = false)
+            else -> formatDate(until.date)
+        }
+    }
+}
+
+/** `RDATE` lines of a todo series; the day-granular model writes dates rather than date-times. */
+private fun StringBuilder.appendTodoRDate(rule: RepeatRule) {
+    if (rule.rDates.isEmpty()) return
+    val values = rule.rDates.mapNotNull(::parseDateText).sorted().map(::formatDate)
+    if (values.isNotEmpty()) line("RDATE;VALUE=DATE:${values.joinToString(",")}")
+}
+
+private fun StringBuilder.appendTodoExDate(todo: Todo, rule: RepeatRule) {
+    if (todo.excludedDates.isEmpty()) return
+    val anchor = todo.seriesAnchor ?: return
+    // Only dates that really are occurrences of the rule belong in EXDATE.
+    val values = todo.excludedDates
+        .distinct()
+        .sorted()
+        .mapNotNull(::parseDateText)
+        .filter { date -> isRuleOccurrence(anchor, rule, emptyList(), date) }
+        .map(::formatDate)
+    if (values.isNotEmpty()) line("EXDATE;VALUE=DATE:${values.joinToString(",")}")
 }
 
 private fun StringBuilder.appendRDate(event: Event, rule: RepeatRule) {
@@ -721,7 +764,10 @@ private fun buildRecurrenceValue(
     return "${formatDate(date)}T$time" + if (source?.endsWith("Z", ignoreCase = true) == true) "Z" else ""
 }
 
-private fun ruleValue(rule: RepeatRule, event: Event): String = buildString {
+/**
+ * `RRULE` value of [rule]; [formatUntil] renders `UNTIL` in the value type the series' start uses.
+ */
+private fun ruleValue(rule: RepeatRule, formatUntil: (String) -> String?): String = buildString {
     append(
         when (rule.frequency) {
             RepeatFrequency.Daily -> "FREQ=DAILY"
@@ -732,7 +778,7 @@ private fun ruleValue(rule: RepeatRule, event: Event): String = buildString {
     )
     if (rule.interval > 1) append(";INTERVAL=${rule.interval}")
     if (rule.count != null && rule.count > 0) append(";COUNT=${rule.count}")
-    else rule.until?.let { until -> formatUntil(until, event)?.let { append(";UNTIL=$it") } }
+    else rule.until?.let { until -> formatUntil(until)?.let { append(";UNTIL=$it") } }
     // RFC 5545 only gives an ordinal in BYDAY a meaning for MONTHLY and YEARLY rules.
     val ordinalsAllowed = rule.frequency == RepeatFrequency.Monthly || rule.frequency == RepeatFrequency.Yearly
     val days = buildList {
@@ -2219,8 +2265,9 @@ private fun mapRule(
             emptyList()
         }
     }
-    // BYHOUR/BYMINUTE would put several starts on one day, which the single-start model cannot hold.
-    if (raw.byHour.isNotEmpty() || raw.byMinute.isNotEmpty()) {
+    // `BYHOUR`/`BYMINUTE` expand into several starts on the same day; against a DATE-valued start
+    // they have no time of day to expand and are dropped with a warning.
+    if ((raw.byHour.isNotEmpty() || raw.byMinute.isNotEmpty()) && start is IcsTime.AllDay) {
         warnings += IcsWarning.UnsupportedRecurrence
     }
     val until = raw.until?.let { time ->
@@ -2300,8 +2347,13 @@ private fun readTodo(
     var note = ""
     var start: String? = null
     var startTime: String? = null
+    var startValue: IcsTime? = null
     var due: String? = null
     var dueTime: String? = null
+    var dueValue: IcsTime? = null
+    var rule: RawRule? = null
+    val exdates = mutableListOf<IcsTime>()
+    val rdates = mutableListOf<IcsTime>()
     var location = ""
     val categories = mutableListOf<String>()
     val attachments = mutableListOf<Attachment>()
@@ -2324,6 +2376,7 @@ private fun readTodo(
             "DESCRIPTION" -> note = unescapeText(line.value).trim()
             "DTSTART" -> {
                 val time = parseTime(line, zones, warnings, floatingZone)
+                startValue = time
                 start = when (time) {
                     is IcsTime.AllDay -> time.date.toString()
                     is IcsTime.DateTime -> time.localDate(deviceZone).toString()
@@ -2334,6 +2387,7 @@ private fun readTodo(
             }
             "DUE" -> {
                 val time = parseTime(line, zones, warnings, floatingZone)
+                dueValue = time
                 due = when (time) {
                     is IcsTime.AllDay -> time.date.toString()
                     is IcsTime.DateTime -> time.localDate(deviceZone).toString()
@@ -2341,6 +2395,30 @@ private fun readTodo(
                 }
                 dueTime = time?.instantForDevice(deviceZone)
                 if (time == null) warnings += IcsWarning.InvalidValue
+            }
+            "RRULE" -> {
+                val parsed = parseRule(line.value, zones, warnings, floatingZone)
+                if (rule == null) {
+                    rule = parsed
+                } else {
+                    warnings += IcsWarning.MultipleRrules
+                }
+            }
+            "EXDATE" -> splitList(line.value).forEach { value ->
+                parseTime(
+                    ContentLine("EXDATE", line.params, value, line.raw),
+                    zones,
+                    warnings,
+                    floatingZone,
+                )?.let { exdates += it }
+            }
+            "RDATE" -> splitList(line.value).forEach { value ->
+                parseTime(
+                    ContentLine("RDATE", line.params, value, line.raw),
+                    zones,
+                    warnings,
+                    floatingZone,
+                )?.let { rdates += it }
             }
             "LOCATION" -> location = unescapeText(line.value).trim()
             "CATEGORIES" -> categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
@@ -2393,6 +2471,8 @@ private fun readTodo(
         completed != null
     val record = title.ifBlank { uid }
     warnings.forEach { details += warningDetail(it, component.lineNumber, record) }
+    // The series is anchored on DTSTART, falling back to DUE the way RFC 5545 anchors a VTODO.
+    val repeat = mapRule(rule, startValue ?: dueValue, deviceZone, rdates, warnings)
     return Todo(
         id = "",
         title = title.ifBlank { uid ?: "" },
@@ -2424,6 +2504,8 @@ private fun readTodo(
         percentComplete = percent,
         completedTime = completedTime,
         alarms = alarms.map { it.toAlarm() },
+        repeat = repeat,
+        excludedDates = exdates.map { it.localDate(deviceZone).toString() }.distinct(),
     )
 }
 

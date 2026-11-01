@@ -25,21 +25,43 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Event
 import com.crko.domain.mondayIndex
+import com.crko.domain.occurrenceRangesOn
 import com.crko.i18n.Strings
 import com.crko.ui.components.GlassNavigationBarDefaults
+import androidx.compose.runtime.remember
 import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+/** One agenda row: an event and the occurrence slice shown for it. */
+internal data class AgendaEntry(
+    val event: Event,
+    /** Index of the slice within the event's occurrence ranges, so keys stay unique. */
+    val instance: Int,
+    val range: Pair<Int, Int>,
+)
+
+/**
+ * Rows for [date]: one per event, or several per event when a rule expands the day into multiple
+ * start times.
+ */
+internal fun agendaEntries(events: List<Event>, date: LocalDate): List<AgendaEntry> =
+    events.flatMap { event ->
+        event.occurrenceRangesOn(date).mapIndexed { instance, range ->
+            AgendaEntry(event, instance, range)
+        }
+    }
+
 /** Event row shared by the day list and the week list. */
 @Composable
 internal fun AgendaEventRow(
-    event: Event,
+    entry: AgendaEntry,
     date: LocalDate,
     tones: List<Pair<Color, Color>>,
     strings: Strings,
     onOpen: (Event, LocalDate) -> Unit,
 ) {
+    val event = entry.event
     val (container, content) = tones[eventToneIndex(event, tones.size)]
     Row(
         modifier = Modifier
@@ -52,7 +74,7 @@ internal fun AgendaEventRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = timeRangeText(event, date, strings),
+            text = timeRangeText(event.allDay, entry.range, strings),
             style = MiuixTheme.textStyles.footnote1,
             fontSize = 12.sp,
             color = content,
@@ -151,6 +173,7 @@ internal fun DayAgendaList(
 ) {
     val tones = eventTones()
     val listState = rememberLazyListState()
+    val entries = remember(events, date) { agendaEntries(events, date) }
     // Fills the page height: a pager centres a shorter page on the cross axis, which would leave a
     // band of empty screen above the first row.
     LazyColumn(
@@ -162,8 +185,8 @@ internal fun DayAgendaList(
         // clearance to be reachable.
         contentPadding = PaddingValues(bottom = GlassNavigationBarDefaults.clearance()),
     ) {
-        items(events, key = { "event-${it.id}" }) { event ->
-            AgendaEventRow(event = event, date = date, tones = tones, strings = strings, onOpen = onOpen)
+        items(entries, key = { "event-${it.event.id}-${it.instance}" }) { entry ->
+            AgendaEventRow(entry = entry, date = date, tones = tones, strings = strings, onOpen = onOpen)
         }
     }
 }

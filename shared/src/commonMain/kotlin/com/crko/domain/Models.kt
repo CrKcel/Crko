@@ -225,6 +225,17 @@ data class Event(
 
     /** Stable UID used for series/exception relationships and exports. */
     val uid: String? get() = icsUid?.takeIf { it.isNotBlank() } ?: id?.let { "$it@crko" }
+
+    /**
+     * Rule-generated occurrence days of a `COUNT` series, cached with the rule instance they were
+     * built from, so a cell query answers by lookup instead of walking the periods from the anchor.
+     * Null when the rule has no indexable count.
+     */
+    internal val countOccurrenceIndex: Pair<RepeatRule, LongArray>? by lazy(LazyThreadSafetyMode.NONE) {
+        val rule = repeat ?: return@lazy null
+        val index = buildCountIndex(rule, day) ?: return@lazy null
+        rule to index
+    }
 }
 
 /** RFC 5545: a timed event without `DTEND`/`DURATION` has zero length rather than one hour. */
@@ -285,6 +296,10 @@ data class Todo(
     /** Exact `COMPLETED` instant from ICS when available. */
     val completedTime: String? = null,
     val alarms: List<Alarm> = emptyList(),
+    /** Recurrence of the series an imported `RRULE` describes; null for a one-off todo. */
+    val repeat: RepeatRule? = null,
+    /** Occurrence dates the series skips, from `EXDATE`. */
+    val excludedDates: List<String> = emptyList(),
 )
 
 /** A `VJOURNAL` entry. Parsed and exported so a calendar round trip does not drop journals. */
