@@ -94,6 +94,7 @@ interface Strings {
     val categories: String
     val categoriesField: String
     val urlField: String
+    val moreOptions: String
     val eventStatus: String
     val statusConfirmed: String
     val statusTentative: String
@@ -243,6 +244,7 @@ object ZhStrings : Strings {
     override val categories = "分类"
     override val categoriesField = "分类（用逗号分隔）"
     override val urlField = "网址"
+    override val moreOptions = "更多选项"
     override val eventStatus = "状态"
     override val statusConfirmed = "确认"
     override val statusTentative = "待定"
@@ -403,6 +405,7 @@ object EnStrings : Strings {
     override val categories = "Categories"
     override val categoriesField = "Categories (comma separated)"
     override val urlField = "URL"
+    override val moreOptions = "More options"
     override val eventStatus = "Status"
     override val statusConfirmed = "Confirmed"
     override val statusTentative = "Tentative"

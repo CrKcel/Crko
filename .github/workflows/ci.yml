@@ -172,8 +172,9 @@ jobs:
           gh release create "$tag" \
             "release-assets/out/Crko-${tag}-debug.apk" \
             --target "$GITHUB_SHA" \
-            --title "Canary #${GITHUB_RUN_NUMBER} (${short_sha})" \
+            --title "Canary Build" \
             --notes-file release-notes.md \
+            --prerelease
 
           {
             echo "### Canary release"

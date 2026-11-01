@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -22,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpSize
@@ -43,10 +45,12 @@ import com.crko.domain.startOfWeek
 import com.crko.i18n.Strings
 import com.crko.state.EditScope
 import com.crko.storage.newId
+import com.crko.ui.icons.AppIcons
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -117,6 +121,18 @@ private fun EventEditorContent(
     var status by remember(event) { mutableStateOf(event.status) }
     var transparency by remember(event) { mutableStateOf(event.transparency) }
     var priority by remember(event) { mutableStateOf(event.priority) }
+    var showMoreOptions by remember(event) {
+        mutableStateOf(
+            event.id != null && (
+                event.location.isNotBlank() ||
+                    event.categories.isNotEmpty() ||
+                    event.url.isNotBlank() ||
+                    event.status != EventStatus.Confirmed ||
+                    event.transparency != EventTransparency.Opaque ||
+                    event.priority != null
+                ),
+        )
+    }
     var reminder by remember(event) { mutableStateOf(event.alarms.firstOrNull()?.triggerMinutes) }
     var scope by remember(event, occurrenceDate) {
         mutableStateOf(
@@ -376,61 +392,69 @@ private fun EventEditorContent(
                 }
             }
             Spacer(Modifier.height(12.dp))
-            TextField(
-                value = location,
-                onValueChange = { location = it },
-                label = strings.locationField,
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+            MoreOptionsToggle(
+                text = strings.moreOptions,
+                expanded = showMoreOptions,
+                onClick = { showMoreOptions = !showMoreOptions },
             )
-            Spacer(Modifier.height(8.dp))
-            TextField(
-                value = categories,
-                onValueChange = { categories = it },
-                label = strings.categoriesField,
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(8.dp))
-            TextField(
-                value = url,
-                onValueChange = { url = it },
-                label = strings.urlField,
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(10.dp))
-            Caption(strings.eventStatus)
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                RepeatChip(strings.statusConfirmed, status == EventStatus.Confirmed, {
-                    status = EventStatus.Confirmed
-                }, Modifier.weight(1f))
-                RepeatChip(strings.statusTentative, status == EventStatus.Tentative, {
-                    status = EventStatus.Tentative
-                }, Modifier.weight(1f))
+            if (showMoreOptions) {
+                Spacer(Modifier.height(8.dp))
+                TextField(
+                    value = location,
+                    onValueChange = { location = it },
+                    label = strings.locationField,
+                    useLabelAsPlaceholder = true,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                TextField(
+                    value = categories,
+                    onValueChange = { categories = it },
+                    label = strings.categoriesField,
+                    useLabelAsPlaceholder = true,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                TextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = strings.urlField,
+                    useLabelAsPlaceholder = true,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(10.dp))
+                Caption(strings.eventStatus)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    RepeatChip(strings.statusConfirmed, status == EventStatus.Confirmed, {
+                        status = EventStatus.Confirmed
+                    }, Modifier.weight(1f))
+                    RepeatChip(strings.statusTentative, status == EventStatus.Tentative, {
+                        status = EventStatus.Tentative
+                    }, Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(8.dp))
+                Caption(strings.transparency)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    RepeatChip(strings.busy, transparency == EventTransparency.Opaque, {
+                        transparency = EventTransparency.Opaque
+                    }, Modifier.weight(1f))
+                    RepeatChip(strings.free, transparency == EventTransparency.Transparent, {
+                        transparency = EventTransparency.Transparent
+                    }, Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(8.dp))
+                Caption(strings.priority)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    RepeatChip(strings.priorityNone, priority == null, { priority = null }, Modifier.weight(1f))
+                    RepeatChip(strings.priorityHigh, priority == 1, { priority = 1 }, Modifier.weight(1f))
+                    RepeatChip(strings.priorityNormal, priority == 5, { priority = 5 }, Modifier.weight(1f))
+                    RepeatChip(strings.priorityLow, priority == 9, { priority = 9 }, Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(8.dp))
             }
-            Spacer(Modifier.height(8.dp))
-            Caption(strings.transparency)
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                RepeatChip(strings.busy, transparency == EventTransparency.Opaque, {
-                    transparency = EventTransparency.Opaque
-                }, Modifier.weight(1f))
-                RepeatChip(strings.free, transparency == EventTransparency.Transparent, {
-                    transparency = EventTransparency.Transparent
-                }, Modifier.weight(1f))
-            }
-            Spacer(Modifier.height(8.dp))
-            Caption(strings.priority)
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                RepeatChip(strings.priorityNone, priority == null, { priority = null }, Modifier.weight(1f))
-                RepeatChip(strings.priorityHigh, priority == 1, { priority = 1 }, Modifier.weight(1f))
-                RepeatChip(strings.priorityNormal, priority == 5, { priority = 5 }, Modifier.weight(1f))
-                RepeatChip(strings.priorityLow, priority == 9, { priority = 9 }, Modifier.weight(1f))
-            }
-            Spacer(Modifier.height(8.dp))
             Caption(strings.reminder)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 RepeatChip(strings.reminderNone, reminder == null, { reminder = null }, Modifier.weight(1f))
@@ -589,6 +613,36 @@ private fun buildRule(
 internal enum class TimeField { START, END }
 
 internal fun minutesToTime(minutes: Int): LocalTime = LocalTime((minutes.coerceIn(0, MaxEndMinutes)) / 60, minutes.coerceIn(0, MaxEndMinutes) % 60)
+
+@Composable
+private fun MoreOptionsToggle(
+    text: String,
+    expanded: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            style = MiuixTheme.textStyles.footnote2,
+            fontSize = 11.sp,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(
+            imageVector = AppIcons.Expand,
+            contentDescription = null,
+            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.size(16.dp).rotate(if (expanded) 180f else 0f),
+        )
+    }
+}
 
 @Composable
 private fun Caption(text: String) {
