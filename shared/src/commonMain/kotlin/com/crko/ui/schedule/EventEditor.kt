@@ -3,6 +3,7 @@ package com.crko.ui.schedule
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -27,6 +29,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -140,6 +143,8 @@ private fun EventEditorContent(
                 ),
         )
     }
+    var repeatExpanded by remember(event) { mutableStateOf(false) }
+    var reminderExpanded by remember(event) { mutableStateOf(false) }
     var reminder by remember(event) {
         mutableStateOf(event.alarms.firstOrNull { it.absoluteTrigger == null }?.triggerMinutes)
     }
@@ -264,39 +269,22 @@ private fun EventEditorContent(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(strings.allDay, style = MiuixTheme.textStyles.body1, modifier = Modifier.weight(1f))
-                Switch(
-                    checked = allDay,
-                    onCheckedChange = { checked ->
-                        allDay = checked
-                        if (!checked && resolvedEndDate == date && endMinutes <= startMinutes) {
-                            end = minutesToTime((startMinutes + 60).coerceAtMost(MaxEndMinutes))
-                        }
-                    },
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            DateRow(
+            Spacer(Modifier.height(14.dp))
+            DateSection(
                 strings = strings,
                 date = date,
+                allDay = allDay,
+                onAllDayChange = { checked ->
+                    allDay = checked
+                    if (!checked && resolvedEndDate == date && endMinutes <= startMinutes) {
+                        end = minutesToTime((startMinutes + 60).coerceAtMost(MaxEndMinutes))
+                    }
+                },
                 onChange = {
                     date = it
                     if (endDate < it) endDate = it
                 },
                 onPickDate = { showDatePicker = true },
-            )
-            Spacer(Modifier.height(8.dp))
-            EndDateRow(
-                strings = strings,
-                date = resolvedEndDate,
-                allDay = allDay,
-                onPickDate = { showEndDatePicker = true },
-                onClear = { endDate = date },
             )
             if (!allDay) {
                 Spacer(Modifier.height(10.dp))
@@ -315,52 +303,49 @@ private fun EventEditorContent(
                     )
                 }
             }
-            Spacer(Modifier.height(12.dp))
-            RepeatSection(
-                strings = strings,
-                frequency = repeatFrequency,
-                weekdays = repeatDays,
-                onFrequencyChange = { next ->
-                    repeatFrequency = next
-                    if (next == RepeatFrequency.Custom && repeatDays.isEmpty()) {
-                        repeatDays = setOf(date.mondayIndex)
-                    }
-                },
-                onToggleWeekday = { index ->
-                    repeatDays = if (index in repeatDays) repeatDays - index else repeatDays + index
-                },
+            Spacer(Modifier.height(10.dp))
+            if (resolvedEndDate > date) {
+                EndDateRow(
+                    strings = strings,
+                    date = resolvedEndDate,
+                    allDay = allDay,
+                    onPickDate = { showEndDatePicker = true },
+                    onClear = { endDate = date },
+                )
+            } else {
+                AddEndDateRow(text = strings.endDate, onClick = { showEndDatePicker = true })
+            }
+            Spacer(Modifier.height(14.dp))
+            ExpandableRow(
+                label = strings.repeat,
+                value = repeatSummary(strings, repeatFrequency),
+                expanded = repeatExpanded,
+                onClick = { repeatExpanded = !repeatExpanded },
             )
-            if (repeatFrequency != null) {
-                Spacer(Modifier.height(8.dp))
-                Column {
-                    Caption(strings.repeatInterval)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        TextButton(
-                            text = "−",
-                            onClick = {
-                                intervalText = (interval - 1).coerceAtLeast(1).toString()
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.textButtonColors(),
-                        )
-                        Text(
-                            text = interval.toString(),
-                            style = MiuixTheme.textStyles.title3,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.padding(horizontal = 8.dp),
-                        )
-                        TextButton(
-                            text = "+",
-                            onClick = { intervalText = (interval + 1).toString() },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.textButtonColorsPrimary(),
-                        )
-                    }
-                    Spacer(Modifier.height(6.dp))
+            if (repeatExpanded) {
+                Spacer(Modifier.height(10.dp))
+                RepeatSection(
+                    strings = strings,
+                    frequency = repeatFrequency,
+                    weekdays = repeatDays,
+                    onFrequencyChange = { next ->
+                        repeatFrequency = next
+                        if (next == RepeatFrequency.Custom && repeatDays.isEmpty()) {
+                            repeatDays = setOf(date.mondayIndex)
+                        }
+                    },
+                    onToggleWeekday = { index ->
+                        repeatDays = if (index in repeatDays) repeatDays - index else repeatDays + index
+                    },
+                )
+                if (repeatFrequency != null) {
+                    Spacer(Modifier.height(12.dp))
+                    IntervalRow(
+                        label = strings.repeatInterval,
+                        interval = interval,
+                        onChange = { intervalText = it.toString() },
+                    )
+                    Spacer(Modifier.height(10.dp))
                     Caption(strings.repeatEnd)
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         RepeatChip(strings.repeatNeverEnds, endMode == RepeatEndMode.Never, {
@@ -402,7 +387,28 @@ private fun EventEditorContent(
                     }
                 }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
+            ExpandableRow(
+                label = strings.reminder,
+                value = reminderSummary(strings, reminder),
+                expanded = reminderExpanded,
+                onClick = { reminderExpanded = !reminderExpanded },
+            )
+            if (reminderExpanded) {
+                Spacer(Modifier.height(10.dp))
+                ReminderSection(strings = strings, reminder = reminder, onSelect = { reminder = it })
+            }
+            Spacer(Modifier.height(14.dp))
+            TextField(
+                value = note,
+                onValueChange = { note = it },
+                label = strings.noteField,
+                useLabelAsPlaceholder = true,
+                minLines = 2,
+                maxLines = 4,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(6.dp))
             MoreOptionsToggle(
                 text = strings.moreOptions,
                 expanded = showMoreOptions,
@@ -452,26 +458,31 @@ private fun EventEditorContent(
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                Caption(strings.eventStatus)
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    RepeatChip(strings.statusConfirmed, status == EventStatus.Confirmed, {
-                        status = EventStatus.Confirmed
-                    }, Modifier.weight(1f))
-                    RepeatChip(strings.statusTentative, status == EventStatus.Tentative, {
-                        status = EventStatus.Tentative
-                    }, Modifier.weight(1f))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Caption(strings.eventStatus)
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            RepeatChip(strings.statusConfirmed, status == EventStatus.Confirmed, {
+                                status = EventStatus.Confirmed
+                            }, Modifier.weight(1f))
+                            RepeatChip(strings.statusTentative, status == EventStatus.Tentative, {
+                                status = EventStatus.Tentative
+                            }, Modifier.weight(1f))
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Caption(strings.transparency)
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            RepeatChip(strings.busy, transparency == EventTransparency.Opaque, {
+                                transparency = EventTransparency.Opaque
+                            }, Modifier.weight(1f))
+                            RepeatChip(strings.free, transparency == EventTransparency.Transparent, {
+                                transparency = EventTransparency.Transparent
+                            }, Modifier.weight(1f))
+                        }
+                    }
                 }
-                Spacer(Modifier.height(8.dp))
-                Caption(strings.transparency)
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    RepeatChip(strings.busy, transparency == EventTransparency.Opaque, {
-                        transparency = EventTransparency.Opaque
-                    }, Modifier.weight(1f))
-                    RepeatChip(strings.free, transparency == EventTransparency.Transparent, {
-                        transparency = EventTransparency.Transparent
-                    }, Modifier.weight(1f))
-                }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
                 Caption(strings.priority)
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     RepeatChip(strings.priorityNone, priority == null, { priority = null }, Modifier.weight(1f))
@@ -481,29 +492,6 @@ private fun EventEditorContent(
                 }
                 Spacer(Modifier.height(8.dp))
             }
-            Caption(strings.reminder)
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                RepeatChip(strings.reminderNone, reminder == null, { reminder = null }, Modifier.weight(1f))
-                RepeatChip(strings.reminderAtTime, reminder == 0, { reminder = 0 }, Modifier.weight(1f))
-                RepeatChip(strings.reminderBefore(5), reminder == 5, { reminder = 5 }, Modifier.weight(1f))
-                RepeatChip(strings.reminderBefore(15), reminder == 15, { reminder = 15 }, Modifier.weight(1f))
-            }
-            Spacer(Modifier.height(4.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                RepeatChip(strings.reminderBefore(30), reminder == 30, { reminder = 30 }, Modifier.weight(1f))
-                RepeatChip(strings.reminderBefore(60), reminder == 60, { reminder = 60 }, Modifier.weight(1f))
-                Spacer(Modifier.weight(2f))
-            }
-            Spacer(Modifier.height(10.dp))
-            TextField(
-                value = note,
-                onValueChange = { note = it },
-                label = strings.noteField,
-                useLabelAsPlaceholder = true,
-                minLines = 2,
-                maxLines = 4,
-                modifier = Modifier.fillMaxWidth(),
-            )
             if (canScope) {
                 Spacer(Modifier.height(10.dp))
                 Caption(strings.editScope)
@@ -664,7 +652,7 @@ private fun MoreOptionsToggle(
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = 8.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -803,6 +791,26 @@ private fun EndDateRow(
     }
 }
 
+/** Low-emphasis action that turns a one-day event into a multi-day one. */
+@Composable
+private fun AddEndDateRow(
+    text: String,
+    onClick: () -> Unit,
+) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Text(
+            text = "+ $text",
+            style = MiuixTheme.textStyles.footnote2,
+            fontSize = 11.sp,
+            color = MiuixTheme.colorScheme.primary,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+    }
+}
+
 @Composable
 private fun TimeField(
     label: String,
@@ -813,7 +821,7 @@ private fun TimeField(
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(MiuixTheme.colorScheme.surfaceContainerHigh)
+            .background(MiuixTheme.colorScheme.surfaceContainerHighest)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
@@ -831,26 +839,134 @@ private fun TimeField(
     }
 }
 
+/** Row that reveals a secondary setting and shows its current value while collapsed. */
+@Composable
+private fun ExpandableRow(
+    label: String,
+    value: String,
+    expanded: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MiuixTheme.colorScheme.surfaceContainerHighest)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MiuixTheme.textStyles.body1,
+            fontWeight = FontWeight.Medium,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = value,
+            style = MiuixTheme.textStyles.footnote2,
+            fontSize = 12.sp,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            textAlign = TextAlign.End,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 10.dp),
+        )
+        Icon(
+            imageVector = AppIcons.Expand,
+            contentDescription = null,
+            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.size(16.dp).rotate(if (expanded) 180f else 0f),
+        )
+    }
+}
+
+private fun repeatSummary(strings: Strings, frequency: RepeatFrequency?): String = when (frequency) {
+    null -> strings.repeatNone
+    RepeatFrequency.Daily -> strings.repeatDaily
+    RepeatFrequency.Weekly -> strings.repeatWeekly
+    RepeatFrequency.Monthly -> strings.repeatMonthly
+    RepeatFrequency.Yearly -> strings.repeatYearly
+    RepeatFrequency.Custom -> strings.repeatCustom
+}
+
+private fun reminderSummary(strings: Strings, reminder: Int?): String = when (reminder) {
+    null -> strings.reminderNone
+    0 -> strings.reminderAtTime
+    else -> strings.reminderBefore(reminder)
+}
+
+/** Compact stepper: the interval is a single line instead of two half-width buttons. */
+@Composable
+private fun IntervalRow(
+    label: String,
+    interval: Int,
+    onChange: (Int) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MiuixTheme.textStyles.body2,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.weight(1f),
+        )
+        StepButton("−", enabled = interval > 1) { onChange((interval - 1).coerceAtLeast(1)) }
+        Text(
+            text = interval.toString(),
+            style = MiuixTheme.textStyles.title3,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.width(40.dp),
+        )
+        StepButton("+") { onChange(interval + 1) }
+    }
+}
+
+@Composable
+private fun StepButton(text: String, enabled: Boolean = true, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MiuixTheme.colorScheme.surfaceContainerHighest)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            style = MiuixTheme.textStyles.title3,
+            color = if (enabled) {
+                MiuixTheme.colorScheme.onSurface
+            } else {
+                MiuixTheme.colorScheme.disabledOnSurface
+            },
+        )
+    }
+}
+
 /** Horizontal strip of dates: the selected day plus the surrounding week, with a month picker. */
 @Composable
-private fun DateRow(
+private fun DateSection(
     strings: Strings,
     date: LocalDate,
+    allDay: Boolean,
+    onAllDayChange: (Boolean) -> Unit,
     onChange: (LocalDate) -> Unit,
     onPickDate: () -> Unit,
 ) {
     val days = remember(date) { date.startOfWeek().let { start -> (0 until 7).map { start.plusDays(it) } } }
     Column {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = strings.dayMonth(date),
-                style = MiuixTheme.textStyles.footnote2,
-                fontSize = 11.sp,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.weight(1f).padding(start = 4.dp),
+                style = MiuixTheme.textStyles.body1,
+                fontWeight = FontWeight.Medium,
             )
             Text(
                 text = strings.selectDate,
@@ -863,7 +979,17 @@ private fun DateRow(
                     .clickable(onClick = onPickDate)
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = strings.allDay,
+                style = MiuixTheme.textStyles.footnote2,
+                fontSize = 11.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+            Spacer(Modifier.width(6.dp))
+            Switch(checked = allDay, onCheckedChange = onAllDayChange)
         }
+        Spacer(Modifier.height(8.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             days.forEachIndexed { index, day ->
                 val selected = day == date
@@ -872,10 +998,10 @@ private fun DateRow(
                         .weight(1f)
                         .clip(RoundedCornerShape(10.dp))
                         .background(
-                            if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHigh,
+                            if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHighest,
                         )
                         .clickable { onChange(day) }
-                        .padding(vertical = 6.dp),
+                        .padding(vertical = 5.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
@@ -892,7 +1018,7 @@ private fun DateRow(
                     Text(
                         text = day.day.toString(),
                         style = MiuixTheme.textStyles.body1,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                         color = if (selected) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface,
                     )
@@ -911,13 +1037,6 @@ private fun RepeatSection(
     onToggleWeekday: (Int) -> Unit,
 ) {
     Column {
-        Text(
-            text = strings.repeat,
-            style = MiuixTheme.textStyles.footnote2,
-            fontSize = 11.sp,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-        )
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             RepeatChip(strings.repeatNone, frequency == null, { onFrequencyChange(null) }, Modifier.weight(1f))
             RepeatChip(
@@ -966,6 +1085,26 @@ private fun RepeatSection(
 }
 
 @Composable
+private fun ReminderSection(
+    strings: Strings,
+    reminder: Int?,
+    onSelect: (Int?) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            RepeatChip(strings.reminderNone, reminder == null, { onSelect(null) }, Modifier.weight(1f))
+            RepeatChip(strings.reminderAtTime, reminder == 0, { onSelect(0) }, Modifier.weight(1f))
+            RepeatChip(strings.reminderBefore(5), reminder == 5, { onSelect(5) }, Modifier.weight(1f))
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            RepeatChip(strings.reminderBefore(15), reminder == 15, { onSelect(15) }, Modifier.weight(1f))
+            RepeatChip(strings.reminderBefore(30), reminder == 30, { onSelect(30) }, Modifier.weight(1f))
+            RepeatChip(strings.reminderBefore(60), reminder == 60, { onSelect(60) }, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
 private fun RepeatChip(
     text: String,
     selected: Boolean,
@@ -983,7 +1122,7 @@ private fun RepeatChip(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
             .background(
-                if (selected) MiuixTheme.colorScheme.primaryContainer else MiuixTheme.colorScheme.surfaceContainerHigh,
+                if (selected) MiuixTheme.colorScheme.primaryContainer else MiuixTheme.colorScheme.surfaceContainerHighest,
             )
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp),
