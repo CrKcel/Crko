@@ -26,6 +26,7 @@ import com.crko.domain.occurrenceStartOn
 import com.crko.domain.occursOn
 import com.crko.domain.occurringOn
 import com.crko.domain.parseRepeatUntil
+import com.crko.domain.parseStoredDate
 import com.crko.domain.plusDays
 import com.crko.domain.today
 import com.crko.i18n.AppLanguage
@@ -359,8 +360,16 @@ class AppStateHolder(
             return saveWholeSeries(series, edited, occurrence, now)
         }
         val previous = occurrence.plusDays(-1)
+        // RDATEs belong to whichever segment covers their date, like the exclusions below. A date
+        // kept on the wrong side either duplicates the other segment or comes back as a phantom
+        // occurrence when the calendar is exported; an unparseable one is inert and stays put.
+        val oldRule = series.repeat
         val oldSeries = series.copy(
-            repeat = series.repeat?.copy(until = previous.toString(), count = null),
+            repeat = oldRule?.copy(
+                until = previous.toString(),
+                count = null,
+                rDates = oldRule.rDates.filter { text -> parseStoredDate(text)?.let { it < occurrence } ?: true },
+            ),
             excludedDates = series.excludedDates.filter { it < occurrence.toString() },
             lastModified = now.toString(),
             dtStamp = now.toString(),
@@ -370,7 +379,11 @@ class AppStateHolder(
             edited.repeat == null -> null
             sameRepeatRule(edited.repeat, series.repeat) ->
                 // The old series already consumed part of the rule; a new bound would be wrong.
-                edited.repeat.copy(until = null, count = null)
+                edited.repeat.copy(
+                    until = null,
+                    count = null,
+                    rDates = edited.repeat.rDates.filter { text -> parseStoredDate(text)?.let { it >= occurrence } == true },
+                )
             else -> edited.repeat
         }
         val moved = edited.day != occurrence
@@ -436,8 +449,11 @@ class AppStateHolder(
         scope: EditScope = EditScope.AllEvents,
     ) {
         val stored = appState.events.firstOrNull { it.id == event.id } ?: event
-        val occurrence = occurrenceDate
-            ?: stored.recurrenceId?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+        // An exception's slot is its RECURRENCE-ID even when the record was moved to another day;
+        // for a series the opened date has to resolve to the start of the occurrence covering it,
+        // so deleting a multi-day occurrence from its second day still hits the right slot.
+        val occurrence = stored.recurrenceId?.let { parseStoredDate(it) }
+            ?: occurrenceDate?.let { stored.occurrenceStartOn(it) ?: it }
             ?: stored.day
         val occurrenceKey = occurrence.toString()
 

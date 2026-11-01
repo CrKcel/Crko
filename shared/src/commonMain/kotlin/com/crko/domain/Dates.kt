@@ -80,6 +80,13 @@ fun today(clock: Clock = Clock.System, zone: TimeZone = TimeZone.currentSystemDe
 /** Whole days from this date to [other]; negative when [other] is earlier. */
 fun LocalDate.daysTo(other: LocalDate): Int = (other.toEpochDays() - toEpochDays()).toInt()
 
+/**
+ * Parsed ISO date, or null when [text] is not a calendar date. Stored payloads survive a crash with
+ * arbitrary field values, so every read of a date field has to be able to say "unreadable".
+ */
+fun parseStoredDate(text: String): LocalDate? =
+    runCatching { LocalDate.parse(text) }.getOrNull()
+
 fun LocalTime.minutesOfDay(): Int = hour * 60 + minute
 
 /**

@@ -350,6 +350,39 @@ class StateHolderTest {
     }
 
     @Test
+    fun savingThisAndFuturePartitionsRDatesAcrossTheSplit() {
+        val f = Fixture()
+        val split = f.holder.today.plusDays(2)
+        val before = split.plusDays(-1).toString()
+        val after = split.plusDays(10).toString()
+        f.holder.saveEvent(
+            Event(
+                "series",
+                "Standup",
+                f.holder.today.toString(),
+                540,
+                555,
+                repeat = RepeatRule(RepeatFrequency.Daily, rDates = listOf(before, after)),
+            ),
+        )
+        val series = f.holder.appState.events.single()
+        f.holder.saveEvent(
+            series.copy(title = "New standup", date = split.toString()),
+            occurrenceDate = split,
+            scope = EditScope.ThisAndFuture,
+        )
+        val events = f.holder.appState.events
+        val oldSeries = events.first { it.id == series.id }
+        val newSeries = events.first { it.id != series.id }
+        // Each extra date belongs to the segment that covers it; keeping both on one side would
+        // duplicate the occurrence or bring it back as a phantom on export.
+        assertEquals(listOf(before), oldSeries.repeat?.rDates)
+        assertEquals(listOf(after), newSeries.repeat?.rDates)
+        assertEquals("Standup", f.holder.eventsOn(split.plusDays(-1)).single().title)
+        assertEquals("New standup", f.holder.eventsOn(split.plusDays(10)).single().title)
+    }
+
+    @Test
     fun deletingOneOccurrenceKeepsTheSeries() {
         val f = Fixture()
         val series = f.dailySeries()

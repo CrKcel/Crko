@@ -7,6 +7,7 @@ import com.crko.domain.Event
 import com.crko.domain.Journal
 import com.crko.domain.PersistedSettings
 import com.crko.domain.Todo
+import com.crko.domain.parseStoredDate
 import com.crko.domain.today
 import com.crko.isDebugBuild
 import kotlinx.serialization.KSerializer
@@ -128,15 +129,36 @@ internal fun decodeState(raw: String): AppState = decodeStateWithReport(raw).sta
  */
 internal fun decodeStateWithReport(raw: String): StateDecode {
     runCatching { AppJson.decodeFromString(AppState.serializer(), raw) }.getOrNull()
-        ?.let { return StateDecode(it, LoadDamage.None) }
+        ?.let { return decodeWithSanity(it, 0) }
     val root = runCatching { AppJson.parseToJsonElement(raw) }.getOrNull() as? JsonObject
         ?: return StateDecode(AppState(), LoadDamage(unreadable = true))
     val (events, droppedEvents) = decodeRecords(root["events"], Event.serializer())
     val (todos, droppedTodos) = decodeRecords(root["todos"], Todo.serializer())
     val (journals, droppedJournals) = decodeRecords(root["journals"], Journal.serializer())
+    return decodeWithSanity(
+        AppState(events = events, todos = todos, journals = journals),
+        droppedEvents + droppedTodos + droppedJournals,
+    )
+}
+
+/**
+ * Drops events whose anchor date cannot parse. Such a record decodes fine (the field is a plain
+ * string) but would crash the first calendar query that touches it, so it counts as unreadable;
+ * the stored backup still holds the original payload.
+ */
+private fun decodeWithSanity(state: AppState, droppedSoFar: Int): StateDecode {
+    var dropped = droppedSoFar
+    val events = state.events.mapNotNull { event ->
+        if (parseStoredDate(event.date) == null) {
+            dropped++
+            null
+        } else {
+            event
+        }
+    }
     return StateDecode(
-        state = AppState(events = events, todos = todos, journals = journals),
-        damage = LoadDamage(droppedRecords = droppedEvents + droppedTodos + droppedJournals),
+        state = if (dropped == droppedSoFar) state else state.copy(events = events),
+        damage = LoadDamage(droppedRecords = dropped),
     )
 }
 

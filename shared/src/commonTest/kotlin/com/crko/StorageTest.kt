@@ -13,6 +13,7 @@ import com.crko.ui.transfer.decodeCalendarBytes
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.datetime.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -41,6 +42,28 @@ class StorageTest {
         assertEquals(listOf("Kept"), decoded.state.events.map { it.title })
         assertEquals(1, decoded.damage.droppedRecords)
         assertTrue(!decoded.damage.unreadable)
+    }
+
+    @Test
+    fun aRecordWithAnUnparseableDateIsDroppedInsteadOfCrashingLaterQueries() {
+        // The payload decodes fine (the date is a plain string), but Event.day would throw on it.
+        val payload = """{"events":[""" +
+            """{"id":"a","title":"Broken","date":"not-a-date","startMinutes":0,"endMinutes":0},""" +
+            """{"id":"b","title":"Kept","date":"2026-10-27","startMinutes":540,"endMinutes":600}],"todos":[]}"""
+        val decoded = decodeStateWithReport(payload)
+        assertEquals(listOf("Kept"), decoded.state.events.map { it.title })
+        assertEquals(1, decoded.damage.droppedRecords)
+        assertTrue(!decoded.damage.unreadable)
+    }
+
+    @Test
+    fun anUnparseableEndDateKeepsTheRecordInsteadOfCrashing() {
+        val payload = """{"events":[""" +
+            """{"id":"a","title":"Kept","date":"2026-10-27","startMinutes":540,"endMinutes":600,"endDate":"oops"}],"todos":[]}"""
+        val decoded = decodeStateWithReport(payload)
+        assertEquals(0, decoded.damage.droppedRecords)
+        // The broken end date behaves like an absent one: the record stays on its start day.
+        assertEquals(LocalDate.parse("2026-10-27"), decoded.state.events.single().endDay)
     }
 
     @Test

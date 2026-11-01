@@ -213,7 +213,9 @@ data class Event(
 
     /** Last date the event touches; clamped so a stale end date can never precede the start. */
     val endDay: LocalDate by lazy(LazyThreadSafetyMode.NONE) {
-        val parsed = endDate?.takeIf { it.isNotBlank() }?.let(LocalDate::parse)
+        // A damaged stored payload can carry an end date that does not parse; treat it as absent
+        // instead of letting every calendar query on this record crash.
+        val parsed = endDate?.takeIf { it.isNotBlank() }?.let(::parseStoredDate)
         if (parsed != null && parsed > day) parsed else day
     }
 
@@ -365,16 +367,25 @@ fun List<Event>.occurringOn(date: LocalDate): List<Event> =
 /** The slice of [event] that falls on [date], clipped to the day. */
 fun Event.timeRangeOn(date: LocalDate): Pair<Int, Int> {
     if (allDay) return 0 to EndOfDayMinutes
-    if (date < day || date > lastOccupiedDay) return startMinutes to endMinutes
-    val start = if (date == day) startMinutes else 0
+    // A repeating event slices every occurrence by that occurrence's own start; the anchor fields
+    // describe the first one only. Slicing past the occurrence (or an uncovered date) has no
+    // meaningful clip, so the raw range is returned for callers that bypass occursOn.
+    val startDay = repeat?.let { occurrenceStartOn(date) } ?: day
+    if (startDay == null || date < startDay) return startMinutes to endMinutes
+    val offset = startDay.daysTo(date)
+    // A midnight ending occupies the day up to 24:00, so its last occupied day is the one before
+    // the stored end date; every other multi-day event runs to midnight on its non-final days.
+    val endsAtMidnight = endMinutes == 0 && endDay > day
+    val lastOffset = if (endsAtMidnight) day.daysTo(endDay) - 1 else day.daysTo(endDay)
+    if (offset > lastOffset) return startMinutes to endMinutes
+    val start = if (offset == 0) startMinutes else 0
     val end = when {
-        endMinutes == 0 && endDay > day && date >= day -> EndOfDayMinutes
-        date == lastOccupiedDay -> endMinutes
-        date > day -> EndOfDayMinutes
+        offset < lastOffset -> EndOfDayMinutes
+        endsAtMidnight -> EndOfDayMinutes
         else -> endMinutes
     }
     return start to end
 }
 
 /** Whether the event spans more than one calendar day. */
-fun Event.isMultiDay(): Boolean = endDay > day || (!allDay && endMinutes == 0 && endDay > day)
+fun Event.isMultiDay(): Boolean = endDay > day
