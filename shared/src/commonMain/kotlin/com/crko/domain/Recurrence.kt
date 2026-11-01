@@ -656,12 +656,13 @@ fun Event.occurrenceRangesOn(date: LocalDate): List<Pair<Int, Int>> {
     val expands = rule.byHour.isNotEmpty() || rule.byMinute.isNotEmpty() || rule.bySecond.isNotEmpty()
     if (allDay || !expands) return listOf(timeRangeOn(date))
     val ranges = mutableListOf<Pair<Int, Int>>()
-    // An instance occupies as many days as the anchor does, so the covering instance starts at
-    // most a whole span earlier.
     val span = day.daysTo(lastOccupiedDay).coerceAtLeast(0)
-    for (offset in span downTo 0) {
+    // An instance occupies as many days as the anchor does, so the covering instance starts at
+    // most a whole span earlier — and a rule never starts before the anchor itself, which clamps
+    // the walk when the queried date sits inside the anchor occurrence's own span.
+    val firstOffset = minOf(span, (date.toEpochDays() - day.toEpochDays()).toInt()).coerceAtLeast(0)
+    for (offset in firstOffset downTo 0) {
         val startDay = date.plusDays(-offset)
-        if (startDay < day) break
         for (time in occurrenceTimesOn(startDay)) {
             occurrenceRangeOn(date, startDay, time)?.let { ranges += it }
         }
@@ -763,7 +764,9 @@ fun Todo.nextOccurrenceDate(today: LocalDate): LocalDate? {
         candidate = candidate.plusDays(1)
         steps++
     }
-    return null
+    // The series is over, or its next occurrence lies beyond the search window: the stored due
+    // stays what the todo is shown and sorted under, like the one-off branch above returns.
+    return occurrenceDate(anchor)
 }
 
 /** Days the next-occurrence search walks before giving up and falling back to the stored due. */

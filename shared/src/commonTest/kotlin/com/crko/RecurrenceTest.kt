@@ -2,6 +2,7 @@ package com.crko
 
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
+import com.crko.domain.EndOfDayMinutes
 import com.crko.domain.Event
 import com.crko.domain.OrdinalWeekday
 import com.crko.domain.RepeatFrequency
@@ -666,6 +667,39 @@ class RecurrenceTest {
     }
 
     @Test
+    fun byHourExpandsAcrossTheAnchorSpan() {
+        // A two-day occurrence keeps covering the next day while that day also holds its own
+        // starts; the tail slices of earlier instances must survive next to the day's own ones.
+        val event = Event(
+            id = "rounds",
+            title = "Rounds",
+            date = anchor.toString(),
+            startMinutes = 9 * 60,
+            endMinutes = 10 * 60,
+            endDate = anchor.plusDays(1).toString(),
+            repeat = RepeatRule(RepeatFrequency.Daily, byHour = listOf(9, 17)),
+        )
+        // The anchor day sits inside its own occurrence's span, so the earliest candidate start
+        // would precede the anchor and the walk must clamp to the anchor instead of stopping.
+        // Both instances run overnight, so each slice reaches the end of the day.
+        assertEquals(
+            listOf(9 * 60 to EndOfDayMinutes, 17 * 60 to EndOfDayMinutes),
+            event.occurrenceRangesOn(anchor),
+        )
+        // The next day holds the tail slices of both anchor-day instances plus its own two
+        // starts, which cover the day through midnight because the occurrence runs overnight.
+        assertEquals(
+            listOf(
+                0 to 10 * 60,
+                0 to 18 * 60,
+                9 * 60 to EndOfDayMinutes,
+                17 * 60 to EndOfDayMinutes,
+            ),
+            event.occurrenceRangesOn(anchor.plusDays(1)),
+        )
+    }
+
+    @Test
     fun recurringTodoAppearsOnEachOccurrence() {
         val todo = Todo(
             id = "t1",
@@ -709,6 +743,22 @@ class RecurrenceTest {
             todo.occurrenceStartsBetween(LocalDate(2026, 10, 1), LocalDate(2026, 10, 10)),
         )
         assertEquals(LocalDate(2026, 10, 4), todo.occurrenceDate(LocalDate(2026, 10, 3)))
+    }
+
+    @Test
+    fun anEndedTodoSeriesFallsBackToItsStoredDue() {
+        // COUNT=2 daily from 10-01: occurrences show on 10-02 and 10-03; once the series is over
+        // the stored due stays what the todo is shown and sorted under.
+        val todo = Todo(
+            id = "t4",
+            title = "Series",
+            start = "2026-10-01",
+            due = "2026-10-02",
+            repeat = RepeatRule(RepeatFrequency.Daily, count = 2),
+        )
+        assertEquals(LocalDate(2026, 10, 3), todo.nextOccurrenceDate(LocalDate(2026, 10, 3)))
+        assertEquals(LocalDate(2026, 10, 2), todo.nextOccurrenceDate(LocalDate(2026, 10, 4)))
+        assertEquals(LocalDate(2026, 10, 2), todo.nextOccurrenceDate(LocalDate(2026, 11, 30)))
     }
 
     private companion object {
