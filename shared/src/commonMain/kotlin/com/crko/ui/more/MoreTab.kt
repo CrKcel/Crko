@@ -113,6 +113,8 @@ fun MoreTab(
                 )
             }
             Spacer(Modifier.height(20.dp))
+            JournalSection(state = state, strings = strings)
+            Spacer(Modifier.height(20.dp))
             LinkedCardTitle(
                 icon = AppIcons.Export,
                 iconTint = MiuixTheme.colorScheme.primary,

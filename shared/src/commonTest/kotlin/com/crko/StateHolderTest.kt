@@ -23,6 +23,7 @@ import com.crko.domain.occursOn
 import com.crko.domain.plusDays
 import com.crko.domain.PersistedSettings
 import com.crko.domain.TodoPriority
+import com.crko.domain.effectiveUid
 import com.crko.i18n.AppLanguage
 import com.crko.i18n.EnStrings
 import com.crko.i18n.resolveLanguage
@@ -247,6 +248,75 @@ class StateHolderTest {
         f.holder.addTodo("Low", TodoPriority.Low, f.holder.today)
         f.holder.addTodo("Normal", TodoPriority.Normal, f.holder.today)
         assertEquals(listOf("Normal", "Low"), f.holder.activeTodos().map { it.title })
+    }
+
+    @Test
+    fun subtasksNestUnderTheirParentInTheForest() {
+        val f = Fixture()
+        f.holder.addTodo("Parent", TodoPriority.Normal, null)
+        val parent = f.holder.activeTodos().single()
+        f.holder.addTodo("Child", TodoPriority.Normal, null, parent.effectiveUid)
+        f.holder.addTodo("Top-level", TodoPriority.Normal, null)
+
+        val roots = f.holder.activeTodoForest()
+        // The subtask is nested, not a second root, and a done parent moves its subtree along.
+        assertEquals(listOf("Parent", "Top-level"), roots.map { it.todo.title })
+        val parent1 = roots.first()
+        assertEquals("Child", parent1.children.single().todo.title)
+        assertEquals(1, parent1.subtaskCount)
+    }
+
+    @Test
+    fun aCompletedSubtaskStaysNestedWithItsProgressCounted() {
+        val f = Fixture()
+        f.holder.addTodo("Parent", TodoPriority.Normal, null)
+        val parent = f.holder.activeTodos().single()
+        f.holder.addTodo("Child", TodoPriority.Normal, null, parent.effectiveUid)
+        val child = f.holder.activeTodos().first { it.title == "Child" }
+        f.holder.setTodoDone(child.id, true)
+
+        val root = f.holder.activeTodoForest().single()
+        assertEquals(1, root.subtaskCount)
+        assertEquals(1, root.doneSubtaskCount)
+        assertTrue(root.children.single().todo.done)
+    }
+
+    @Test
+    fun deletingATodoLeavesItsSubtasksAtTheTopLevel() {
+        val f = Fixture()
+        f.holder.addTodo("Parent", TodoPriority.Normal, null)
+        val parent = f.holder.activeTodos().single()
+        f.holder.addTodo("Child", TodoPriority.Normal, null, parent.effectiveUid)
+        f.holder.deleteTodo(parent.id)
+
+        val forest = f.holder.activeTodoForest()
+        assertEquals(listOf("Child"), forest.map { it.todo.title })
+    }
+
+    @Test
+    fun journalsAreAddedUpdatedAndDeleted() {
+        val f = Fixture()
+        assertEquals(WriteResult.EmptyTitle, f.holder.addJournal("  ", "  ", null))
+        f.holder.addJournal("Trip", "Notes from the road", f.holder.today)
+        f.holder.addJournal("", "Quick thought", null)
+
+        val sorted = f.holder.journalsSorted()
+        // The blank/blank add was rejected; a dated journal sorts before the undated one.
+        assertEquals(listOf("Trip", ""), sorted.map { it.title })
+        assertEquals(f.holder.today.toString(), sorted.first().date)
+
+        val updated = sorted.first().copy(title = "Trip 2026", note = "Revised")
+        assertEquals(WriteResult.Success, f.holder.updateJournal(updated))
+        val stored = f.holder.journalsSorted().first()
+        assertEquals("Trip 2026", stored.title)
+        assertEquals(1, stored.sequence)
+
+        f.holder.deleteJournal(stored.id)
+        assertEquals(1, f.holder.journalsSorted().size)
+        // Updating or deleting an unknown id is a safe no-op.
+        assertEquals(WriteResult.Success, f.holder.updateJournal(stored))
+        f.holder.deleteJournal("missing")
+        assertEquals(1, f.holder.journalsSorted().size)
     }
 
     @Test

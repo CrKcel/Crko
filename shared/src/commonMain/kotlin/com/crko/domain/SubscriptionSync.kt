@@ -356,7 +356,8 @@ internal fun decodeXmlText(raw: String): String {
         return raw
     }
     var text = raw
-    val cdata = Regex("<!\\[CDATA\\[(.*?)]]>", RegexOption.DOT_MATCHES_ALL)
+    // `RegexOption.DOT_MATCHES_ALL` is JVM-only; the inline (?s) flag is its cross-platform form.
+    val cdata = Regex("(?s)<!\\[CDATA\\[(.*?)]]>")
     text = cdata.replace(text) { match -> xmlEscape(match.groupValues[1]) }
     return text
         .replace("&lt;", "<")

@@ -351,7 +351,7 @@ fun CrkoApp(state: AppStateHolder) {
         strings = strings,
         today = state.today,
         onDismiss = { showTodoEditor = false },
-        onSave = { title, priority, due ->
+        onSave = { title, priority, due, _ ->
             val result = state.addTodo(title, priority, due)
             if (result == WriteResult.Success) state.notify(AppMessage.TodoAdded)
             result == WriteResult.Success

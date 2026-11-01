@@ -25,7 +25,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
+import com.crko.domain.effectiveUid
 import com.crko.domain.plusDays
 import com.crko.i18n.Strings
 import com.crko.ui.schedule.DatePickerDialog
@@ -44,18 +46,22 @@ internal fun TodoEditorDialog(
     strings: Strings,
     today: LocalDate,
     onDismiss: () -> Unit,
-    onSave: (String, TodoPriority, LocalDate?) -> Boolean,
+    onSave: (String, TodoPriority, LocalDate?, String?) -> Boolean,
+    /** Parent of the subtask being created; null creates a top-level todo. */
+    parent: Todo? = null,
 ) {
     if (!show) return
-    var title by remember { mutableStateOf("") }
-    var priority by remember { mutableStateOf(TodoPriority.Normal) }
-    var due by remember { mutableStateOf<LocalDate?>(null) }
-    var showDatePicker by remember { mutableStateOf(false) }
+    // Keyed on [show]: the fields start blank on every open instead of keeping the last session's
+    // input while the closed dialog's slots stay in the composition.
+    var title by remember(show) { mutableStateOf("") }
+    var priority by remember(show) { mutableStateOf(TodoPriority.Normal) }
+    var due by remember(show) { mutableStateOf<LocalDate?>(null) }
+    var showDatePicker by remember(show) { mutableStateOf(false) }
 
     WindowDialog(
         show = true,
         onDismissRequest = onDismiss,
-        title = strings.todoNew,
+        title = parent?.let { strings.subtaskOf(it.title) } ?: strings.todoNew,
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             TextField(
@@ -107,7 +113,7 @@ internal fun TodoEditorDialog(
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = {
-                    if (onSave(title, priority, due)) onDismiss()
+                    if (onSave(title, priority, due, parent?.effectiveUid)) onDismiss()
                 },
                 enabled = title.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),

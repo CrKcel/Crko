@@ -142,6 +142,17 @@ interface Strings {
     val emptyTodos: String
     fun items(count: Int): String
 
+    /** `RELATED-TO` sub-tasks. */
+    val subtaskAdd: String
+    fun subtaskOf(parent: String): String
+
+    /** `VJOURNAL` browsing and editing. */
+    val journals: String
+    val journalNew: String
+    val journalEdit: String
+    val journalEmpty: String
+    val journalDate: String
+
     val statistics: String
     val settings: String
     val completedToday: String
@@ -337,6 +348,13 @@ object ZhStrings : Strings {
     override val todoStatusCancelled = "已取消"
     override val emptyTodos = "暂无待办"
     override fun items(count: Int) = "$count 项"
+    override val subtaskAdd = "添加子任务"
+    override fun subtaskOf(parent: String) = "「$parent」的子任务"
+    override val journals = "日记"
+    override val journalNew = "新建日记"
+    override val journalEdit = "编辑日记"
+    override val journalEmpty = "还没有日记"
+    override val journalDate = "日期"
     override val statistics = "统计"
     override val settings = "设置"
     override val completedToday = "今日完成"
@@ -586,6 +604,13 @@ object EnStrings : Strings {
     override val todoStatusCancelled = "Cancelled"
     override val emptyTodos = "No todos"
     override fun items(count: Int) = if (count == 1) "1 item" else "$count items"
+    override val subtaskAdd = "Add subtask"
+    override fun subtaskOf(parent: String) = "Subtask of \"$parent\""
+    override val journals = "Journals"
+    override val journalNew = "New journal"
+    override val journalEdit = "Edit journal"
+    override val journalEmpty = "No journals yet"
+    override val journalDate = "Date"
     override val statistics = "Statistics"
     override val settings = "Settings"
     override val completedToday = "Done today"

@@ -24,11 +24,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
@@ -37,20 +40,25 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Todo
+import com.crko.domain.TodoNode
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
 import com.crko.domain.nextOccurrenceDate
 import com.crko.i18n.Strings
 import com.crko.i18n.todoPriorityLabel
+import com.crko.state.AppStateHolder
+import com.crko.state.WriteResult
 import com.crko.ui.schedule.isOverdue
 import com.crko.ui.schedule.priorityColor
-import com.crko.state.AppStateHolder
 import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.crko.ui.icons.AppIcons
+
+/** Start offset of one nesting level; subtask cards are inset by this much per depth. */
+private val IndentStep = 20.dp
 
 @Composable
 fun TodoTab(
@@ -59,9 +67,15 @@ fun TodoTab(
     contentPadding: PaddingValues,
 ) {
     val today = state.today
-    val active = state.activeTodos()
-    val completed = state.completedTodos()
+    val active = state.activeTodoForest()
+    val completed = state.completedTodoForest()
+    // Section counts stay flat, so a subtask is counted even while nested under its parent.
+    val activeCount = state.appState.todos.count { !it.done }
+    val completedCount = state.appState.todos.count { it.done }
     var completedExpanded by rememberSaveable { mutableStateOf(false) }
+    // Expansion is keyed by parent id; a missing entry means expanded, so new subtasks show up.
+    val collapsed = remember { mutableStateMapOf<String, Boolean>() }
+    var subtaskParent by remember { mutableStateOf<Todo?>(null) }
     val layoutDirection = LocalLayoutDirection.current
 
     Column(
@@ -86,7 +100,7 @@ fun TodoTab(
             )
             Spacer(Modifier.width(10.dp))
             Text(
-                text = strings.items(active.size),
+                text = strings.items(activeCount),
                 style = MiuixTheme.textStyles.footnote1,
                 fontSize = 12.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
@@ -98,21 +112,25 @@ fun TodoTab(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            if (active.isEmpty() && completed.isEmpty()) {
+            if (activeCount == 0 && completedCount == 0) {
                 item(key = "empty") {
                     EmptyState(strings.emptyTodos, Modifier.padding(top = 80.dp))
                 }
             }
-            items(active, key = { "todo-${it.id}" }) { todo ->
+            items(flatten(active, collapsed), key = { "todo-${it.first.todo.id}" }) { (node, depth) ->
                 TodoCard(
-                    todo = todo,
+                    node = node,
+                    depth = depth,
+                    collapsed = collapsed[node.todo.id] == true,
+                    onToggleCollapse = { collapsed[node.todo.id] = !(collapsed[node.todo.id] ?: false) },
                     today = today,
                     strings = strings,
-                    onToggle = { state.setTodoDone(todo.id, true) },
-                    onDelete = { state.deleteTodo(todo.id) },
+                    onToggle = { state.setTodoDone(node.todo.id, true) },
+                    onAddSubtask = { subtaskParent = node.todo },
+                    onDelete = { state.deleteTodo(node.todo.id) },
                 )
             }
-            if (completed.isNotEmpty()) {
+            if (completedCount > 0) {
                 item(key = "completed-header") {
                     Row(
                         modifier = Modifier
@@ -129,38 +147,70 @@ fun TodoTab(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            text = completed.size.toString(),
+                            text = completedCount.toString(),
                             style = MiuixTheme.textStyles.footnote1,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                     }
                 }
                 if (completedExpanded) {
-                    items(completed, key = { "done-${it.id}" }) { todo ->
+                    items(flatten(completed, collapsed), key = { "done-${it.first.todo.id}" }) { (node, depth) ->
                         TodoCard(
-                            todo = todo,
+                            node = node,
+                            depth = depth,
+                            collapsed = collapsed[node.todo.id] == true,
+                            onToggleCollapse = { collapsed[node.todo.id] = !(collapsed[node.todo.id] ?: false) },
                             today = today,
                             strings = strings,
-                            onToggle = { state.setTodoDone(todo.id, false) },
-                            onDelete = { state.deleteTodo(todo.id) },
+                            onToggle = { state.setTodoDone(node.todo.id, false) },
+                            onAddSubtask = { subtaskParent = node.todo },
+                            onDelete = { state.deleteTodo(node.todo.id) },
                         )
                     }
                 }
             }
         }
     }
+
+    TodoEditorDialog(
+        show = subtaskParent != null,
+        strings = strings,
+        today = today,
+        onDismiss = { subtaskParent = null },
+        onSave = { title, priority, due, parentUid ->
+            state.addTodo(title, priority, due, parentUid) == WriteResult.Success
+        },
+        parent = subtaskParent,
+    )
+}
+
+/** Depth-first rows of the forest, children dropped while their parent is collapsed. */
+private fun flatten(nodes: List<TodoNode>, collapsed: Map<String, Boolean>): List<Pair<TodoNode, Int>> {
+    val rows = mutableListOf<Pair<TodoNode, Int>>()
+    fun walk(node: TodoNode, depth: Int) {
+        rows += node to depth
+        if (collapsed[node.todo.id] != true) node.children.forEach { walk(it, depth + 1) }
+    }
+    nodes.forEach { walk(it, 0) }
+    return rows
 }
 
 @Composable
 private fun TodoCard(
-    todo: Todo,
+    node: TodoNode,
+    depth: Int,
+    collapsed: Boolean,
+    onToggleCollapse: () -> Unit,
     today: LocalDate,
     strings: Strings,
     onToggle: () -> Unit,
+    onAddSubtask: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val todo = node.todo
     Row(
         modifier = Modifier
+            .padding(start = IndentStep * depth)
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(MiuixTheme.colorScheme.surfaceContainer)
@@ -235,10 +285,44 @@ private fun TodoCard(
                     },
                 )
             }
+            if (node.children.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onToggleCollapse)
+                        .padding(vertical = 2.dp, horizontal = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = AppIcons.Expand,
+                        contentDescription = null,
+                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier
+                            .size(14.dp)
+                            .rotate(if (collapsed) -90f else 0f),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = "${node.doneSubtaskCount}/${node.subtaskCount}",
+                        style = MiuixTheme.textStyles.footnote2,
+                        fontSize = 11.sp,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
+            }
         }
         Spacer(Modifier.width(8.dp))
         PriorityTag(todo.priority, strings)
         Spacer(Modifier.width(4.dp))
+        IconButton(onClick = onAddSubtask, backgroundColor = Color.Transparent) {
+            Icon(
+                imageVector = AppIcons.Add,
+                contentDescription = strings.subtaskAdd,
+                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.size(18.dp),
+            )
+        }
         IconButton(onClick = onDelete, backgroundColor = Color.Transparent) {
             Icon(
                 imageVector = AppIcons.Delete,

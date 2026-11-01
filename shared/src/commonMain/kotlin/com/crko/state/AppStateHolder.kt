@@ -25,15 +25,18 @@ import com.crko.domain.RepeatRule
 import com.crko.domain.SubscriptionFailure
 import com.crko.domain.SubscriptionFetch
 import com.crko.domain.Todo
+import com.crko.domain.TodoNode
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
 import com.crko.domain.applyingReply
 import com.crko.domain.daysTo
+import com.crko.domain.effectiveUid
 import com.crko.domain.fetchSubscription
 import com.crko.domain.importCalendarLines
 import com.crko.domain.itipDecision
 import com.crko.domain.itipReply
 import com.crko.domain.localDate
+import com.crko.domain.todoForest
 import com.crko.domain.mergeBusyPeriods
 import com.crko.domain.normalizedForZone
 import com.crko.domain.occurrenceStartOn
@@ -918,7 +921,43 @@ class AppStateHolder(
         .filter { it.done }
         .sortedByDescending { it.createdAt }
 
-    fun addTodo(title: String, priority: TodoPriority, due: LocalDate?): WriteResult {
+    /**
+     * The `RELATED-TO` sub-task forest whose roots are the active todos. Subtrees stay whole under
+     * each root — a finished subtask keeps its place, struck through, next to its pending siblings.
+     */
+    fun activeTodoForest(): List<TodoNode> = todoForest(active = true)
+
+    /** The same forest rooted at the completed top-level todos. */
+    fun completedTodoForest(): List<TodoNode> = todoForest(active = false)
+
+    /** Roots sorted the way the flat lists sort them; children keep their creation order. */
+    private fun todoForest(active: Boolean): List<TodoNode> {
+        // A series is shown under its next occurrence, so it sorts by that date instead of the
+        // stale stored due; computed once per todo rather than per comparison.
+        val today = today
+        val shownDue = appState.todos.associate { todo ->
+            todo.id to if (todo.repeat != null) {
+                todo.nextOccurrenceDate(today)?.toString()
+            } else {
+                todo.due
+            }
+        }
+        return appState.todos
+            .todoForest()
+            .filter { if (active) !it.todo.done else it.todo.done }
+            .sortedWith(
+                if (active) {
+                    compareBy<TodoNode> { shownDue[it.todo.id] == null }
+                        .thenBy { shownDue[it.todo.id] ?: "" }
+                        .thenBy { it.todo.priority.ordinal }
+                        .thenByDescending { it.todo.createdAt }
+                } else {
+                    compareByDescending { it.todo.createdAt }
+                },
+            )
+    }
+
+    fun addTodo(title: String, priority: TodoPriority, due: LocalDate?, parentUid: String? = null): WriteResult {
         if (title.isBlank()) return WriteResult.EmptyTitle
         val now = clock.now()
         val todo = Todo(
@@ -929,6 +968,7 @@ class AppStateHolder(
             createdAt = now.toEpochMilliseconds(),
             lastModified = now.toString(),
             dtStamp = now.toString(),
+            relatedTo = parentUid?.let(::listOf) ?: emptyList(),
         )
         persist(appState.copy(todos = appState.todos + todo))
         return WriteResult.Success
@@ -960,6 +1000,51 @@ class AppStateHolder(
 
     fun deleteTodo(id: String) {
         persist(appState.copy(todos = appState.todos.filterNot { it.id == id }))
+    }
+
+    // ----- journals -----
+
+    /** Journals sorted newest first; undated ones keep their import order at the end. */
+    fun journalsSorted(): List<Journal> = appState.journals
+        .sortedWith(
+            compareByDescending<Journal> { it.date != null }
+                .thenByDescending { it.date ?: "" },
+        )
+
+    fun addJournal(title: String, note: String, date: LocalDate?): WriteResult {
+        if (title.isBlank() && note.isBlank()) return WriteResult.EmptyTitle
+        val now = clock.now()
+        val journal = Journal(
+            id = idProvider(),
+            title = title.trim(),
+            note = note,
+            date = date?.toString(),
+            lastModified = now.toString(),
+            dtStamp = now.toString(),
+        )
+        persist(appState.copy(journals = appState.journals + journal))
+        return WriteResult.Success
+    }
+
+    fun updateJournal(journal: Journal): WriteResult {
+        if (appState.journals.none { it.id == journal.id }) return WriteResult.Success
+        val now = clock.now()
+        persist(
+            appState.copy(
+                journals = appState.journals.map {
+                    if (it.id == journal.id) {
+                        journal.copy(lastModified = now.toString(), dtStamp = now.toString(), sequence = journal.sequence + 1)
+                    } else {
+                        it
+                    }
+                },
+            ),
+        )
+        return WriteResult.Success
+    }
+
+    fun deleteJournal(id: String) {
+        persist(appState.copy(journals = appState.journals.filterNot { it.id == id }))
     }
 
     // ----- subscriptions -----
