@@ -1110,6 +1110,10 @@ class AppStateHolder(
 
     private val syncJobs = mutableMapOf<String, Job>()
 
+    /** Ids with a sync currently running. Compose state, so the UI follows start and finish. */
+    private var activeSyncIds by mutableStateOf(emptySet<String>())
+        private set
+
     /**
      * Syncs one subscription through the platform HTTP bridge. A sync that is still running is not
      * started again, and without a bridge the call does nothing.
@@ -1118,10 +1122,13 @@ class AppStateHolder(
         val subscription = appState.subscriptions.firstOrNull { it.id == id } ?: return
         val http = subscriptionHttp ?: return
         if (syncJobs[id]?.isActive == true) return
+        activeSyncIds = activeSyncIds + id
         syncJobs[id] = scope.launch {
             val fetch = runCatching { fetchSubscription(subscription, http) }
                 .getOrElse { SubscriptionFetch.Failed(SubscriptionFailure.Unreachable) }
             applySubscriptionFetch(subscription, fetch, http)
+        }.also { job ->
+            job.invokeOnCompletion { activeSyncIds = activeSyncIds - id }
         }
     }
 
@@ -1131,7 +1138,7 @@ class AppStateHolder(
     }
 
     /** Whether [id] currently has a sync running. */
-    fun isSyncing(id: String): Boolean = syncJobs[id]?.isActive == true
+    fun isSyncing(id: String): Boolean = id in activeSyncIds
 
     private suspend fun applySubscriptionFetch(
         subscription: CalendarSubscription,
@@ -1170,30 +1177,61 @@ class AppStateHolder(
             }
             is SubscriptionFetch.Changes -> {
                 val applied = applySubscriptionContent(subscription, fetch.text, removeVanished = false)
-                updateSubscription(subscription.id) {
-                    it.copy(lastSync = clock.now().toString(), syncToken = fetch.syncToken ?: it.syncToken)
-                }
+                val outcome = ImportOutcome(
+                    events = applied.outcome.events,
+                    todos = applied.outcome.todos,
+                    journals = applied.outcome.journals,
+                    removed = applied.outcome.removed,
+                )
                 if (fetch.deletions) {
                     // An incremental report cannot name what vanished upstream; one full fetch
-                    // reconciles the local copy before the sync is called done.
+                    // reconciles the local copy before the sync is called done. The token only
+                    // advances once that reconciliation succeeded: moving it first would put the
+                    // deletions behind the token, so a failed full fetch could never learn them.
                     val full = runCatching {
                         fetchSubscription(subscription.copy(caldav = true, syncToken = null), http)
                     }.getOrElse { SubscriptionFetch.Failed(SubscriptionFailure.Unreachable) }
-                    if (full is SubscriptionFetch.Full && full.text.isNotBlank()) {
-                        applySubscriptionContent(subscription, full.text, removeVanished = true)
+                    if (full is SubscriptionFetch.Full) {
+                        val reconciled = applySubscriptionContent(subscription, full.text, removeVanished = true)
                         updateSubscription(subscription.id) {
                             it.copy(syncToken = full.syncToken ?: it.syncToken, lastSync = clock.now().toString())
                         }
+                        notify(
+                            AppMessage.SubscriptionSynced(
+                                subscription.name,
+                                outcome.events + reconciled.outcome.events,
+                                outcome.todos + reconciled.outcome.todos,
+                                outcome.removed + reconciled.outcome.removed,
+                            ),
+                        )
+                    } else {
+                        // The next sync falls back to a full query, which still names the vanished
+                        // records this sync could not apply.
+                        updateSubscription(subscription.id) {
+                            it.copy(syncToken = null, lastSync = clock.now().toString())
+                        }
+                        notify(
+                            AppMessage.SubscriptionSynced(
+                                subscription.name,
+                                outcome.events,
+                                outcome.todos,
+                                outcome.removed,
+                            ),
+                        )
                     }
+                } else {
+                    updateSubscription(subscription.id) {
+                        it.copy(lastSync = clock.now().toString(), syncToken = fetch.syncToken ?: it.syncToken)
+                    }
+                    notify(
+                        AppMessage.SubscriptionSynced(
+                            subscription.name,
+                            outcome.events,
+                            outcome.todos,
+                            outcome.removed,
+                        ),
+                    )
                 }
-                notify(
-                    AppMessage.SubscriptionSynced(
-                        subscription.name,
-                        applied.outcome.events,
-                        applied.outcome.todos,
-                        applied.outcome.removed,
-                    ),
-                )
             }
         }
     }
@@ -1212,7 +1250,9 @@ class AppStateHolder(
         text: String,
         removeVanished: Boolean,
     ): SubscriptionApply {
-        if (text.isBlank()) return SubscriptionApply(ImportOutcome(), null)
+        // A blank incremental report is a no-op, but a blank full fetch (an upstream collection that
+        // is now empty) still reconciles: every record this source brought in has vanished.
+        if (text.isBlank() && !removeVanished) return SubscriptionApply(ImportOutcome(), null)
         val parsed = withContext(parseDispatcher ?: Dispatchers.Default) {
             importCalendarLines(
                 unfold(text).asSequence(),

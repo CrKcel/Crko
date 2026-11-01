@@ -9,6 +9,7 @@ import platform.Foundation.NSHTTPURLResponse
 import platform.Foundation.NSMutableURLRequest
 import platform.Foundation.NSURL
 import platform.Foundation.NSURLSession
+import platform.Foundation.NSURLSessionConfiguration
 import platform.Foundation.create
 import platform.Foundation.dataTaskWithRequest
 import platform.Foundation.getBytes
@@ -19,6 +20,16 @@ import kotlin.coroutines.resumeWithException
 
 /** `NSURLSession` sender; the completion handler resumes the caller directly. */
 actual fun defaultSubscriptionHttp(): SubscriptionHttp = object : SubscriptionHttp {
+    // The Android bridge uses 15 s connect / 30 s read; a stalled feed must not hang the sync
+    // forever on either platform. `timeoutIntervalForRequest` covers an idle connection, the
+    // resource timeout bounds the whole download.
+    private val session: NSURLSession = run {
+        val configuration = NSURLSessionConfiguration.defaultSessionConfiguration()
+        configuration.timeoutIntervalForRequest = 30.0
+        configuration.timeoutIntervalForResource = 120.0
+        NSURLSession.sessionWithConfiguration(configuration)
+    }
+
     @OptIn(ExperimentalForeignApi::class)
     override suspend fun send(request: HttpRequest): HttpResponse = suspendCancellableCoroutine { continuation ->
         val url = NSURL.URLWithString(request.url)
@@ -29,7 +40,7 @@ actual fun defaultSubscriptionHttp(): SubscriptionHttp = object : SubscriptionHt
         if (request.body.isNotEmpty()) {
             nsRequest.setValue(request.body.toNSData(), forKey = "HTTPBody")
         }
-        val task = NSURLSession.sharedSession.dataTaskWithRequest(nsRequest) { data, response, error ->
+        val task = session.dataTaskWithRequest(nsRequest) { data, response, error ->
             if (error != null) {
                 // The failure surfaces as an exception; the holder maps any of them to "unreachable".
                 continuation.resumeWithException(IllegalStateException(error.localizedDescription))

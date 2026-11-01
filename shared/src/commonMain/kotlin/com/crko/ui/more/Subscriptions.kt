@@ -55,12 +55,14 @@ fun SubscriptionsSection(state: AppStateHolder, strings: Strings) {
     if (showAddDialog) {
         AddSubscriptionDialog(
             strings = strings,
+            // False when the URL has no scheme the app can fetch; the dialog points at the field.
             onConfirm = { name, url ->
                 val added = state.addSubscription(name, url)
                 if (added != null) {
                     state.syncSubscription(added.id)
                     showAddDialog = false
                 }
+                added != null
             },
             onDismiss = { showAddDialog = false },
         )
@@ -186,7 +188,7 @@ private fun CardRow(icon: ImageVector, title: String, subtitle: String, onClick:
 @Composable
 private fun AddSubscriptionDialog(
     strings: Strings,
-    onConfirm: (name: String, url: String) -> Unit,
+    onConfirm: (name: String, url: String) -> Boolean,
     onDismiss: () -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
@@ -231,11 +233,8 @@ private fun AddSubscriptionDialog(
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = {
-                    if (url.isBlank()) {
-                        showInvalid = true
-                    } else {
-                        onConfirm(name, url)
-                    }
+                    // A rejected URL keeps the dialog open and names the field as the problem.
+                    if (!onConfirm(name, url)) showInvalid = true
                 },
                 enabled = url.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),

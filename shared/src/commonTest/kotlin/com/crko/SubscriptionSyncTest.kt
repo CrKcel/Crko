@@ -4,9 +4,11 @@ import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.BusyInterval
 import com.crko.domain.CalendarSubscription
+import com.crko.domain.MaxSubscriptionBytes
 import com.crko.domain.SubscriptionFailure
 import com.crko.domain.SubscriptionFetch
 import com.crko.domain.calendarQueryReport
+import com.crko.domain.decodeXmlText
 import com.crko.domain.exportCalendar
 import com.crko.domain.fetchSubscription
 import com.crko.domain.parseMultiStatus
@@ -345,5 +347,141 @@ class SubscriptionSyncTest {
         assertEquals(state, decoded)
         // Exporting a calendar with the extra state still works.
         assertTrue(exportCalendar(emptyList()).contains("BEGIN:VCALENDAR"))
+    }
+
+    @Test
+    fun anEmptyCaldavCollectionIsAnEmptyCalendarNotAFailure() = runTest {
+        val http = FakeHttp { HttpResponse(207, emptyMap(), "<d:multistatus xmlns:d=\"DAV:\"/>".encodeToByteArray()) }
+        val full = assertNotNull(
+            fetchSubscription(CalendarSubscription("s", "C", "https://x/cal/", caldav = true), http) as? SubscriptionFetch.Full,
+        )
+        assertEquals("", full.text)
+    }
+
+    @Test
+    fun aTwoHundredAnswerThatIsNotAMultistatusIsNotACalendar() = runTest {
+        val http = FakeHttp { HttpResponse(200, emptyMap(), "<html>not dav</html>".encodeToByteArray()) }
+        val fetch = fetchSubscription(CalendarSubscription("s", "C", "https://x/cal/", caldav = true), http)
+        assertEquals(SubscriptionFailure.NotCalendar, (fetch as? SubscriptionFetch.Failed)?.failure)
+    }
+
+    @Test
+    fun anOversizedReportIsRejected() = runTest {
+        val huge = "x".repeat((MaxSubscriptionBytes + 1L).toInt())
+        val http = FakeHttp { HttpResponse(207, emptyMap(), huge.encodeToByteArray()) }
+        val fetch = fetchSubscription(CalendarSubscription("s", "C", "https://x/cal/", caldav = true), http)
+        assertEquals(SubscriptionFailure.TooLarge, (fetch as? SubscriptionFetch.Failed)?.failure)
+    }
+
+    @Test
+    fun aSelfClosingSyncTokenIsStillRecognized() {
+        val xml = "<d:multistatus xmlns:d=\"DAV:\"><d:response><d:propstat>" +
+            "<d:prop/><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>" +
+            "<d:sync-token/></d:multistatus>"
+        val multi = parseMultiStatus(xml)
+        assertTrue(multi.deletions)
+        assertTrue(multi.recognized)
+        assertNull(multi.syncToken)
+    }
+
+    @Test
+    fun hexAndAstralCharacterReferencesAreResolved() {
+        assertEquals("中", decodeXmlText("&#x4E2D;"))
+        assertEquals("é", decodeXmlText("&#xE9;"))
+        assertEquals("é", decodeXmlText("&#233;"))
+        assertEquals("😀", decodeXmlText("&#x1F600;"))
+        // Out-of-range or malformed references stay verbatim.
+        assertEquals("&#x110000;", decodeXmlText("&#x110000;"))
+        assertEquals("&#xzz;", decodeXmlText("&#xzz;"))
+    }
+
+    @Test
+    fun aFailedDeletionReconciliationFallsBackToAFullQuery() = runTest {
+        val storage = SyncStorage()
+        val ics = icsOf("a@x" to "One")
+        var reportBroken = false
+        var collectionEmpty = false
+        val http = FakeHttp { request ->
+            val body = request.body.decodeToString()
+            when {
+                request.method != "REPORT" -> HttpResponse(500, emptyMap(), ByteArray(0))
+                "<d:sync-token>" in body ->
+                    HttpResponse(207, emptyMap(), multiStatus("t2", davEntry("/cal/a.ics", null, null)).encodeToByteArray())
+                reportBroken -> HttpResponse(500, emptyMap(), ByteArray(0))
+                collectionEmpty -> HttpResponse(207, emptyMap(), multiStatus("t4").encodeToByteArray())
+                else -> HttpResponse(207, emptyMap(), multiStatus("t1", davEntry("/cal/a.ics", null, ics)).encodeToByteArray())
+            }
+        }
+        var ids = 0
+        storage.state = AppState(subscriptions = listOf(CalendarSubscription("s1", "Feed", "https://x/cal/", caldav = true)))
+        val scope = TestScope(StandardTestDispatcher(testScheduler))
+        val f = AppStateHolder(
+            scope = scope,
+            initialSystemLocale = "en-US",
+            idProvider = { "id-${ids++}" },
+            storage = storage,
+            subscriptionHttp = http,
+            parseDispatcher = scope.coroutineContext[ContinuationInterceptor] as kotlinx.coroutines.CoroutineDispatcher,
+        )
+        f.syncSubscription("s1")
+        scope.advanceUntilIdle()
+        assertEquals(1, f.appState.events.size)
+        assertEquals("t1", f.appState.subscriptions.single().syncToken)
+
+        // The incremental report names the record as deleted, but the follow-up full fetch breaks.
+        reportBroken = true
+        f.syncSubscription("s1")
+        scope.advanceUntilIdle()
+        assertEquals(1, f.appState.events.size)
+        // The token did not move past the deletions it could not apply; the next sync is a full query.
+        assertNull(f.appState.subscriptions.single().syncToken)
+        assertNotNull(f.appState.subscriptions.single().lastSync)
+
+        // Once the server answers again, the reconciliation completes.
+        reportBroken = false
+        collectionEmpty = true
+        f.syncSubscription("s1")
+        scope.advanceUntilIdle()
+        assertEquals(0, f.appState.events.size)
+        assertEquals("t4", f.appState.subscriptions.single().syncToken)
+    }
+
+    @Test
+    fun anEmptyCaldavCollectionSyncsAndReconcilesToNothing() = runTest {
+        val storage = SyncStorage()
+        val ics = icsOf("a@x" to "One")
+        var collectionEmpty = false
+        val http = FakeHttp { request ->
+            val body = request.body.decodeToString()
+            when {
+                request.method != "REPORT" -> HttpResponse(500, emptyMap(), ByteArray(0))
+                "<d:sync-token>" in body ->
+                    HttpResponse(207, emptyMap(), multiStatus("t2", davEntry("/cal/a.ics", null, null)).encodeToByteArray())
+                collectionEmpty -> HttpResponse(207, emptyMap(), multiStatus("t3").encodeToByteArray())
+                else -> HttpResponse(207, emptyMap(), multiStatus("t1", davEntry("/cal/a.ics", null, ics)).encodeToByteArray())
+            }
+        }
+        var ids = 0
+        storage.state = AppState(subscriptions = listOf(CalendarSubscription("s1", "Feed", "https://x/cal/", caldav = true)))
+        val scope = TestScope(StandardTestDispatcher(testScheduler))
+        val f = AppStateHolder(
+            scope = scope,
+            initialSystemLocale = "en-US",
+            idProvider = { "id-${ids++}" },
+            storage = storage,
+            subscriptionHttp = http,
+            parseDispatcher = scope.coroutineContext[ContinuationInterceptor] as kotlinx.coroutines.CoroutineDispatcher,
+        )
+        f.syncSubscription("s1")
+        scope.advanceUntilIdle()
+        assertEquals(1, f.appState.events.size)
+
+        // The incremental report names only a deletion; the reconciliation fetch finds that the
+        // whole collection is empty, so the local copy follows it down to nothing.
+        collectionEmpty = true
+        f.syncSubscription("s1")
+        scope.advanceUntilIdle()
+        assertEquals(0, f.appState.events.size)
+        assertEquals("t3", f.appState.subscriptions.single().syncToken)
     }
 }

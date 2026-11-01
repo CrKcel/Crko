@@ -57,7 +57,7 @@ sealed interface SubscriptionFetch {
 }
 
 /** Upper bound for one response; a calendar beyond it would freeze the device for seconds. */
-private const val MaxSubscriptionBytes = 8L * 1024 * 1024
+internal const val MaxSubscriptionBytes = 8L * 1024 * 1024
 
 /**
  * Absolute https address of [raw]. `webcal://` and `webcals://` are the user-facing spellings of an
@@ -148,18 +148,24 @@ private suspend fun fetchCalDav(
         val report = report(http, url, syncCollectionReport(token)) ?: return SubscriptionFetch.Failed(
             SubscriptionFailure.Unreachable,
         )
+        if (report.body.size > MaxSubscriptionBytes) return SubscriptionFetch.Failed(SubscriptionFailure.TooLarge)
         return when {
             report.status in 200..299 -> {
                 val multi = parseMultiStatus(decodeCalendarBytes(report.body) ?: report.body.decodeToString())
-                val nextToken = multi.syncToken ?: token
-                if (!multi.hasDocuments && !multi.deletions) {
-                    SubscriptionFetch.Unchanged
+                if (!multi.recognized) {
+                    // A 2xx answer that is not a multistatus is not a calendar collection.
+                    SubscriptionFetch.Failed(SubscriptionFailure.NotCalendar, report.status)
                 } else {
-                    SubscriptionFetch.Changes(
-                        text = multi.documents.joinToString("\r\n"),
-                        syncToken = nextToken,
-                        deletions = multi.deletions || multi.documents.isEmpty(),
-                    )
+                    val nextToken = multi.syncToken ?: token
+                    if (!multi.hasDocuments && !multi.deletions) {
+                        SubscriptionFetch.Unchanged
+                    } else {
+                        SubscriptionFetch.Changes(
+                            text = multi.documents.joinToString("\r\n"),
+                            syncToken = nextToken,
+                            deletions = multi.deletions || multi.documents.isEmpty(),
+                        )
+                    }
                 }
             }
             // A server that does not know sync-collection reports rejects the request; fall back to
@@ -177,13 +183,16 @@ private suspend fun fetchCalDav(
     val report = report(http, url, calendarQueryReport()) ?: return SubscriptionFetch.Failed(
         SubscriptionFailure.Unreachable,
     )
+    if (report.body.size > MaxSubscriptionBytes) return SubscriptionFetch.Failed(SubscriptionFailure.TooLarge)
     return when {
         report.status in 200..299 -> {
             val multi = parseMultiStatus(decodeCalendarBytes(report.body) ?: report.body.decodeToString())
-            if (multi.documents.isEmpty()) {
-                SubscriptionFetch.Failed(SubscriptionFailure.NotCalendar, report.status)
-            } else {
-                SubscriptionFetch.Full(multi.documents.joinToString("\r\n"), syncToken = multi.syncToken)
+            when {
+                multi.hasDocuments -> SubscriptionFetch.Full(multi.documents.joinToString("\r\n"), syncToken = multi.syncToken)
+                // An empty but well-formed multistatus is a real (currently empty) collection:
+                // syncing it succeeds and reconciles the local copy down to nothing.
+                multi.recognized -> SubscriptionFetch.Full("", syncToken = multi.syncToken)
+                else -> SubscriptionFetch.Failed(SubscriptionFailure.NotCalendar, report.status)
             }
         }
         report.status == 401 || report.status == 403 ->
@@ -260,6 +269,8 @@ internal class MultiStatus(
     val deletions: Boolean,
     /** The `sync-token` to send with the next incremental report. */
     val syncToken: String? = null,
+    /** Whether the body carried a `multistatus` root at all, as opposed to some other answer. */
+    val recognized: Boolean = false,
 ) {
     val hasDocuments: Boolean get() = documents.isNotEmpty()
 }
@@ -279,7 +290,7 @@ internal fun parseMultiStatus(xml: String): MultiStatus {
         val inner = response.inner
         val calendarData = findElement(inner, 0, "calendar-data")
         val status = findElement(inner, 0, "status")?.value?.uppercase()
-        if (calendarData != null) {
+        if (calendarData != null && calendarData.value.isNotBlank()) {
             documents += calendarData.value
         } else if (status?.contains("404") == true) {
             deletions = true
@@ -287,7 +298,7 @@ internal fun parseMultiStatus(xml: String): MultiStatus {
         index = response.end
     }
     findElement(xml, 0, "sync-token")?.let { syncToken = it.value.trim().takeIf(String::isNotEmpty) }
-    return MultiStatus(documents, deletions, syncToken)
+    return MultiStatus(documents, deletions, syncToken, findElement(xml, 0, "multistatus") != null)
 }
 
 /** An element found by [findElement]: decoded text, raw inner content, and the index after it. */
@@ -311,7 +322,10 @@ internal fun findElement(xml: String, from: Int, name: String): FoundElement? {
             tag.startsWith("/") -> index = close + 1
             else -> {
                 val localName = tag.substringBefore(' ').substringBefore('/').substringAfterLast(':')
-                if (localName == name && !tag.endsWith("/")) {
+                if (localName == name) {
+                    // A self-closing element (`<d:sync-token/>`) carries no content but still means
+                    // "present and empty"; skipping it would make every sync fall back to full.
+                    if (tag.endsWith("/")) return FoundElement("", "", close + 1)
                     val innerEnd = findCloseTag(xml, close + 1, name) ?: return null
                     val raw = xml.substring(close + 1, innerEnd.first)
                     return FoundElement(decodeXmlText(raw), raw, innerEnd.second)
@@ -364,10 +378,25 @@ internal fun decodeXmlText(raw: String): String {
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&apos;", "'")
-        .replace("&#x27;", "'")
-        .replace("&#39;", "'")
-        .replace(Regex("&#(\\d+);")) { match ->
-            match.groupValues[1].toIntOrNull()?.let { Char(it) }?.toString() ?: match.value
-        }
+        .replace(numericReference) { match -> numericReferenceText(match.groupValues[1]) ?: match.value }
         .replace("&amp;", "&")
+}
+
+/** Decimal (`&#233;`) and hexadecimal (`&#xE9;`) character references in one pattern. */
+private val numericReference = Regex("&#(x[0-9A-Fa-f]+|[0-9]+);")
+
+/** Text of one numeric character reference; null (kept verbatim) when it names no character. */
+private fun numericReferenceText(token: String): String? {
+    val code = if (token.startsWith('x')) {
+        token.substring(1).toLongOrNull(16)?.takeIf { it in 0..0x10FFFF.toLong() }
+    } else {
+        token.toLongOrNull()?.takeIf { it in 0..0x10FFFF.toLong() }
+    } ?: return null
+    return if (code < 0x10000) {
+        Char(code.toInt()).toString()
+    } else {
+        // Outside the basic multilingual plane the value is a code point, not a code unit.
+        val offset = code.toInt() - 0x10000
+        charArrayOf(Char(0xD800 + (offset shr 10)), Char(0xDC00 + (offset and 0x3FF))).concatToString()
+    }
 }

@@ -96,8 +96,13 @@ fun CrkoApp(state: AppStateHolder) {
     // language switch made after the screen was first shown.
     val currentStrings by rememberUpdatedState(strings)
 
+    // Subscriptions publish their own refresh interval; one launch-time check only covers the
+    // moment the app opens, so the due set is polled while the app stays open.
     LaunchedEffect(Unit) {
-        state.syncDueSubscriptions()
+        while (true) {
+            state.syncDueSubscriptions()
+            delay(60.seconds)
+        }
     }
 
     LaunchedEffect(Unit) {

@@ -97,12 +97,18 @@ val Event.attendeeEntries: List<IcsAttendee>
         attendees.filter { it.isNotBlank() }.map { IcsAttendee(calAddress = it) }
     }
 
-/** Case-insensitive comparison of two calendar addresses, ignoring the `mailto:` scheme. */
-internal fun sameCalendarAddress(a: String, b: String): Boolean =
-    a.trim().removePrefix("mailto:").removePrefix("MAILTO:").equals(
-        b.trim().removePrefix("mailto:").removePrefix("MAILTO:"),
-        ignoreCase = true,
-    )
+/**
+ * Case-insensitive comparison of two calendar addresses, ignoring the `mailto:` scheme. The scheme
+ * is written in any letter case in the wild (`mailto:`, `MAILTO:`, `MailTo:`), so it is stripped
+ * without depending on its spelling.
+ */
+internal fun sameCalendarAddress(a: String, b: String): Boolean {
+    fun bare(value: String): String {
+        val text = value.trim()
+        return if (text.startsWith("mailto:", ignoreCase = true)) text.substring("mailto:".length) else text
+    }
+    return bare(a).equals(bare(b), ignoreCase = true)
+}
 
 /**
  * The `ATTENDEE` line of [raw] with its `PARTSTAT` parameter set to [partStat]. Every other

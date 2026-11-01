@@ -14,6 +14,7 @@ import com.crko.domain.exportItipRequest
 import com.crko.domain.importCalendar
 import com.crko.domain.itipDecision
 import com.crko.domain.itipReply
+import com.crko.domain.sameCalendarAddress
 import com.crko.state.AppStateHolder
 import com.crko.storage.StateStorage
 import com.crko.domain.PersistedSettings
@@ -117,6 +118,15 @@ class ItipTest {
         assertEquals(ItipDecision.Apply, itipDecision(4, 3))
         assertEquals(ItipDecision.Apply, itipDecision(3, 3))
         assertEquals(ItipDecision.Stale, itipDecision(2, 3))
+    }
+
+    @Test
+    fun calendarAddressesCompareIgnoringTheMailtoSchemeSpelling() {
+        assertTrue(sameCalendarAddress("MAILTO:Jane@Example.com", "jane@example.com"))
+        assertTrue(sameCalendarAddress("MailTo:jane@example.com", "Jane@Example.com"))
+        assertTrue(sameCalendarAddress("jane@example.com", "JANE@EXAMPLE.COM"))
+        assertFalse(sameCalendarAddress("mailto:jane@example.com", "mailto:john@example.com"))
+        assertFalse(sameCalendarAddress("mailto:jane@example.com", "mailto:jane@other.com"))
     }
 
     @Test
