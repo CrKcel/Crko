@@ -49,6 +49,7 @@ import com.crko.domain.plusDays
 import com.crko.domain.safeAttachmentFileName
 import com.crko.domain.startOfWeek
 import com.crko.i18n.Strings
+import com.crko.i18n.alarmLabel
 import com.crko.state.EditScope
 import com.crko.storage.newId
 import com.crko.ui.icons.AppIcons
@@ -145,9 +146,12 @@ private fun EventEditorContent(
     }
     var repeatExpanded by remember(event) { mutableStateOf(false) }
     var reminderExpanded by remember(event) { mutableStateOf(false) }
-    var reminder by remember(event) {
-        mutableStateOf(event.alarms.firstOrNull { it.absoluteTrigger == null }?.triggerMinutes)
-    }
+    // The editor edits only the first relative alarm; imported audio/email/absolute alarms survive.
+    val originalAlarm = event.alarms.firstOrNull { it.absoluteTrigger == null }
+    val originalReminder = originalAlarm?.triggerMinutes
+    val originalAtEnd = originalAlarm?.relatedToEnd ?: false
+    var reminder by remember(event) { mutableStateOf(originalReminder) }
+    var reminderAtEnd by remember(event) { mutableStateOf(originalAtEnd) }
     var scope by remember(event, occurrenceDate) {
         mutableStateOf(
             if (event.repeat != null && occurrenceDate != null) EditScope.ThisEvent else EditScope.AllEvents,
@@ -172,7 +176,6 @@ private fun EventEditorContent(
     val timeValid = allDay || resolvedEndDate > date || endMinutes >= startMinutes
     val valid = title.isNotBlank() && timeValid && repeatValid
     val canScope = event.repeat != null && occurrenceDate != null
-    val originalReminder = event.alarms.firstOrNull { it.absoluteTrigger == null }?.triggerMinutes
 
     val picking: TimeField? = when {
         showStartPicker -> TimeField.START
@@ -192,9 +195,12 @@ private fun EventEditorContent(
             onConfirm = { picked ->
                 val pickedMinutes = picked.hour * 60 + picked.minute
                 if (picking == TimeField.START) {
+                    // A zero-length event (RFC 5545: timed event without DTEND) moves as a point in
+                    // time instead of being stretched into an hour the user never asked for.
+                    val zeroDuration = !allDay && resolvedEndDate == date && startMinutes == endMinutes
                     start = picked
-                    if (resolvedEndDate == date && pickedMinutes >= endMinutes) {
-                        end = minutesToTime((pickedMinutes + 60).coerceAtMost(MaxEndMinutes))
+                    endMinutesAfterStartChange(zeroDuration, resolvedEndDate == date, pickedMinutes, endMinutes)?.let {
+                        end = minutesToTime(it)
                     }
                 } else {
                     end = picked
@@ -390,13 +396,19 @@ private fun EventEditorContent(
             Spacer(Modifier.height(8.dp))
             ExpandableRow(
                 label = strings.reminder,
-                value = reminderSummary(strings, reminder),
+                value = reminderSummary(strings, reminder, reminderAtEnd),
                 expanded = reminderExpanded,
                 onClick = { reminderExpanded = !reminderExpanded },
             )
             if (reminderExpanded) {
                 Spacer(Modifier.height(10.dp))
-                ReminderSection(strings = strings, reminder = reminder, onSelect = { reminder = it })
+                ReminderSection(
+                    strings = strings,
+                    reminder = reminder,
+                    atEnd = reminderAtEnd,
+                    onMinutesChange = { reminder = it },
+                    onBaseChange = { reminderAtEnd = it },
+                )
             }
             Spacer(Modifier.height(14.dp))
             TextField(
@@ -544,7 +556,13 @@ private fun EventEditorContent(
                             status = status,
                             transparency = transparency,
                             priority = priority,
-                            alarms = updateReminderAlarms(event.alarms, originalReminder, reminder),
+                            alarms = updateReminderAlarms(
+                                event.alarms,
+                                originalReminder,
+                                reminder,
+                                originalAtEnd,
+                                reminderAtEnd,
+                            ),
                             repeat = buildRule(
                                 frequency = repeatFrequency,
                                 old = event.repeat,
@@ -584,15 +602,23 @@ private fun EventEditorContent(
 /**
  * Changes only the one relative reminder the editor shows. Other imported `VALARM`s (audio/email,
  * absolute or extra relative alarms) survive an edit instead of collapsing into one simple alarm.
+ * [atEnd] keeps the `RELATED=END` base: switching the base rewrites it, leaving it untouched
+ * preserves an imported end-relative trigger instead of silently rebasing it onto the start.
  */
-internal fun updateReminderAlarms(alarms: List<Alarm>, original: Int?, reminder: Int?): List<Alarm> {
-    if (reminder == original) return alarms
+internal fun updateReminderAlarms(
+    alarms: List<Alarm>,
+    original: Int?,
+    reminder: Int?,
+    originalAtEnd: Boolean = false,
+    atEnd: Boolean = false,
+): List<Alarm> {
+    if (reminder == original && atEnd == originalAtEnd) return alarms
     val index = alarms.indexOfFirst { it.absoluteTrigger == null }
     return when {
         reminder == null -> if (index < 0) alarms else alarms.filterIndexed { i, _ -> i != index }
-        index < 0 -> alarms + Alarm(triggerMinutes = reminder)
+        index < 0 -> alarms + Alarm(triggerMinutes = reminder, relatedToEnd = atEnd)
         else -> alarms.toMutableList().also {
-            it[index] = it[index].copy(triggerMinutes = reminder, relatedToEnd = false)
+            it[index] = it[index].copy(triggerMinutes = reminder, relatedToEnd = atEnd)
         }
     }
 }
@@ -640,6 +666,22 @@ private fun buildRule(
 internal enum class TimeField { START, END }
 
 internal fun minutesToTime(minutes: Int): LocalTime = LocalTime((minutes.coerceIn(0, MaxEndMinutes)) / 60, minutes.coerceIn(0, MaxEndMinutes) % 60)
+
+/**
+ * End minutes after the start time was picked. A zero-duration event keeps its zero length — the
+ * end follows the new start; a start pushed past the end on the same day drags the end one hour
+ * ahead. Null keeps the current end.
+ */
+internal fun endMinutesAfterStartChange(
+    zeroDuration: Boolean,
+    sameDay: Boolean,
+    pickedMinutes: Int,
+    endMinutes: Int,
+): Int? = when {
+    zeroDuration -> pickedMinutes
+    sameDay && pickedMinutes >= endMinutes -> (pickedMinutes + 60).coerceAtMost(MaxEndMinutes)
+    else -> null
+}
 
 @Composable
 private fun MoreOptionsToggle(
@@ -890,10 +932,9 @@ private fun repeatSummary(strings: Strings, frequency: RepeatFrequency?): String
     RepeatFrequency.Custom -> strings.repeatCustom
 }
 
-private fun reminderSummary(strings: Strings, reminder: Int?): String = when (reminder) {
+private fun reminderSummary(strings: Strings, reminder: Int?, atEnd: Boolean): String = when (reminder) {
     null -> strings.reminderNone
-    0 -> strings.reminderAtTime
-    else -> strings.reminderBefore(reminder)
+    else -> strings.alarmLabel(reminder, atEnd)
 }
 
 /** Compact stepper: the interval is a single line instead of two half-width buttons. */
@@ -1088,18 +1129,55 @@ private fun RepeatSection(
 private fun ReminderSection(
     strings: Strings,
     reminder: Int?,
-    onSelect: (Int?) -> Unit,
+    atEnd: Boolean,
+    onMinutesChange: (Int?) -> Unit,
+    onBaseChange: (Boolean) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            RepeatChip(strings.reminderNone, reminder == null, { onSelect(null) }, Modifier.weight(1f))
-            RepeatChip(strings.reminderAtTime, reminder == 0, { onSelect(0) }, Modifier.weight(1f))
-            RepeatChip(strings.reminderBefore(5), reminder == 5, { onSelect(5) }, Modifier.weight(1f))
+            RepeatChip(strings.reminderNone, reminder == null, { onMinutesChange(null) }, Modifier.weight(1f))
+            RepeatChip(
+                strings.alarmLabel(0, atEnd),
+                reminder == 0,
+                { onMinutesChange(0) },
+                Modifier.weight(1f),
+            )
+            RepeatChip(
+                strings.alarmLabel(5, atEnd),
+                reminder == 5,
+                { onMinutesChange(5) },
+                Modifier.weight(1f),
+            )
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            RepeatChip(strings.reminderBefore(15), reminder == 15, { onSelect(15) }, Modifier.weight(1f))
-            RepeatChip(strings.reminderBefore(30), reminder == 30, { onSelect(30) }, Modifier.weight(1f))
-            RepeatChip(strings.reminderBefore(60), reminder == 60, { onSelect(60) }, Modifier.weight(1f))
+            RepeatChip(
+                strings.alarmLabel(15, atEnd),
+                reminder == 15,
+                { onMinutesChange(15) },
+                Modifier.weight(1f),
+            )
+            RepeatChip(
+                strings.alarmLabel(30, atEnd),
+                reminder == 30,
+                { onMinutesChange(30) },
+                Modifier.weight(1f),
+            )
+            RepeatChip(
+                strings.alarmLabel(60, atEnd),
+                reminder == 60,
+                { onMinutesChange(60) },
+                Modifier.weight(1f),
+            )
+        }
+        // The presets are minutes relative to a base; imported `RELATED=END` triggers must be able
+        // to keep it, and a start-relative reminder can be switched to fire relative to the end.
+        if (reminder != null) {
+            Spacer(Modifier.height(6.dp))
+            Caption(strings.reminderRelativeTo)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                RepeatChip(strings.reminderRelativeToStart, !atEnd, { onBaseChange(false) }, Modifier.weight(1f))
+                RepeatChip(strings.reminderRelativeToEnd, atEnd, { onBaseChange(true) }, Modifier.weight(1f))
+            }
         }
     }
 }

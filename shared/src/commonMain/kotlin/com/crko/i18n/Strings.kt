@@ -110,6 +110,13 @@ interface Strings {
     val reminderNone: String
     val reminderAtTime: String
     fun reminderBefore(minutes: Int): String
+    fun reminderAfterStart(minutes: Int): String
+    val reminderAtEnd: String
+    fun reminderBeforeEnd(minutes: Int): String
+    fun reminderAfterEnd(minutes: Int): String
+    val reminderRelativeTo: String
+    val reminderRelativeToStart: String
+    val reminderRelativeToEnd: String
     val editScope: String
     val scopeThisEvent: String
     val scopeThisAndFuture: String
@@ -267,6 +274,13 @@ object ZhStrings : Strings {
     override val reminderNone = "不提醒"
     override val reminderAtTime = "准时"
     override fun reminderBefore(minutes: Int) = "提前 $minutes 分钟"
+    override fun reminderAfterStart(minutes: Int) = "开始后 $minutes 分钟"
+    override val reminderAtEnd = "结束时"
+    override fun reminderBeforeEnd(minutes: Int) = "结束前 $minutes 分钟"
+    override fun reminderAfterEnd(minutes: Int) = "结束后 $minutes 分钟"
+    override val reminderRelativeTo = "基准"
+    override val reminderRelativeToStart = "开始时间"
+    override val reminderRelativeToEnd = "结束时间"
     override val editScope = "修改范围"
     override val scopeThisEvent = "仅此次"
     override val scopeThisAndFuture = "此次及以后"
@@ -455,6 +469,13 @@ object EnStrings : Strings {
     override val reminderNone = "None"
     override val reminderAtTime = "At start"
     override fun reminderBefore(minutes: Int) = "$minutes min before"
+    override fun reminderAfterStart(minutes: Int) = "$minutes min after start"
+    override val reminderAtEnd = "At end"
+    override fun reminderBeforeEnd(minutes: Int) = "$minutes min before end"
+    override fun reminderAfterEnd(minutes: Int) = "$minutes min after end"
+    override val reminderRelativeTo = "Based on"
+    override val reminderRelativeToStart = "Start"
+    override val reminderRelativeToEnd = "End"
     override val editScope = "Apply to"
     override val scopeThisEvent = "This event"
     override val scopeThisAndFuture = "This and later"
@@ -555,6 +576,17 @@ fun todoPriorityLabel(strings: Strings, priority: TodoPriority): String = when (
     TodoPriority.High -> strings.priorityHigh
     TodoPriority.Normal -> strings.priorityNormal
     TodoPriority.Low -> strings.priorityLow
+}
+
+/**
+ * Human label for a relative alarm trigger. `minutes` is positive for "before" (the editor's
+ * presets), negative for "after" (only reachable from imported `VALARM`s), and [atEnd] selects the
+ * `RELATED=END` wording.
+ */
+fun Strings.alarmLabel(minutes: Int, atEnd: Boolean): String = when {
+    minutes == 0 -> if (atEnd) reminderAtEnd else reminderAtTime
+    minutes > 0 -> if (atEnd) reminderBeforeEnd(minutes) else reminderBefore(minutes)
+    else -> if (atEnd) reminderAfterEnd(-minutes) else reminderAfterStart(-minutes)
 }
 
 fun stringsFor(language: AppLanguage): Strings = when (language) {

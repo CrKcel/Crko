@@ -5,6 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import com.crko.state.AppStateHolder
+import com.crko.state.reminderScheduler
 import com.crko.storage.systemLocaleTag
 import com.crko.ui.common.CrkoApp
 import com.crko.ui.theme.CrkoTheme
@@ -21,7 +22,7 @@ fun App(
     systemDark: Boolean? = null,
 ) {
     val scope = rememberCoroutineScope()
-    val state = remember { AppStateHolder(scope, initialSystemLocale = systemLocale) }
+    val state = remember { AppStateHolder(scope, initialSystemLocale = systemLocale, reminders = reminderScheduler()) }
 
     LaunchedEffect(systemLocale) {
         state.systemLocale = systemLocale

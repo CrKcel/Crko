@@ -43,6 +43,7 @@ import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
@@ -92,6 +93,11 @@ class AppStateHolder(
     private val clock: Clock = Clock.System,
     private val idProvider: () -> String = ::newId,
     private val storage: StateStorage = AppStorage,
+    /**
+     * Platform notification bridge, wired by the app composition root ([com.crko.App]). Null by
+     * default so tests never touch platform notification centers.
+     */
+    private val reminders: ReminderScheduler? = null,
 ) {
     var appState: AppState by mutableStateOf(storage.loadState())
         private set
@@ -119,6 +125,8 @@ class AppStateHolder(
     private val messageChannel = Channel<AppMessage>(Channel.BUFFERED)
     val messages = messageChannel.receiveAsFlow()
 
+    private var reminderJob: Job? = null
+
     init {
         if (settings.agendaScrollHour < 0) {
             updateSettings { it.copy(agendaScrollHour = 8) }
@@ -136,6 +144,7 @@ class AppStateHolder(
         // explanation; the damaged copy is kept by the storage, so say what happened.
         val damage = storage.loadDamage()
         if (!damage.isEmpty) notify(AppMessage.StorageRecovered(damage.droppedRecords))
+        scheduleReminders()
     }
 
     fun refreshToday() {
@@ -188,6 +197,7 @@ class AppStateHolder(
         val existing = appState.events.firstOrNull { it.id == normalized.id }
         val validated = preserveSource(normalized, existing, occurrenceDate)
         val now = clock.now()
+        if (validated.alarms.isNotEmpty()) ensureReminderPermission()
         return when {
             scope == EditScope.ThisEvent && existing?.repeat != null -> {
                 saveThisOccurrence(existing, validated, occurrenceDate, now)
@@ -839,6 +849,31 @@ class AppStateHolder(
     private fun persist(next: AppState) {
         appState = next
         storage.saveState(next)
+        scheduleReminders()
+    }
+
+    /**
+     * Keeps the platform notifications in line with the state: every persisted change (save,
+     * delete, import, day rollover rebases) replaces the scheduled set. One job at a time, so a
+     * burst of writes cannot interleave half-updated schedules.
+     */
+    private fun scheduleReminders() {
+        val scheduler = reminders ?: return
+        reminderJob?.cancel()
+        reminderJob = scope.launch {
+            runCatching { scheduler.reschedule(appState, currentStrings) }
+        }
+    }
+
+    /**
+     * Asks for notification permission the first time the user gives an event a reminder. Scheduling
+     * itself stays silent about permissions so startup never shows a prompt.
+     */
+    private fun ensureReminderPermission() {
+        val scheduler = reminders ?: return
+        scope.launch {
+            runCatching { scheduler.ensurePermission() }
+        }
     }
 }
 

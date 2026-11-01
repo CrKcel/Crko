@@ -16,4 +16,7 @@ object AndroidAppContext {
     }
 
     fun get(): Context = checkNotNull(context) { "AndroidAppContext.install must run before the UI" }
+
+    /** Context before the entry point ran (host tests, early receivers); null instead of throwing. */
+    fun getOrNull(): Context? = context
 }

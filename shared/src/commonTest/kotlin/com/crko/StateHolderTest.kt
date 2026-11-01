@@ -29,6 +29,7 @@ import com.crko.state.WriteResult
 import com.crko.storage.StateStorage
 import com.crko.ui.common.importSummaryText
 import com.crko.ui.schedule.decodedBytes
+import com.crko.ui.schedule.endMinutesAfterStartChange
 import com.crko.ui.schedule.updateReminderAlarms
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -38,6 +39,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Instant
@@ -973,6 +975,48 @@ class StateHolderTest {
         val removed = updateReminderAlarms(alarms, original = 15, reminder = null)
         assertEquals(2, removed.size)
         assertTrue(removed.none { it.absoluteTrigger == null && it.triggerMinutes == 15 })
+    }
+
+    @Test
+    fun editingTheReminderKeepsTheEndRelatedBase() {
+        val endBased = listOf(Alarm(triggerMinutes = 30, relatedToEnd = true))
+        // Changing only the minutes leaves the `RELATED=END` base alone.
+        val kept = updateReminderAlarms(endBased, original = 30, reminder = 45, originalAtEnd = true, atEnd = true)
+        assertTrue(kept.single().relatedToEnd)
+        assertEquals(45, kept.single().triggerMinutes)
+        // Switching the base is an explicit rewrite.
+        val rebased = updateReminderAlarms(endBased, original = 30, reminder = 30, originalAtEnd = true, atEnd = false)
+        assertFalse(rebased.single().relatedToEnd)
+        // Same minutes and same base: the list is returned untouched.
+        assertSame(endBased, updateReminderAlarms(endBased, original = 30, reminder = 30, originalAtEnd = true, atEnd = true))
+        // A newly added reminder adopts the selected base.
+        val added = updateReminderAlarms(emptyList(), original = null, reminder = 15, originalAtEnd = false, atEnd = true)
+        assertTrue(added.single().relatedToEnd)
+    }
+
+    @Test
+    fun movingAZeroDurationStartKeepsTheZeroLength() {
+        // The end of a zero-length event follows the new start instead of stretching to an hour.
+        assertEquals(
+            660,
+            endMinutesAfterStartChange(zeroDuration = true, sameDay = true, pickedMinutes = 660, endMinutes = 600),
+        )
+        // A start pushed past the end on the same day drags the end one hour ahead.
+        assertEquals(
+            750,
+            endMinutesAfterStartChange(zeroDuration = false, sameDay = true, pickedMinutes = 690, endMinutes = 660),
+        )
+        assertEquals(
+            MaxEndMinutes,
+            endMinutesAfterStartChange(zeroDuration = false, sameDay = true, pickedMinutes = 1439, endMinutes = 600),
+        )
+        // A start inside the existing range, or a multi-day event, keeps the end.
+        assertNull(
+            endMinutesAfterStartChange(zeroDuration = false, sameDay = true, pickedMinutes = 600, endMinutes = 660),
+        )
+        assertNull(
+            endMinutesAfterStartChange(zeroDuration = false, sameDay = false, pickedMinutes = 700, endMinutes = 660),
+        )
     }
 
     @Test
