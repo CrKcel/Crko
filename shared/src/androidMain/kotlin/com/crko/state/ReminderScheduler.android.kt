@@ -25,6 +25,8 @@ import com.crko.i18n.stringsFor
 import com.crko.storage.AppStorage
 import com.crko.storage.systemLocaleTag
 import kotlinx.datetime.TimeZone
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 
 private const val REMINDER_PREFS = "crko.reminders"
@@ -56,9 +58,14 @@ object AndroidReminders {
         val registered = mutableSetOf<String>()
         reminders.forEach { reminder ->
             val pending = firePendingIntent(context, reminder.key, reminder.title, reminder.body)
-            if (exactAllowed) {
-                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAtMillis, pending)
-            } else {
+            try {
+                if (exactAllowed) {
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAtMillis, pending)
+                } else {
+                    alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAtMillis, pending)
+                }
+            } catch (_: SecurityException) {
+                // The grant can be revoked between the check and the call; inexact still fires.
                 alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAtMillis, pending)
             }
             registered += reminder.key
@@ -114,8 +121,12 @@ class ReminderReceiver : BroadcastReceiver() {
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()) return
         ensureChannel(context, manager)
+        // The reminder key is the stable identity: an edited reminder replaces its previous
+        // notification instead of stacking a second one beside it.
+        val key = intent.data?.lastPathSegment
         manager.notify(
-            intent.hashCode(),
+            key,
+            key?.hashCode() ?: intent.hashCode(),
             buildNotification(context, title, body),
         )
     }
@@ -156,14 +167,18 @@ private fun ensureChannel(context: Context, manager: NotificationManagerCompat) 
 internal object AndroidReminderScheduler : ReminderScheduler {
     override suspend fun reschedule(state: AppState, strings: Strings) {
         val context = AndroidAppContext.getOrNull() ?: return
-        val reminders = planReminders(
-            state.events,
-            state.todos,
-            strings,
-            Clock.System.now(),
-            TimeZone.currentSystemDefault(),
-        )
-        AndroidReminders.reschedule(context, reminders)
+        // Planning walks every occurrence day of every event; the caller's scope is the UI main
+        // dispatcher, so the whole pass runs off it to keep saving and startup jank-free.
+        withContext(Dispatchers.Default) {
+            val reminders = planReminders(
+                state.events,
+                state.todos,
+                strings,
+                Clock.System.now(),
+                TimeZone.currentSystemDefault(),
+            )
+            AndroidReminders.reschedule(context, reminders)
+        }
     }
 
     override suspend fun ensurePermission(): Boolean {

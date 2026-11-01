@@ -217,6 +217,24 @@ class ReminderPlanTest {
     }
 
     @Test
+    fun anOffsetAbsoluteTriggerResolvesInUtc() {
+        // 09:00 at +08:00 is 01:00Z; the device zone must not be consulted.
+        assertEquals(
+            Instant.parse("2026-10-28T01:00:00Z"),
+            parseTriggerInstant("20261028T090000+0800", zone),
+        )
+        assertEquals(
+            Instant.parse("2026-10-28T06:00:00Z"),
+            parseTriggerInstant("20261028T010000-0500", zone),
+        )
+        // An extended form with an offset parses through the ISO path.
+        assertEquals(
+            Instant.parse("2026-10-28T01:00:00Z"),
+            parseTriggerInstant("2026-10-28T09:00:00+08:00", zone),
+        )
+    }
+
+    @Test
     fun emailAlarmsAndPastTriggersAreDropped() {
         val past = Event(
             id = "e11",

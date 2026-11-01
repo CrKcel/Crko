@@ -73,6 +73,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
@@ -192,6 +194,7 @@ class AppStateHolder(
     val messages = messageChannel.receiveAsFlow()
 
     private var reminderJob: Job? = null
+    private val reminderMutex = Mutex()
 
     init {
         if (settings.agendaScrollHour < 0) {
@@ -1332,14 +1335,17 @@ class AppStateHolder(
 
     /**
      * Keeps the platform notifications in line with the state: every persisted change (save,
-     * delete, import, day rollover rebases) replaces the scheduled set. One job at a time, so a
-     * burst of writes cannot interleave half-updated schedules.
+     * delete, import, day rollover rebases) replaces the scheduled set. One job at a time — and
+     * the mutex keeps that promise even though cancelling a job does not stop a reschedule that
+     * is already running, so an older pass can never land after a newer one.
      */
     private fun scheduleReminders() {
         val scheduler = reminders ?: return
         reminderJob?.cancel()
         reminderJob = scope.launch {
-            runCatching { scheduler.reschedule(appState, currentStrings) }
+            reminderMutex.withLock {
+                runCatching { scheduler.reschedule(appState, currentStrings) }
+            }
         }
     }
 

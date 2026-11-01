@@ -19,6 +19,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atTime
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
 /** One reminder handed to the platform scheduler: it fires once at [triggerAtMillis]. */
@@ -269,15 +270,18 @@ private fun parseStoredInstant(text: String): Instant? = runCatching { Instant.p
 
 /**
  * Parses an absolute `TRIGGER;VALUE=DATE-TIME` value: the ICS basic form (`20261028T090000Z`,
- * floating without the `Z`) as well as the extended ISO-8601 form are accepted; floating values
- * resolve against [zone].
+ * floating without the `Z`) as well as the extended ISO-8601 form are accepted; a numeric UTC
+ * offset (`20261028T090000+0800`) resolves in UTC, floating values against [zone].
  */
 internal fun parseTriggerInstant(value: String, zone: TimeZone): Instant? {
     val text = value.trim()
     if (text.isEmpty()) return null
     runCatching { Instant.parse(text) }.getOrNull()?.let { return it }
     val utc = text.endsWith("Z") || text.endsWith("z")
-    val compact = if (utc) text.dropLast(1) else text
+    val withoutZone = if (utc) text.dropLast(1) else text
+    // A legal ICS DATE-TIME may carry a numeric offset; the wall clock then resolves in UTC minus
+    // the offset instead of the device zone. Extended-with-offset forms parse via Instant above.
+    val (compact, offsetMinutes) = trailingUtcOffset(withoutZone) ?: (withoutZone to null)
     val digits = compact.replace("-", "").replace(":", "")
     if (digits.length != 15 || digits[8] != 'T') return null
     val date = LocalDate(
@@ -290,5 +294,20 @@ internal fun parseTriggerInstant(value: String, zone: TimeZone): Instant? {
         digits.substring(11, 13).toIntOrNull() ?: return null,
         digits.substring(13, 15).toIntOrNull() ?: return null,
     )
-    return LocalDateTime(date, time).toInstant(if (utc) TimeZone.UTC else zone)
+    val atUtc = LocalDateTime(date, time).toInstant(TimeZone.UTC)
+    return when {
+        utc -> atUtc
+        offsetMinutes != null -> atUtc - offsetMinutes.minutes
+        else -> LocalDateTime(date, time).toInstant(zone)
+    }
 }
+
+/** Trailing `+hh:mm`/`+hhmm` (or `-…`) offset of an ICS DATE-TIME as the remaining text to minutes. */
+private fun trailingUtcOffset(text: String): Pair<String, Int>? {
+    val match = offsetSuffix.find(text) ?: return null
+    val total = match.groupValues[2].toInt() * 60 + match.groupValues[3].toInt()
+    val minutes = if (match.groupValues[1] == "-") -total else total
+    return text.dropLast(match.value.length) to minutes
+}
+
+private val offsetSuffix = Regex("""([+-])(\d{2}):?(\d{2})$""")
