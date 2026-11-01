@@ -95,6 +95,9 @@ interface Strings {
     val categories: String
     val categoriesField: String
     val urlField: String
+    val attachments: String
+    val attachmentSaveFailed: String
+    val attachmentBroken: String
     val moreOptions: String
     val eventStatus: String
     val statusConfirmed: String
@@ -152,6 +155,8 @@ interface Strings {
     fun importedItems(events: Int, todos: Int): String
     fun importFailure(failure: IcsImportFailure): String
     fun importWarning(warning: IcsWarning): String
+    fun importWarningLocation(line: Int?, record: String?): String
+    fun importWarningMore(count: Int): String
     fun storageRecovered(droppedRecords: Int): String
     val untitledEvent: String
 
@@ -247,6 +252,9 @@ object ZhStrings : Strings {
     override val categories = "分类"
     override val categoriesField = "分类（用逗号分隔）"
     override val urlField = "网址"
+    override val attachments = "附件"
+    override val attachmentSaveFailed = "附件保存失败"
+    override val attachmentBroken = "附件数据无法解码"
     override val moreOptions = "更多选项"
     override val eventStatus = "状态"
     override val statusConfirmed = "确认"
@@ -306,7 +314,7 @@ object ZhStrings : Strings {
     }
     override fun importFailure(failure: IcsImportFailure): String = when (failure) {
         IcsImportFailure.TooLarge -> "文件超过 5 MB，无法导入；请先在原日历中缩小导出范围后重试"
-        IcsImportFailure.InvalidEncoding -> "文件不是 UTF-8 编码，无法导入；请重新导出为 UTF-8 文件"
+        IcsImportFailure.InvalidEncoding -> "无法识别文件编码，无法导入；请重新导出为 UTF-8 或 GBK 文件"
         IcsImportFailure.Unreadable -> "无法读取所选文件"
         IcsImportFailure.InvalidFormat -> importFailed
     }
@@ -321,6 +329,13 @@ object ZhStrings : Strings {
         IcsWarning.UnknownSubcomponent -> "部分日程包含不支持的子组件，已忽略"
         IcsWarning.ExdateMismatch -> "部分排除日期的时刻与日程开始时间不一致，已忽略"
     }
+    override fun importWarningLocation(line: Int?, record: String?): String = when {
+        record != null && line != null -> "（$record，第 $line 行）"
+        record != null -> "（$record）"
+        line != null -> "（第 $line 行）"
+        else -> ""
+    }
+    override fun importWarningMore(count: Int): String = "（另有 $count 条）"
     override fun storageRecovered(droppedRecords: Int): String =
         if (droppedRecords > 0) {
             "本地日程数据损坏，已尽量恢复，$droppedRecords 条记录无法读取（原始文件已备份）"
@@ -425,6 +440,9 @@ object EnStrings : Strings {
     override val categories = "Categories"
     override val categoriesField = "Categories (comma separated)"
     override val urlField = "URL"
+    override val attachments = "Attachments"
+    override val attachmentSaveFailed = "The attachment could not be saved"
+    override val attachmentBroken = "The attachment data could not be decoded"
     override val moreOptions = "More options"
     override val eventStatus = "Status"
     override val statusConfirmed = "Confirmed"
@@ -484,7 +502,7 @@ object EnStrings : Strings {
     }
     override fun importFailure(failure: IcsImportFailure): String = when (failure) {
         IcsImportFailure.TooLarge -> "The file is larger than 5 MB. Export a shorter date range and try again."
-        IcsImportFailure.InvalidEncoding -> "The file is not UTF-8 encoded. Export it again as UTF-8."
+        IcsImportFailure.InvalidEncoding -> "The file encoding could not be recognized. Export it again as UTF-8 or GBK."
         IcsImportFailure.Unreadable -> "The selected file could not be read"
         IcsImportFailure.InvalidFormat -> importFailed
     }
@@ -499,6 +517,13 @@ object EnStrings : Strings {
         IcsWarning.UnknownSubcomponent -> "Some events contain unsupported subcomponents, which were ignored"
         IcsWarning.ExdateMismatch -> "Some excluded dates did not match the event start time and were ignored"
     }
+    override fun importWarningLocation(line: Int?, record: String?): String = when {
+        record != null && line != null -> " ($record, line $line)"
+        record != null -> " ($record)"
+        line != null -> " (line $line)"
+        else -> ""
+    }
+    override fun importWarningMore(count: Int): String = " ($count more)"
     override fun storageRecovered(droppedRecords: Int): String =
         if (droppedRecords > 0) {
             "Stored calendar data was damaged; $droppedRecords records could not be read. The original file was kept as a backup."

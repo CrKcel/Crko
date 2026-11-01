@@ -316,18 +316,51 @@ internal fun occurrenceOrdinal(
             }
         }
         RepeatFrequency.Weekly, RepeatFrequency.Custom -> weeklyOrdinal(rule, anchor, date, interval, limit)
-        RepeatFrequency.Monthly -> countPeriodMatches(rule, anchor, date, limit) { monthIndex ->
-            val month = anchor.startOfMonth().plusMonths(monthIndex * interval)
-            if (rule.byMonth.isNotEmpty() && month.month.number !in rule.byMonth) {
-                emptyList()
+        RepeatFrequency.Monthly -> {
+            val simple = plainWeekdays(rule).isEmpty() && rule.byDay.isEmpty() &&
+                rule.byMonthDay.isEmpty() && rule.byMonth.isEmpty() &&
+                rule.byYearDay.isEmpty() && rule.byWeekNo.isEmpty() &&
+                rule.bySetPos.isEmpty()
+            if (simple && anchor.day <= 28) {
+                // Every month has this day, so the ordinal is arithmetic instead of a walk from
+                // the anchor through every intervening month.
+                val monthDiff = anchor.monthsTo(date)
+                if (monthDiff < 0 || monthDiff % interval != 0) {
+                    null
+                } else {
+                    val expected = date.startOfMonth().plusDays(anchor.day - 1)
+                    if (date == expected) monthDiff / interval + 1 else null
+                }
             } else {
-                monthCandidates(rule, anchor, month.year, month.month.number)
-                    .filter { it > anchor && matchesRule(rule, anchor, it) }
+                countPeriodMatches(rule, anchor, date, limit) { monthIndex ->
+                    val month = anchor.startOfMonth().plusMonths(monthIndex * interval)
+                    if (rule.byMonth.isNotEmpty() && month.month.number !in rule.byMonth) {
+                        emptyList()
+                    } else {
+                        monthCandidates(rule, anchor, month.year, month.month.number)
+                            .filter { it > anchor && matchesRule(rule, anchor, it) }
+                    }
+                }
             }
         }
-        RepeatFrequency.Yearly -> countPeriodMatches(rule, anchor, date, limit) { yearIndex ->
-            yearCandidates(rule, anchor, anchor.year + yearIndex * interval, withSetPos = true)
-                .filter { it > anchor && matchesRule(rule, anchor, it) }
+        RepeatFrequency.Yearly -> {
+            val simple = plainWeekdays(rule).isEmpty() && rule.byDay.isEmpty() &&
+                rule.byMonthDay.isEmpty() && rule.byMonth.isEmpty() &&
+                rule.byYearDay.isEmpty() && rule.byWeekNo.isEmpty() &&
+                rule.bySetPos.isEmpty() && !(anchor.month.number == 2 && anchor.day == 29)
+            if (simple) {
+                val yearDiff = date.year - anchor.year
+                if (yearDiff < 0 || yearDiff % interval != 0 || date.month != anchor.month || date.day != anchor.day) {
+                    null
+                } else {
+                    yearDiff / interval + 1
+                }
+            } else {
+                countPeriodMatches(rule, anchor, date, limit) { yearIndex ->
+                    yearCandidates(rule, anchor, anchor.year + yearIndex * interval, withSetPos = true)
+                        .filter { it > anchor && matchesRule(rule, anchor, it) }
+                }
+            }
         }
     }
 }

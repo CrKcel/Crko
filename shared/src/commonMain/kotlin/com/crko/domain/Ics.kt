@@ -8,7 +8,7 @@ import kotlinx.datetime.number
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
-import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 /**
@@ -105,7 +105,19 @@ enum class IcsWarning {
 data class IcsImport(
     val events: List<Event> = emptyList(),
     val todos: List<Todo> = emptyList(),
+    val journals: List<Journal> = emptyList(),
     val warnings: List<IcsWarning> = emptyList(),
+    /** The same warnings attached to the record (and content line) that caused them. */
+    val warningDetails: List<IcsWarningDetail> = emptyList(),
+    /** UIDs whose newest master copy is `STATUS:CANCELLED`; matching local records are removed. */
+    val cancelledUids: Set<String> = emptySet(),
+)
+
+/** One warning occurrence, so the UI can say which record or line was affected. */
+data class IcsWarningDetail(
+    val warning: IcsWarning,
+    val line: Int? = null,
+    val record: String? = null,
 )
 
 /** Why a calendar file could not be imported; each case has its own user-facing message. */
@@ -135,6 +147,7 @@ fun exportCalendar(
     todos: List<Todo> = emptyList(),
     now: Instant = Clock.System.now(),
     calendarName: String? = null,
+    journals: List<Journal> = emptyList(),
 ): String = buildString {
     line("BEGIN:VCALENDAR")
     line("VERSION:2.0")
@@ -158,6 +171,7 @@ fun exportCalendar(
     }
     events.forEachIndexed { index, event -> appendEvent(event, events, index, now) }
     todos.forEachIndexed { index, todo -> appendTodo(todo, index, now) }
+    journals.forEachIndexed { index, journal -> appendJournal(journal, index, now) }
     line("END:VCALENDAR")
 }
 
@@ -171,6 +185,7 @@ fun importCalendar(
     untitledTitle: String,
 ): IcsImport {
     val warnings = linkedSetOf<IcsWarning>()
+    val details = mutableListOf<IcsWarningDetail>()
     val roots = parseComponents(text)
     val calendars = roots.filter { it.name == "VCALENDAR" }
     val components = if (calendars.isEmpty()) roots else calendars.flatMap { it.children }
@@ -186,8 +201,13 @@ fun importCalendar(
             if (zoneId != null) zoneDefinitions[zoneId] = component.toText()
         }
     }
+    // Floating times are device-local by default, but a calendar may declare the zone they belong
+    // to. Resolving it here keeps DTSTART/UNTIL in the same zone instead of silently shifting.
+    val floatingZone = calendarFloatingZone(calendars, zones, warnings)
 
-    val rawEvents = components.filter { it.name == "VEVENT" }.map { readEvent(it, zones, zoneDefinitions, warnings) }
+    val rawEvents = components
+        .filter { it.name == "VEVENT" }
+        .map { readEvent(it, zones, zoneDefinitions, floatingZone, details) }
     val groups = linkedMapOf<String, MutableList<RawEvent>>()
     val orphanEvents = mutableListOf<RawEvent>()
     rawEvents.forEach { raw ->
@@ -197,14 +217,77 @@ fun importCalendar(
 
     val events = mutableListOf<Event>()
     orphanEvents.forEach { raw ->
-        if (!raw.isCancelled()) mapSingle(raw, timeZone, untitledTitle, zones, warnings)?.let(events::add)
+        if (!raw.isCancelled()) {
+            val local = linkedSetOf<IcsWarning>()
+            mapSingle(raw, timeZone, untitledTitle, zones, local)?.let(events::add)
+            mergeWarnings(warnings, details, local, raw.lineNumber, raw.summary.ifBlank { raw.uid })
+        }
     }
     groups.forEach { (uid, group) ->
-        events += mapSeries(uid, group, timeZone, untitledTitle, zones, warnings)
+        val local = linkedSetOf<IcsWarning>()
+        events += mapSeries(uid, group, timeZone, untitledTitle, zones, local)
+        mergeWarnings(warnings, details, local, group.firstOrNull()?.lineNumber, uid)
     }
+    // Only the newest master copy of a UID can cancel the series; a stale CANCELLED copy next to a
+    // live one must not remove the user's event.
+    val cancelledUids = groups.mapNotNull { (uid, group) ->
+        val newest = group.filter { it.recurrenceId == null }.maxWithOrNull(masterCopyComparator)
+        uid.takeIf { newest?.isCancelled() == true }
+    }.toSet()
 
-    val todos = components.filter { it.name == "VTODO" }.mapNotNull { readTodo(it, timeZone, warning = { warnings += it }) }
-    return IcsImport(events = events, todos = todos, warnings = warnings.toList())
+    val todos = components
+        .filter { it.name == "VTODO" }
+        .mapNotNull { readTodo(it, timeZone, zones, floatingZone, details) }
+    val journals = components
+        .filter { it.name == "VJOURNAL" }
+        .mapNotNull { readJournal(it, timeZone, zones, floatingZone, details) }
+    val allWarnings = linkedSetOf<IcsWarning>().apply {
+        addAll(warnings)
+        details.forEach { add(it.warning) }
+    }
+    return IcsImport(
+        events = events,
+        todos = todos,
+        journals = journals,
+        warnings = allWarnings.toList(),
+        warningDetails = details.asWarningDetails(),
+        cancelledUids = cancelledUids,
+    )
+}
+
+/** Total number of records a message may point at; beyond that the summary stays honest anyway. */
+private const val MaxWarningDetails = 20
+
+/** At most this many characters of a record name are quoted back to the user. */
+private const val MaxWarningRecordChars = 60
+
+/** Drops duplicates and keeps the list small enough to render inside one message. */
+private fun List<IcsWarningDetail>.asWarningDetails(): List<IcsWarningDetail> =
+    distinct().take(MaxWarningDetails)
+
+/** Trims the record name so one long `SUMMARY` cannot bloat the whole warning message. */
+private fun warningDetail(warning: IcsWarning, line: Int?, record: String?): IcsWarningDetail =
+    IcsWarningDetail(
+        warning = warning,
+        line = line?.takeIf { it > 0 },
+        record = record?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let {
+                if (it.length <= MaxWarningRecordChars) it else it.take(MaxWarningRecordChars - 1) + "…"
+            },
+    )
+
+private fun mergeWarnings(
+    warnings: MutableSet<IcsWarning>,
+    details: MutableList<IcsWarningDetail>,
+    local: Set<IcsWarning>,
+    line: Int?,
+    record: String?,
+) {
+    local.forEach { warning ->
+        warnings += warning
+        details += warningDetail(warning, line, record)
+    }
 }
 
 fun importIcs(
@@ -263,6 +346,10 @@ fun Event.normalizedForZone(
     }
     val newEndDate = endDateTime?.date?.toString()
     val newEndMinutes = endDateTime?.time?.let { it.hour * 60 + it.minute } ?: endMinutes
+    val wasZeroDuration = sourceEnd == null && endDateText == null &&
+        endMinutes == startMinutes && endSeconds == startSeconds
+    val newStartMinutes = startDateTime.time.hour * 60 + startDateTime.time.minute
+    val newStartSeconds = startDateTime.time.second
     // Occurrence dates in excludedDates/RDATE move with the anchor; shift them by the same day so a
     // zone change that crosses midnight does not leave skips and extra dates on the wrong day.
     val dateShift = day.daysTo(startDateTime.date)
@@ -293,10 +380,10 @@ fun Event.normalizedForZone(
     }
     return copy(
         date = startDateTime.date.toString(),
-        startMinutes = startDateTime.time.hour * 60 + startDateTime.time.minute,
-        endMinutes = newEndMinutes,
-        startSeconds = startDateTime.time.second,
-        endSeconds = endDateTime?.time?.second ?: endSeconds,
+        startMinutes = newStartMinutes,
+        endMinutes = if (wasZeroDuration) newStartMinutes else newEndMinutes,
+        startSeconds = newStartSeconds,
+        endSeconds = if (wasZeroDuration) newStartSeconds else endDateTime?.time?.second ?: endSeconds,
         endDate = newEndDate,
         repeat = shiftedRepeat,
         excludedDates = shiftedExclusions,
@@ -391,7 +478,7 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     }
     line("BEGIN:VEVENT")
     line("UID:${escapeText(uid)}")
-    line("DTSTAMP:${formatUtc(parseInstant(event.lastModified) ?: now)}")
+    line("DTSTAMP:${formatUtc(parseInstant(event.dtStamp) ?: parseInstant(event.lastModified) ?: now)}")
     event.created?.let { if (it.isNotBlank()) line("CREATED:${formatUtc(parseInstant(it) ?: now)}") }
     event.lastModified?.let { if (it.isNotBlank()) line("LAST-MODIFIED:${formatUtc(parseInstant(it) ?: now)}") }
     if (event.sequence > 0 || event.lastModified != null) line("SEQUENCE:${event.sequence.coerceAtLeast(0)}")
@@ -400,19 +487,19 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     if (!event.thisAndFuture && series != null) {
         event.recurrenceId?.let { recurrenceIdDate ->
             // The value type follows the master series' DTSTART, not the exception's own DTSTART.
-            if (series?.allDay ?: event.allDay) {
+            if (series.allDay) {
                 val date = parseDateText(recurrenceIdDate)
                 if (date != null) line("RECURRENCE-ID;VALUE=DATE:${formatDate(date)}")
             } else {
-                val seriesStartMinutes = series?.startMinutes ?: event.startMinutes
-                val seriesSource = series?.sourceStart ?: event.sourceStart
-                val seriesZone = series?.timeZoneId ?: event.timeZoneId
+                val seriesStartMinutes = series.startMinutes
+                val seriesSource = series.sourceStart
+                val seriesZone = series.timeZoneId
                 val zoneParam = if (seriesSource?.endsWith("Z", ignoreCase = true) != true && seriesZone != null) {
                     if (seriesZone.equals("UTC", ignoreCase = true)) "" else ";TZID=$seriesZone"
                 } else {
                     ""
                 }
-                val value = buildRecurrenceValue(recurrenceIdDate, seriesStartMinutes, series?.startSeconds ?: event.startSeconds, seriesSource, seriesZone)
+                val value = buildRecurrenceValue(recurrenceIdDate, seriesStartMinutes, series.startSeconds, seriesSource, seriesZone)
                 line("RECURRENCE-ID$zoneParam:$value")
             }
         }
@@ -423,7 +510,10 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
         line("DTEND;VALUE=DATE:${formatDate(event.endDay.plusDays(1))}")
     } else {
         appendTimedStart("DTSTART", event, event.date, event.startMinutes, event.startSeconds)
-        appendTimedStart("DTEND", event, event.endDay.toString(), event.endMinutes, event.endSeconds)
+        // RFC 5545 represents a zero-length timed event by leaving out DTEND/DURATION.
+        if (!event.isZeroDuration) {
+            appendTimedStart("DTEND", event, event.endDay.toString(), event.endMinutes, event.endSeconds)
+        }
     }
 
     line("SUMMARY:${escapeText(event.title)}")
@@ -434,6 +524,7 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     }
     if (event.url.isNotBlank()) line("URL:${sanitizeUriValue(event.url)}")
     if (!event.geo.isNullOrBlank()) line("GEO:${sanitizeUriValue(event.geo)}")
+    appendAttachments(event.attachments)
     if (event.eventClass != null) line("CLASS:${event.eventClass.name.uppercase()}")
     if (event.status != EventStatus.Confirmed) line("STATUS:${event.status.name.uppercase()}")
     if (event.transparency == EventTransparency.Transparent) line("TRANSP:TRANSPARENT")
@@ -505,12 +596,26 @@ private fun StringBuilder.appendTimedStart(property: String, event: Event, dateT
 private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
     line("BEGIN:VTODO")
     line("UID:${escapeText(todo.icsUid ?: "${todo.id}@crko")}")
-    line("DTSTAMP:${formatUtc(parseInstant(todo.lastModified) ?: now)}")
+    val stamp = parseInstant(todo.dtStamp) ?: parseInstant(todo.lastModified) ?: now
+    line("DTSTAMP:${formatUtc(stamp)}")
     if (todo.createdAt > 0) {
         line("CREATED:${formatUtc(Instant.fromEpochMilliseconds(todo.createdAt))}")
     }
     line("SUMMARY:${escapeText(todo.title)}")
     if (todo.note.isNotBlank()) line("DESCRIPTION:${escapeText(todo.note)}")
+    if (todo.location.isNotBlank()) line("LOCATION:${escapeText(todo.location)}")
+    if (todo.categories.isNotEmpty()) {
+        line("CATEGORIES:${todo.categories.joinToString(",") { escapeText(it) }}")
+    }
+    if (todo.url.isNotBlank()) line("URL:${sanitizeUriValue(todo.url)}")
+    appendAttachments(todo.attachments)
+    todo.relatedTo.forEach { if (it.isNotBlank()) line("RELATED-TO:${escapeText(it)}") }
+    val startInstant = todo.startTime?.let(::parseInstant)
+    if (startInstant != null) {
+        line("DTSTART:${formatUtc(startInstant)}")
+    } else {
+        todo.start?.let { parseDateText(it)?.let { date -> line("DTSTART;VALUE=DATE:${formatDate(date)}") } }
+    }
     val dueInstant = todo.dueTime?.let(::parseInstant)
     if (dueInstant != null) {
         line("DUE:${formatUtc(dueInstant)}")
@@ -673,9 +778,15 @@ private class ContentLine(
     val params: Map<String, String>,
     val value: String,
     val raw: String,
+    val lineNumber: Int = 0,
 )
 
-private class IcsComponent(val name: String, val properties: MutableList<ContentLine> = mutableListOf(), val children: MutableList<IcsComponent> = mutableListOf()) {
+private class IcsComponent(
+    val name: String,
+    val lineNumber: Int = 0,
+    val properties: MutableList<ContentLine> = mutableListOf(),
+    val children: MutableList<IcsComponent> = mutableListOf(),
+) {
     fun first(name: String): ContentLine? = properties.firstOrNull { it.name == name }
     fun all(name: String): List<ContentLine> = properties.filter { it.name == name }
 
@@ -706,14 +817,16 @@ private fun rewriteDeclaredZoneId(text: String, id: String): String {
     return rebuilt.joinToString("\n")
 }
 
+private data class UnfoldedLine(val text: String, val lineNumber: Int)
+
 private fun parseComponents(text: String): List<IcsComponent> {
     val roots = mutableListOf<IcsComponent>()
     val stack = ArrayDeque<IcsComponent>()
-    unfold(text).forEach { line ->
-        val parsed = parseContentLine(line) ?: return@forEach
+    unfold(text).forEach { unfolded ->
+        val parsed = parseContentLine(unfolded) ?: return@forEach
         when (parsed.name) {
             "BEGIN" -> {
-                val component = IcsComponent(parsed.value.trim().uppercase())
+                val component = IcsComponent(parsed.value.trim().uppercase(), unfolded.lineNumber)
                 if (stack.isEmpty()) roots += component else stack.last().children += component
                 stack.addLast(component)
             }
@@ -729,20 +842,34 @@ private fun parseComponents(text: String): List<IcsComponent> {
     return roots
 }
 
-private fun unfold(text: String): List<String> {
+private fun unfold(text: String): List<UnfoldedLine> {
     val normalized = text.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n')
-    val logical = mutableListOf<String>()
+    val logical = mutableListOf<UnfoldedLine>()
+    var lineNumber = 0
     normalized.split('\n').forEach { line ->
-        if ((line.startsWith(' ') || line.startsWith('\t')) && logical.isNotEmpty()) {
-            logical[logical.lastIndex] += line.substring(1)
-        } else {
-            logical += line
+        lineNumber++
+        val continuesFolded = line.startsWith(' ') || line.startsWith('\t')
+        val continuesQuotedPrintable = logical.isNotEmpty() &&
+            logical.last().text.endsWith("=") &&
+            logical.last().text.contains("ENCODING=QUOTED-PRINTABLE", ignoreCase = true)
+        when {
+            continuesFolded && logical.isNotEmpty() -> {
+                val last = logical.last()
+                logical[logical.lastIndex] = last.copy(text = last.text + line.substring(1))
+            }
+            // vCalendar 1.0 folds a quoted-printable value with a trailing "=" instead of a space.
+            continuesQuotedPrintable -> {
+                val last = logical.last()
+                logical[logical.lastIndex] = last.copy(text = last.text.dropLast(1) + line)
+            }
+            else -> logical += UnfoldedLine(line, lineNumber)
         }
     }
     return logical
 }
 
-private fun parseContentLine(line: String): ContentLine? {
+private fun parseContentLine(unfolded: UnfoldedLine): ContentLine? {
+    val line = unfolded.text
     var colon = -1
     var quoted = false
     for (index in line.indices) {
@@ -756,7 +883,7 @@ private fun parseContentLine(line: String): ContentLine? {
     }
     if (colon <= 0) return null
     val head = line.substring(0, colon)
-    val value = line.substring(colon + 1)
+    var value = line.substring(colon + 1)
     val parts = splitParameters(head)
     if (parts.isEmpty()) return null
     val params = parts.drop(1).mapNotNull { part ->
@@ -764,7 +891,10 @@ private fun parseContentLine(line: String): ContentLine? {
         if (equals <= 0) null
         else part.substring(0, equals).trim().uppercase() to part.substring(equals + 1).trim().removeSurrounding("\"")
     }.toMap()
-    return ContentLine(parts.first().trim().uppercase(), params, value, line)
+    if (params["ENCODING"].equals("QUOTED-PRINTABLE", ignoreCase = true)) {
+        value = decodeQuotedPrintable(value, params["CHARSET"])
+    }
+    return ContentLine(parts.first().trim().uppercase(), params, value, line, unfolded.lineNumber)
 }
 
 private fun splitParameters(head: String): List<String> {
@@ -823,6 +953,27 @@ private fun resolveZone(tzid: String?, definition: String?): IcsZone? = when {
                 ?.let(::parseCustomZone)
                 ?.let { IcsZone.Custom(it) }
         }
+}
+
+/** The zone a calendar declares for values without a `TZID`, if any. */
+private fun calendarFloatingZone(
+    calendars: List<IcsComponent>,
+    zones: Map<String, CustomZone>,
+    warnings: MutableSet<IcsWarning>,
+): IcsZone? {
+    val raw = calendars
+        .firstNotNullOfOrNull { it.first("X-WR-TIMEZONE")?.value }
+        ?.trim()
+        ?.removeSurrounding("\"")
+        ?.removePrefix("/")
+        ?.takeIf { it.isNotEmpty() }
+        ?: return null
+    zones[raw]?.let { return IcsZone.Custom(it) }
+    if (raw.equals("UTC", ignoreCase = true) || raw.equals("GMT", ignoreCase = true)) return IcsZone.Utc
+    return resolvePlatformZone(raw) ?: run {
+        warnings += IcsWarning.UnresolvedTimeZone
+        null
+    }
 }
 
 /**
@@ -885,6 +1036,7 @@ private data class RawEvent(
     val categories: List<String> = emptyList(),
     val url: String = "",
     val geo: String? = null,
+    val attachments: List<Attachment> = emptyList(),
     val status: String? = null,
     val transparency: String? = null,
     val eventClass: String? = null,
@@ -909,6 +1061,8 @@ private data class RawEvent(
     val alarms: List<RawAlarm> = emptyList(),
     val timeZoneDefinition: String? = null,
     val extraProperties: List<String> = emptyList(),
+    /** Line of `BEGIN:VEVENT`, used to point a warning at the record. */
+    val lineNumber: Int = 0,
 )
 
 private fun RawEvent.isCancelled(): Boolean = status.equals("CANCELLED", ignoreCase = true)
@@ -917,13 +1071,16 @@ private fun readEvent(
     component: IcsComponent,
     zones: Map<String, CustomZone>,
     zoneDefinitions: Map<String, String>,
-    warnings: MutableSet<IcsWarning>,
+    floatingZone: IcsZone?,
+    details: MutableList<IcsWarningDetail>,
 ): RawEvent {
+    val warnings = linkedSetOf<IcsWarning>()
     var uid: String? = null
     var summary = ""
     var description = ""
     var location = ""
     val categories = mutableListOf<String>()
+    val attachments = mutableListOf<Attachment>()
     var url = ""
     var geo: String? = null
     var status: String? = null
@@ -958,6 +1115,7 @@ private fun readEvent(
             "CATEGORIES" -> categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
             "URL" -> url = unescapeText(line.value).trim()
             "GEO" -> geo = line.value.trim().takeIf { it.isNotEmpty() }
+            "ATTACH" -> attachments += readAttachment(line)
             "STATUS" -> status = line.value.trim().uppercase()
             "TRANSP" -> transparency = line.value.trim().uppercase()
             "CLASS" -> eventClass = line.value.trim().uppercase()
@@ -970,15 +1128,15 @@ private fun readEvent(
                 attendeeRaw += line.raw
                 unescapeText(line.value).trim().takeIf { it.isNotEmpty() }?.let { attendees += it }
             }
-            "DTSTART" -> start = parseTime(line, zones, warnings)
-            "DTEND" -> end = parseTime(line, zones, warnings)
+            "DTSTART" -> start = parseTime(line, zones, warnings, floatingZone)
+            "DTEND" -> end = parseTime(line, zones, warnings, floatingZone)
             "DURATION" -> durationMinutes = parseDurationMinutes(line.value)
             "RECURRENCE-ID" -> {
-                recurrenceId = parseTime(line, zones, warnings)
+                recurrenceId = parseTime(line, zones, warnings, floatingZone)
                 recurrenceRange = line.params["RANGE"]?.uppercase()
             }
             "RRULE" -> {
-                val parsed = parseRule(line.value, zones, warnings)
+                val parsed = parseRule(line.value, zones, warnings, floatingZone)
                 if (rule == null) {
                     rule = parsed
                 } else {
@@ -990,10 +1148,20 @@ private fun readEvent(
                 extra += line.raw
             }
             "EXDATE" -> splitList(line.value).forEach { value ->
-                parseTime(ContentLine("EXDATE", line.params, value, line.raw), zones, warnings)?.let { exdates += it }
+                parseTime(
+                    ContentLine("EXDATE", line.params, value, line.raw),
+                    zones,
+                    warnings,
+                    floatingZone,
+                )?.let { exdates += it }
             }
             "RDATE" -> splitList(line.value).forEach { value ->
-                parseTime(ContentLine("RDATE", line.params, value, line.raw), zones, warnings)?.let { rdates += it }
+                parseTime(
+                    ContentLine("RDATE", line.params, value, line.raw),
+                    zones,
+                    warnings,
+                    floatingZone,
+                )?.let { rdates += it }
             }
             "CREATED" -> created = parseIcsInstant(line.value) ?: line.value.trim()
             "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
@@ -1013,6 +1181,8 @@ private fun readEvent(
     if (component.children.any { it.name != "VALARM" }) {
         warnings += IcsWarning.UnknownSubcomponent
     }
+    val record = summary.ifBlank { uid }
+    warnings.forEach { details += warningDetail(it, component.lineNumber, record) }
     return RawEvent(
         uid = uid,
         summary = summary,
@@ -1021,6 +1191,7 @@ private fun readEvent(
         categories = categories.distinct(),
         url = url,
         geo = geo,
+        attachments = attachments,
         status = status,
         transparency = transparency,
         eventClass = eventClass,
@@ -1044,6 +1215,25 @@ private fun readEvent(
         alarms = alarms,
         timeZoneDefinition = timeZoneDefinition,
         extraProperties = extra,
+        lineNumber = component.lineNumber,
+    )
+}
+
+private fun readAttachment(line: ContentLine): Attachment {
+    val binary = line.params["ENCODING"].equals("BASE64", ignoreCase = true)
+    val uri = if (binary) "" else line.value.trim()
+    val name = line.params["FILENAME"]?.trim()?.removeSurrounding("\"")
+        ?.takeIf { it.isNotEmpty() }
+        ?: uri.substringAfterLast('/').substringBefore('?').takeIf { it.isNotBlank() }
+        ?: ""
+    val mimeType = line.params["FMTTYPE"]?.trim()?.removeSurrounding("\"") ?: ""
+    return Attachment(
+        raw = line.raw,
+        uri = uri,
+        name = name,
+        mimeType = mimeType,
+        data = if (binary) line.value.trim() else "",
+        binary = binary,
     )
 }
 
@@ -1075,11 +1265,12 @@ private fun parseTime(
     line: ContentLine,
     zones: Map<String, CustomZone>,
     warnings: MutableSet<IcsWarning>,
+    defaultZone: IcsZone? = null,
 ): IcsTime? {
     val text = line.value.trim()
     if (text.isEmpty()) return null
     val valueType = line.params["VALUE"]?.uppercase()
-    if (valueType == "PERIOD") return parsePeriod(line, text, zones, warnings)
+    if (valueType == "PERIOD") return parsePeriod(line, text, zones, warnings, defaultZone)
     val digitsOnly = text.length == 8 && text.all { it.isDigit() }
     if (digitsOnly) {
         val date = parseDate(text) ?: run {
@@ -1115,11 +1306,11 @@ private fun parseTime(
             return null
         }
         val nextDay = date.plusDays(1)
-        val zone = resolveLineZone(utc, line.params["TZID"], zones, warnings)
+        val zone = resolveLineZone(utc, line.params["TZID"], zones, warnings, defaultZone)
         return IcsTime.DateTime(LocalDateTime(nextDay, LocalTime(0, 0)), zone, text)
     }
     val local = LocalDateTime(date, LocalTime(hour, minute, second))
-    val zone = resolveLineZone(utc, line.params["TZID"], zones, warnings)
+    val zone = resolveLineZone(utc, line.params["TZID"], zones, warnings, defaultZone)
     return IcsTime.DateTime(local, zone, text)
 }
 
@@ -1132,6 +1323,7 @@ private fun parsePeriod(
     text: String,
     zones: Map<String, CustomZone>,
     warnings: MutableSet<IcsWarning>,
+    defaultZone: IcsZone?,
 ): IcsTime? {
     val slash = text.indexOf('/')
     if (slash <= 0 || slash == text.lastIndex) {
@@ -1140,13 +1332,21 @@ private fun parsePeriod(
     }
     val startText = text.substring(0, slash).trim()
     val endText = text.substring(slash + 1).trim()
-    val start = parseTime(ContentLine(line.name, line.params - "VALUE", startText, line.raw), zones, warnings)
-        as? IcsTime.DateTime ?: return null
+    val start = parseTime(
+        ContentLine(line.name, line.params - "VALUE", startText, line.raw),
+        zones,
+        warnings,
+        defaultZone,
+    ) as? IcsTime.DateTime ?: return null
     val duration = if (endText.startsWith("P", ignoreCase = true) || endText.startsWith("+P", ignoreCase = true)) {
         parseSignedDurationMinutes(endText)
     } else {
-        val end = parseTime(ContentLine(line.name, line.params - "VALUE", endText, line.raw), zones, warnings)
-            as? IcsTime.DateTime ?: return null
+        val end = parseTime(
+            ContentLine(line.name, line.params - "VALUE", endText, line.raw),
+            zones,
+            warnings,
+            defaultZone,
+        ) as? IcsTime.DateTime ?: return null
         val seconds = end.zone.toInstant(end.value).epochSeconds - start.zone.toInstant(start.value).epochSeconds
         (seconds / 60).toInt()
     }
@@ -1166,9 +1366,10 @@ private fun resolveLineZone(
     tzid: String?,
     zones: Map<String, CustomZone>,
     warnings: MutableSet<IcsWarning>,
+    defaultZone: IcsZone?,
 ): IcsZone {
     if (utc) return IcsZone.Utc
-    if (tzid == null) return IcsZone.Floating
+    if (tzid == null) return defaultZone ?: IcsZone.Floating
     val id = tzid.trim().removePrefix("/")
     zones[id]?.let { return IcsZone.Custom(it) }
     return resolvePlatformZone(id) ?: run {
@@ -1177,7 +1378,12 @@ private fun resolveLineZone(
     }
 }
 
-private fun parseRule(value: String, zones: Map<String, CustomZone>, warnings: MutableSet<IcsWarning>): RawRule? {
+private fun parseRule(
+    value: String,
+    zones: Map<String, CustomZone>,
+    warnings: MutableSet<IcsWarning>,
+    defaultZone: IcsZone? = null,
+): RawRule? {
     val parts = value.split(';').mapNotNull { part ->
         val equals = part.indexOf('=')
         if (equals <= 0) null else part.substring(0, equals).trim().uppercase() to part.substring(equals + 1).trim()
@@ -1196,7 +1402,7 @@ private fun parseRule(value: String, zones: Map<String, CustomZone>, warnings: M
         val ordinal = ordinalText.toIntOrNull() ?: 0
         ordinal to weekday
     }
-    val until = parts["UNTIL"]?.let { parseUntil(it, zones, warnings) }
+    val until = parts["UNTIL"]?.let { parseUntil(it, zones, warnings, defaultZone) }
     val count = parts["COUNT"]?.toIntOrNull()?.takeIf { it > 0 }
     val byMonthDay = intList(parts["BYMONTHDAY"])
     val byMonth = intList(parts["BYMONTH"]).filter { it in 1..12 }
@@ -1228,10 +1434,15 @@ private fun parseRule(value: String, zones: Map<String, CustomZone>, warnings: M
 private fun intList(value: String?): List<Int> =
     value.orEmpty().split(',').mapNotNull { it.trim().toIntOrNull() }.distinct()
 
-private fun parseUntil(value: String, zones: Map<String, CustomZone>, warnings: MutableSet<IcsWarning>): IcsTime? {
+private fun parseUntil(
+    value: String,
+    zones: Map<String, CustomZone>,
+    warnings: MutableSet<IcsWarning>,
+    defaultZone: IcsZone?,
+): IcsTime? {
     val utc = value.endsWith("Z", ignoreCase = true)
     val line = ContentLine("UNTIL", if (utc) emptyMap() else mapOf("VALUE" to "DATE-TIME"), value, value)
-    return parseTime(line, zones, warnings)
+    return parseTime(line, zones, warnings, defaultZone)
 }
 
 private fun parseDurationMinutes(value: String): Int? {
@@ -1327,6 +1538,19 @@ private fun IcsTime.localMinutes(deviceZone: TimeZone): Int? = when (this) {
     is IcsTime.DateTime -> localDateTime(deviceZone).time.let { it.hour * 60 + it.minute }
 }
 
+/**
+ * Instant a todo or journal stores for [this] value. A floating time belongs to the device, not to
+ * UTC: stamping it as UTC would move the recorded date every time the file is read back in a zone
+ * west of Greenwich. Date-only values have no instant at all.
+ */
+private fun IcsTime.instantForDevice(deviceZone: TimeZone): String? = when (this) {
+    is IcsTime.AllDay -> null
+    is IcsTime.DateTime -> when (zone) {
+        IcsZone.Floating -> value.toInstant(deviceZone)
+        else -> zone.toInstant(value)
+    }.toString()
+}
+
 private fun IcsZone.toInstant(local: LocalDateTime): Instant = when (this) {
     IcsZone.Floating -> local.toInstant(TimeZone.UTC)
     IcsZone.Utc -> local.toInstant(TimeZone.UTC)
@@ -1340,6 +1564,12 @@ private fun LocalDateTime.plusMinutes(minutes: Int): LocalDateTime {
     val minuteOfDay = total.mod(1440L).toInt()
     return LocalDateTime(LocalDate.fromEpochDays(day), LocalTime(minuteOfDay / 60, minuteOfDay % 60))
 }
+
+/** Wall-clock minutes from this value to [other]; used when an end has no source text. */
+private fun LocalDateTime.wallMinutesUntil(other: LocalDateTime): Int =
+    date.daysTo(other.date) * 1440 +
+        (other.time.hour * 60 + other.time.minute) -
+        (time.hour * 60 + time.minute)
 
 /**
  * Copies of one UID ranked from stale to newest: `SEQUENCE` is the authoritative counter for a UID,
@@ -1380,6 +1610,38 @@ private fun mapSeries(
 
     val overrides = group.filter { it.recurrenceId != null }
     val series = mapSingle(base, deviceZone, untitledTitle, zones, warnings) ?: return emptyList()
+    val priorOverride = overrides
+        .filter { it.recurrenceRange == "THISANDPRIOR" && !it.isCancelled() }
+        .minWithOrNull(compareBy { it.recurrenceId?.localDate(deviceZone) ?: LocalDate(9999, 12, 31) })
+    if (priorOverride != null) {
+        val priorRid = priorOverride.recurrenceId?.localDate(deviceZone)
+        val mappedPrior = mapSingle(
+            priorOverride,
+            deviceZone,
+            untitledTitle,
+            zones,
+            warnings,
+            repeat = null,
+        )
+        // A moved start would shift every previous occurrence too; that cannot be represented by
+        // the single-anchor model, so keep the ordinary single-exception fallback and say so.
+        if (priorRid != null && mappedPrior != null && mappedPrior.day == priorRid && series.repeat != null) {
+            return mapPriorSplit(
+                uid = uid,
+                series = series,
+                prior = mappedPrior,
+                priorRid = priorRid,
+                overrides = overrides,
+                deviceZone = deviceZone,
+                untitledTitle = untitledTitle,
+                zones = zones,
+                warnings = warnings,
+            )
+        }
+        if (mappedPrior != null && mappedPrior.day != priorRid) {
+            warnings += IcsWarning.UnsupportedRecurrence
+        }
+    }
     val mapped = mutableListOf<Event>()
     val splitDate = overrides
         .filter { it.recurrenceRange == "THISANDFUTURE" && !it.isCancelled() }
@@ -1465,7 +1727,7 @@ private fun mapSeries(
             // exceptions with the same storage key; without a distinct key the second one would be
             // dropped by the importer's de-duplication.
             val baseUid = "$targetUid#override-$ridText"
-            val overrideUid = nextFreeUid(usedOverrideUids, baseUid, occurrenceTimeKey(override.recurrenceId ?: override.start))
+            val overrideUid = nextFreeUid(usedOverrideUids, baseUid, occurrenceTimeKey(override.recurrenceId))
             if (overrideUid != baseUid) ambiguousOverrides = true
             normalOverrides += mappedOverride.copy(
                 repeat = null,
@@ -1530,6 +1792,132 @@ private fun mapSeries(
     }
     normalOverrides.forEach { mapped += it }
     return mapped.filterNot { it.status == EventStatus.Cancelled }
+}
+
+/**
+ * Splits a series at `RECURRENCE-ID;RANGE=THISANDPRIOR`: the override's properties apply to every
+ * occurrence up to the named slot, while the untouched master keeps happening after it.
+ */
+private fun mapPriorSplit(
+    uid: String,
+    series: Event,
+    prior: Event,
+    priorRid: LocalDate,
+    overrides: List<RawEvent>,
+    deviceZone: TimeZone,
+    untitledTitle: String,
+    zones: Map<String, CustomZone>,
+    warnings: MutableSet<IcsWarning>,
+): List<Event> {
+    if (overrides.any { it.recurrenceRange == "THISANDPRIOR" && it.isCancelled() }) {
+        warnings += IcsWarning.UnsupportedRecurrence
+    }
+    val pastUid = "$uid#prior-$priorRid"
+    val allOverrides = overrides.mapNotNull { override ->
+        override.recurrenceId?.localDate(deviceZone)?.let { it to override }
+    }.filter { (_, override) -> override.recurrenceRange != "THISANDPRIOR" }
+    val overridesBefore = allOverrides.filter { (rid, _) -> rid <= priorRid }
+    val overridesAfter = allOverrides.filter { (rid, _) -> rid > priorRid }
+    val cancelledBefore = overridesBefore.filter { (_, override) -> override.isCancelled() }.map { it.first.toString() }
+    val pastRepeat = series.repeat?.copy(
+        until = priorRid.toString(),
+        count = null,
+        rDates = series.repeat.rDates.filter { parseDateText(it)?.let { date -> date <= priorRid } == true },
+    )
+    val span = prior.day.daysTo(prior.endDay)
+    val past = prior.copy(
+        id = null,
+        date = series.day.toString(),
+        endDate = series.day.plusDays(span).takeIf { span != 0 }?.toString(),
+        repeat = pastRepeat,
+        excludedDates = (series.excludedDates.filter { parseDateText(it)?.let { date -> date <= priorRid } == true } + cancelledBefore)
+            .distinct()
+            .filterNot { it == priorRid.toString() },
+        seriesUid = null,
+        recurrenceId = null,
+        thisAndFuture = false,
+        icsUid = pastUid,
+        // The source text describes the exception slot, not the series anchor.
+        sourceStart = null,
+        sourceEnd = null,
+        timeZoneId = null,
+        timeZoneDefinition = null,
+        created = series.created,
+        lastModified = prior.lastModified ?: series.lastModified,
+        sequence = prior.sequence,
+    )
+
+    val nextDate = nextOccurrenceAfter(series, priorRid)
+    val future = nextDate?.let { start ->
+        val futureRule = series.repeat?.let { rule ->
+            val consumed = rule.count?.let { countOccurrencesBefore(series, start) } ?: 0
+            rule.copy(
+                count = rule.count?.let { (it - consumed).coerceAtLeast(1) },
+                rDates = rule.rDates.filter { parseDateText(it)?.let { date -> date >= start } == true },
+            )
+        }
+        val futureSpan = series.day.daysTo(series.endDay)
+        val cancelledAfter = overridesAfter.filter { (_, override) -> override.isCancelled() }
+            .map { it.first.toString() }
+        series.copy(
+            date = start.toString(),
+            endDate = start.plusDays(futureSpan).takeIf { futureSpan != 0 }?.toString(),
+            repeat = futureRule,
+            excludedDates = (series.excludedDates.filter { parseDateText(it)?.let { date -> date > priorRid } == true } + cancelledAfter)
+                .distinct(),
+            seriesUid = null,
+            recurrenceId = null,
+            thisAndFuture = false,
+            icsUid = uid,
+            // The anchor moved to a later occurrence, so the original DTSTART text no longer applies.
+            sourceStart = null,
+            sourceEnd = null,
+            timeZoneId = null,
+            timeZoneDefinition = null,
+        )
+    }
+
+    val normal = mutableListOf<Event>()
+    fun addOverride(rid: LocalDate, override: RawEvent, targetUid: String) {
+        if (override.isCancelled()) return
+        val ridText = rid.toString()
+        val mapped = mapSingle(
+            override,
+            deviceZone,
+            untitledTitle,
+            zones,
+            warnings,
+            repeat = null,
+        ) ?: return
+        if (override.recurrenceRange != null) warnings += IcsWarning.UnsupportedRecurrence
+        normal += mapped.copy(
+            seriesUid = targetUid,
+            recurrenceId = ridText,
+            thisAndFuture = false,
+            icsUid = "$targetUid#override-$ridText",
+            excludedDates = emptyList(),
+        )
+    }
+    overridesBefore.forEach { (rid, override) -> addOverride(rid, override, pastUid) }
+    if (future != null) {
+        overridesAfter.forEach { (rid, override) -> addOverride(rid, override, uid) }
+    }
+    return listOfNotNull(past, future) + normal
+}
+
+/** First occurrence after [after] in [event]'s rule, or null when the series has ended. */
+private fun nextOccurrenceAfter(event: Event, after: LocalDate): LocalDate? {
+    val rule = event.repeat ?: return null
+    var cursor = after.plusDays(1)
+    var guard = 0
+    val untilDate = rule.until?.let(::parseRepeatUntil)?.localDate()
+    while (guard < 100_000) {
+        if (untilDate != null && cursor > untilDate) return null
+        if (event.isOccurrenceStart(cursor, rule)) return cursor
+        cursor = cursor.plusDays(1)
+        guard++
+    }
+    return null
 }
 
 /**
@@ -1605,6 +1993,11 @@ private fun occurrenceTimeKey(time: IcsTime?): String? = when (time) {
 private fun countOccurrencesBefore(event: Event, before: LocalDate): Int {
     val rule = event.repeat ?: return 0
     val probe = event.copy(excludedDates = emptyList(), repeat = rule.copy(rDates = emptyList()))
+    // Splits always happen on an occurrence, so the ordinal is usually computable without walking
+    // every day from a decades-old anchor.
+    if (probe.isOccurrenceStart(before, rule)) {
+        occurrenceOrdinal(rule, event.day, before, rule.count)?.let { return (it - 1).coerceAtLeast(0) }
+    }
     var count = 0
     var cursor = event.day
     val limit = rule.count ?: Int.MAX_VALUE
@@ -1672,6 +2065,7 @@ private fun mapSingle(
             categories = raw.categories,
             url = raw.url,
             geo = raw.geo,
+            attachments = raw.attachments,
             status = rawStatus(raw.status),
             transparency = rawTransparency(raw.transparency),
             eventClass = rawClass(raw.eventClass),
@@ -1687,6 +2081,7 @@ private fun mapSingle(
             timeZoneDefinition = raw.timeZoneDefinition,
             created = raw.created,
             lastModified = raw.lastModified,
+            dtStamp = raw.dtStamp,
             sequence = raw.sequence,
             extraProperties = raw.extraProperties,
         )
@@ -1695,10 +2090,11 @@ private fun mapSingle(
     val endLocal = when {
         raw.end != null -> raw.end.localDateTime(deviceZone)
         raw.durationMinutes != null -> startLocal.plusMinutes(raw.durationMinutes)
-        else -> startLocal.plusMinutes(60)
+        // RFC 5545: no DTEND and no DURATION means the event has zero length.
+        else -> startLocal
     }
     val safeStart = startLocal
-    val safeEnd = if (endLocal > safeStart) endLocal else safeStart.plusMinutes(60)
+    val safeEnd = if (endLocal >= safeStart) endLocal else safeStart
     val exclusions = mappedExclusions(
         raw,
         deviceZone,
@@ -1706,13 +2102,23 @@ private fun mapSingle(
         startMinutes = safeStart.time.hour * 60 + safeStart.time.minute,
         warnings = warnings,
     )
-    val eventEndSource = if (sourceStart != null) {
-        sourceEnd ?: startTimed.let { timed ->
-            val sourceEndLocal = timed.value.plusMinutes(raw.durationMinutes ?: 60)
-            formatIcsLocalDateTime(sourceEndLocal, timed.zone is IcsZone.Utc)
+    val eventEndSource = when {
+        sourceStart == null -> null
+        sourceEnd != null -> sourceEnd
+        else -> {
+            // The end had no source text (it was floating or absent). Measure it against the start's
+            // own wall clock, not against the device-local conversion of a zoned start.
+            val startWall = (raw.start as? IcsTime.DateTime)?.value ?: startLocal
+            val endWall = (raw.end as? IcsTime.DateTime)?.value ?: endLocal
+            val duration = raw.durationMinutes ?: startWall.wallMinutesUntil(endWall)
+            if (duration > 0) {
+                startTimed?.let { timed ->
+                    formatIcsLocalDateTime(timed.value.plusMinutes(duration), timed.zone is IcsZone.Utc)
+                }
+            } else {
+                null
+            }
         }
-    } else {
-        null
     }
     return Event(
         id = null,
@@ -1729,6 +2135,7 @@ private fun mapSingle(
         categories = raw.categories,
         url = raw.url,
         geo = raw.geo,
+        attachments = raw.attachments,
         status = rawStatus(raw.status),
         transparency = rawTransparency(raw.transparency),
         eventClass = rawClass(raw.eventClass),
@@ -1747,6 +2154,7 @@ private fun mapSingle(
         timeZoneDefinition = raw.timeZoneDefinition,
         created = raw.created,
         lastModified = raw.lastModified,
+        dtStamp = raw.dtStamp,
         sequence = raw.sequence,
         extraProperties = raw.extraProperties,
     )
@@ -1882,13 +2290,23 @@ private fun RawAlarm.toAlarm(): Alarm = Alarm(
 private fun readTodo(
     component: IcsComponent,
     deviceZone: TimeZone,
-    warning: (IcsWarning) -> Unit,
+    zones: Map<String, CustomZone>,
+    floatingZone: IcsZone?,
+    details: MutableList<IcsWarningDetail>,
 ): Todo? {
+    val warnings = linkedSetOf<IcsWarning>()
     var uid: String? = null
     var title = ""
     var note = ""
+    var start: String? = null
+    var startTime: String? = null
     var due: String? = null
     var dueTime: String? = null
+    var location = ""
+    val categories = mutableListOf<String>()
+    val attachments = mutableListOf<Attachment>()
+    var url = ""
+    val relatedTo = mutableListOf<String>()
     var rawStatus: String? = null
     var percent = 0
     var priority = 0
@@ -1896,6 +2314,7 @@ private fun readTodo(
     var completedTime: String? = null
     var created: String? = null
     var lastModified: String? = null
+    var dtStamp: String? = null
     var sequence = 0
     val extra = mutableListOf<String>()
     component.properties.forEach { line ->
@@ -1903,43 +2322,59 @@ private fun readTodo(
             "UID" -> uid = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
             "SUMMARY" -> title = unescapeText(line.value).trim()
             "DESCRIPTION" -> note = unescapeText(line.value).trim()
+            "DTSTART" -> {
+                val time = parseTime(line, zones, warnings, floatingZone)
+                start = when (time) {
+                    is IcsTime.AllDay -> time.date.toString()
+                    is IcsTime.DateTime -> time.localDate(deviceZone).toString()
+                    null -> null
+                }
+                startTime = time?.instantForDevice(deviceZone)
+                if (time == null) warnings += IcsWarning.InvalidValue
+            }
             "DUE" -> {
-                val time = parseTime(line, emptyMap(), mutableSetOf())
+                val time = parseTime(line, zones, warnings, floatingZone)
                 due = when (time) {
                     is IcsTime.AllDay -> time.date.toString()
                     is IcsTime.DateTime -> time.localDate(deviceZone).toString()
                     null -> null
                 }
-                dueTime = (time as? IcsTime.DateTime)
-                    ?.let { it.zone.toInstant(it.value) }
-                    ?.toString()
-                if (time == null) warning(IcsWarning.InvalidValue)
+                dueTime = time?.instantForDevice(deviceZone)
+                if (time == null) warnings += IcsWarning.InvalidValue
             }
+            "LOCATION" -> location = unescapeText(line.value).trim()
+            "CATEGORIES" -> categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
+            "URL" -> url = unescapeText(line.value).trim()
+            "ATTACH" -> attachments += readAttachment(line)
+            "RELATED-TO" -> unescapeText(line.value).trim().takeIf { it.isNotEmpty() }?.let { relatedTo += it }
             "STATUS" -> rawStatus = line.value.trim().uppercase()
             "PERCENT-COMPLETE" -> percent = line.value.trim().toIntOrNull()?.coerceIn(0, 100) ?: 0
             "PRIORITY" -> priority = line.value.trim().toIntOrNull()?.coerceIn(0, 9) ?: 0
             "COMPLETED" -> {
-                val time = parseTime(line, emptyMap(), mutableSetOf())
+                val time = parseTime(line, zones, warnings, floatingZone)
                 completed = time?.localDate(deviceZone)?.toString()
-                completedTime = (time as? IcsTime.DateTime)
-                    ?.let { it.zone.toInstant(it.value) }
-                    ?.toString()
+                completedTime = time?.instantForDevice(deviceZone)
             }
             "CREATED" -> created = parseIcsInstant(line.value) ?: line.value.trim()
             "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
             "SEQUENCE" -> sequence = line.value.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
-            "DTSTAMP" -> Unit
+            "DTSTAMP" -> dtStamp = parseIcsInstant(line.value) ?: line.value.trim()
             "EXRULE" -> {
-                warning(IcsWarning.ExruleIgnored)
+                warnings += IcsWarning.ExruleIgnored
                 extra += line.raw
             }
             else -> extra += line.raw
         }
     }
-    if (title.isBlank() && uid == null) return null
     val alarms = component.children.filter { it.name == "VALARM" }.mapNotNull(::readAlarm)
     if (component.children.any { it.name != "VALARM" }) {
-        warning(IcsWarning.UnknownSubcomponent)
+        warnings += IcsWarning.UnknownSubcomponent
+    }
+    if (title.isBlank() && uid == null) {
+        // Nothing identifies this record, but the user still learns that a part of the file was
+        // dropped instead of wondering where a todo went.
+        warnings.forEach { details += warningDetail(it, component.lineNumber, null) }
+        return null
     }
     val status = when (rawStatus) {
         "COMPLETED" -> TodoStatus.Completed
@@ -1956,6 +2391,8 @@ private fun readTodo(
         status == TodoStatus.Cancelled ||
         percent >= 100 ||
         completed != null
+    val record = title.ifBlank { uid }
+    warnings.forEach { details += warningDetail(it, component.lineNumber, record) }
     return Todo(
         id = "",
         title = title.ifBlank { uid ?: "" },
@@ -1966,14 +2403,22 @@ private fun readTodo(
             priority in 8..9 -> TodoPriority.Low
             else -> TodoPriority.Normal
         },
+        start = start,
+        startTime = startTime,
         due = due,
         dueTime = dueTime,
         note = note,
+        location = location,
+        categories = categories.distinct(),
+        url = url,
+        attachments = attachments,
+        relatedTo = relatedTo.distinct(),
         icsUid = uid,
         createdAt = parseInstant(created)?.toEpochMilliseconds() ?: 0L,
         completedAt = completed,
         sequence = sequence,
         lastModified = lastModified,
+        dtStamp = dtStamp,
         extraProperties = extra,
         status = status,
         percentComplete = percent,
@@ -1988,79 +2433,228 @@ private fun todoPriorityToIcs(priority: TodoPriority): Int = when (priority) {
     TodoPriority.Low -> 9
 }
 
-// ----- custom VTIMEZONE ----------------------------------------------------
-
-private class CustomZone(val id: String, val observances: List<Observance>) {
-    fun toInstant(local: LocalDateTime): Instant {
-        val offset = offsetMinutesAt(local)
-        return local.toInstant(TimeZone.UTC).minusMinutes(offset)
+private fun readJournal(
+    component: IcsComponent,
+    deviceZone: TimeZone,
+    zones: Map<String, CustomZone>,
+    floatingZone: IcsZone?,
+    details: MutableList<IcsWarningDetail>,
+): Journal? {
+    val warnings = linkedSetOf<IcsWarning>()
+    var uid: String? = null
+    var title = ""
+    var note = ""
+    var date: String? = null
+    var startTime: String? = null
+    var url = ""
+    val categories = mutableListOf<String>()
+    val attachments = mutableListOf<Attachment>()
+    var created: String? = null
+    var lastModified: String? = null
+    var dtStamp: String? = null
+    var sequence = 0
+    val extra = mutableListOf<String>()
+    component.properties.forEach { line ->
+        when (line.name) {
+            "UID" -> uid = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
+            "SUMMARY" -> title = unescapeText(line.value).trim()
+            "DESCRIPTION" -> note = unescapeText(line.value).trim()
+            "DTSTART" -> {
+                val time = parseTime(line, zones, warnings, floatingZone)
+                date = when (time) {
+                    is IcsTime.AllDay -> time.date.toString()
+                    is IcsTime.DateTime -> time.localDate(deviceZone).toString()
+                    null -> null
+                }
+                startTime = time?.instantForDevice(deviceZone)
+                if (time == null) warnings += IcsWarning.InvalidValue
+            }
+            "URL" -> url = unescapeText(line.value).trim()
+            "ATTACH" -> attachments += readAttachment(line)
+            "CATEGORIES" -> categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
+            "CREATED" -> created = parseIcsInstant(line.value) ?: line.value.trim()
+            "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
+            "SEQUENCE" -> sequence = line.value.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
+            "DTSTAMP" -> dtStamp = parseIcsInstant(line.value) ?: line.value.trim()
+            else -> extra += line.raw
+        }
     }
+    if (uid == null && title.isBlank() && note.isBlank()) {
+        warnings.forEach { details += warningDetail(it, component.lineNumber, null) }
+        return null
+    }
+    val record = title.ifBlank { uid }
+    warnings.forEach { details += warningDetail(it, component.lineNumber, record) }
+    return Journal(
+        id = "",
+        title = title,
+        note = note,
+        date = date,
+        startTime = startTime,
+        url = url,
+        categories = categories.distinct(),
+        attachments = attachments,
+        created = created,
+        lastModified = lastModified,
+        dtStamp = dtStamp,
+        sequence = sequence,
+        icsUid = uid,
+        extraProperties = extra,
+    )
+}
 
-    fun offsetMinutesAt(local: LocalDateTime): Int {
-        val candidates = mutableListOf<Pair<LocalDateTime, Int>>()
-        observances.forEach { observance ->
-            observance.transitionsAround(local.year).forEach { transition ->
-                candidates += transition to observance.offsetTo
+private fun StringBuilder.appendJournal(journal: Journal, index: Int, now: Instant) {
+    line("BEGIN:VJOURNAL")
+    line("UID:${escapeText(journal.icsUid ?: "${journal.id}@crko")}")
+    val stamp = parseInstant(journal.dtStamp) ?: parseInstant(journal.lastModified) ?: now
+    line("DTSTAMP:${formatUtc(stamp)}")
+    journal.created?.let { if (it.isNotBlank()) line("CREATED:${formatUtc(parseInstant(it) ?: stamp)}") }
+    journal.lastModified?.let { if (it.isNotBlank()) line("LAST-MODIFIED:${formatUtc(parseInstant(it) ?: stamp)}") }
+    if (journal.sequence > 0 || journal.lastModified != null) line("SEQUENCE:${journal.sequence.coerceAtLeast(0)}")
+    journal.date?.let { dateText ->
+        val parsed = parseDateText(dateText)
+        if (parsed != null) {
+            val start = journal.startTime?.let(::parseInstant)
+            if (start != null) {
+                line("DTSTART:${formatUtc(start)}")
+            } else {
+                line("DTSTART;VALUE=DATE:${formatDate(parsed)}")
             }
         }
-        if (candidates.isEmpty()) return observances.firstOrNull()?.offsetTo ?: 0
-        val latest = candidates.filter { it.first <= local }.maxByOrNull { it.first }
-        return latest?.second ?: candidates.minByOrNull { it.first }!!.second
+    }
+    if (journal.title.isNotBlank()) line("SUMMARY:${escapeText(journal.title)}")
+    if (journal.note.isNotBlank()) line("DESCRIPTION:${escapeText(journal.note)}")
+    if (journal.url.isNotBlank()) line("URL:${sanitizeUriValue(journal.url)}")
+    appendAttachments(journal.attachments)
+    if (journal.categories.isNotEmpty()) {
+        line("CATEGORIES:${journal.categories.joinToString(",") { escapeText(it) }}")
+    }
+    journal.extraProperties.forEach { line(it) }
+    line("END:VJOURNAL")
+}
+
+// ----- custom VTIMEZONE ----------------------------------------------------
+
+/** Generation horizon for open-ended observance rules; no calendar the app schedules reaches it. */
+private const val MaxTransitionYear = 2200
+
+private class CustomZone(val id: String, val observances: List<Observance>) {
+    fun toInstant(local: LocalDateTime): Instant = local.toInstant(TimeZone.UTC).minusSeconds(offsetSecondsAt(local))
+
+    /**
+     * Offset in effect at [local]. The latest transition not after it wins; when the value predates
+     * every known transition the earliest one is used, which is what a zone with rules that only
+     * start later implies.
+     */
+    fun offsetSecondsAt(local: LocalDateTime): Int {
+        var latestTime: LocalDateTime? = null
+        var latestOffset = 0
+        var earliestTime: LocalDateTime? = null
+        var earliestOffset = 0
+        observances.forEach { observance ->
+            observance.transitionsThrough(local.year).forEach { transition ->
+                val latest = latestTime
+                if (transition <= local && (latest == null || latest < transition)) {
+                    latestTime = transition
+                    latestOffset = observance.offsetToSeconds
+                }
+                val earliest = earliestTime
+                if (earliest == null || earliest > transition) {
+                    earliestTime = transition
+                    earliestOffset = observance.offsetToSeconds
+                }
+            }
+        }
+        return if (latestTime != null) latestOffset else earliestOffset
     }
 }
 
 private class Observance(
     val start: LocalDateTime,
-    val offsetFrom: Int,
-    val offsetTo: Int,
+    /** Offset before the transition, in seconds. */
+    val offsetFromSeconds: Int,
+    /** Offset after the transition, in seconds. */
+    val offsetToSeconds: Int,
     val rule: RawRule?,
+    /** Explicit `RDATE` transitions. */
+    val rDates: List<LocalDateTime> = emptyList(),
 ) {
-    fun transitionsAround(year: Int): List<LocalDateTime> {
-        val rule = rule ?: return listOf(start)
-        val transitionDates = mutableListOf<LocalDate>()
-        val anchor = start.date
-        for (y in (year - 1)..(year + 1)) {
-            if (y < anchor.year) continue
-            val candidates = when (rule.frequency) {
-                "YEARLY" -> yearCandidates(
-                    RepeatRule(
-                        frequency = RepeatFrequency.Yearly,
-                        weekdays = rule.byDay.filter { it.first == 0 }.map { it.second },
-                        interval = rule.interval,
-                        byDay = rule.byDay.filter { it.first != 0 }.map { OrdinalWeekday(it.first, it.second) },
-                        byMonthDay = rule.byMonthDay,
-                        byMonth = rule.byMonth,
-                        bySetPos = rule.bySetPos,
-                        byYearDay = rule.byYearDay,
-                        byWeekNo = rule.byWeekNo,
-                    ),
-                    anchor = anchor,
-                    year = y,
-                    withSetPos = true,
-                )
-                "MONTHLY" -> (1..12).flatMap { month ->
-                    monthCandidates(
-                        RepeatRule(
-                            frequency = RepeatFrequency.Monthly,
-                            weekdays = rule.byDay.filter { it.first == 0 }.map { it.second },
-                            interval = rule.interval,
-                            byDay = rule.byDay.filter { it.first != 0 }.map { OrdinalWeekday(it.first, it.second) },
-                            byMonthDay = rule.byMonthDay,
-                            byMonth = rule.byMonth,
-                            bySetPos = rule.bySetPos,
-                        ),
-                        anchor = anchor,
-                        year = y,
-                        month = month,
-                    )
+    /**
+     * Transitions generated so far. One imported file resolves hundreds of values against the same
+     * zone, and an observance anchored in 1970 would otherwise rebuild every year of its rule for
+     * every single value.
+     */
+    private val transitions = mutableListOf(start).apply { addAll(rDates) }
+
+    // One year before the anchor, so the first query also generates the anchor year's own transitions.
+    private var generatedThroughYear = start.year - 1
+
+    /** Every transition of this observance up to and including the year [year] + 1. */
+    fun transitionsThrough(year: Int): List<LocalDateTime> {
+        val repeat = rule?.asObservanceRule()
+        // Rules without UNTIL or COUNT are open ended, so generation stops at a horizon far beyond
+        // any calendar the app schedules; later values keep the offset of the last known transition.
+        val targetYear = (year + 1).coerceAtMost(MaxTransitionYear)
+        if (repeat != null && targetYear > generatedThroughYear) {
+            val anchor = start.date
+            var candidateYear = maxOf(generatedThroughYear + 1, anchor.year)
+            while (candidateYear <= targetYear) {
+                val candidates = when (repeat.frequency) {
+                    RepeatFrequency.Yearly -> yearCandidates(repeat, anchor, candidateYear, withSetPos = true)
+                    RepeatFrequency.Monthly -> (1..12).flatMap { month ->
+                        monthCandidates(repeat, anchor, candidateYear, month)
+                    }
+                    else -> emptyList()
                 }
-                else -> emptyList()
+                transitions += candidates.filter { date ->
+                    date >= anchor && withinUntil(date) && withinCount(repeat, anchor, date)
+                }.map { LocalDateTime(it, start.time) }
+                candidateYear++
             }
-            transitionDates += candidates.filter { it >= anchor }
+            generatedThroughYear = targetYear
         }
-        if (transitionDates.isEmpty() && start.date.year in (year - 1)..(year + 1)) transitionDates += start.date
-        return transitionDates.map { LocalDateTime(it, start.time) }.distinct().sorted()
+        return transitions
     }
+
+    private fun withinUntil(date: LocalDate): Boolean {
+        val until = rule?.until ?: return true
+        val local = LocalDateTime(date, start.time)
+        return when (until) {
+            is IcsTime.AllDay -> date <= until.date
+            is IcsTime.DateTime -> when (until.zone) {
+                IcsZone.Utc -> local.toInstant(TimeZone.UTC).minusSeconds(offsetFromSeconds) <=
+                    until.zone.toInstant(until.value)
+                IcsZone.Floating -> local <= until.value
+                else -> local <= until.value
+            }
+        }
+    }
+
+    private fun withinCount(repeat: RepeatRule, anchor: LocalDate, date: LocalDate): Boolean {
+        val count = repeat.count ?: return true
+        val ordinal = occurrenceOrdinal(repeat, anchor, date, count) ?: return false
+        return ordinal <= count
+    }
+}
+
+private fun RawRule.asObservanceRule(): RepeatRule? {
+    val frequency = when (this.frequency) {
+        "YEARLY" -> RepeatFrequency.Yearly
+        "MONTHLY" -> RepeatFrequency.Monthly
+        else -> return null
+    }
+    return RepeatRule(
+        frequency = frequency,
+        weekdays = byDay.filter { it.first == 0 }.map { it.second },
+        interval = interval,
+        count = count,
+        byDay = byDay.filter { it.first != 0 }.map { OrdinalWeekday(it.first, it.second) },
+        byMonthDay = byMonthDay,
+        byMonth = byMonth,
+        bySetPos = bySetPos,
+        byYearDay = byYearDay,
+        byWeekNo = byWeekNo,
+    )
 }
 
 private fun parseCustomZone(component: IcsComponent): CustomZone? {
@@ -2072,12 +2666,22 @@ private fun parseCustomZone(component: IcsComponent): CustomZone? {
         val from = child.first("TZOFFSETFROM")?.value?.let(::parseUtcOffset) ?: 0
         val to = child.first("TZOFFSETTO")?.value?.let(::parseUtcOffset) ?: from
         val rule = child.first("RRULE")?.value?.let { parseRule(it, emptyMap(), mutableSetOf()) }
-        Observance(start.value, from, to, rule)
+        val rDates = child.all("RDATE").flatMap { line ->
+            splitList(line.value).mapNotNull { value ->
+                parseTime(
+                    ContentLine("RDATE", line.params, value, line.raw),
+                    emptyMap(),
+                    mutableSetOf(),
+                ) as? IcsTime.DateTime
+            }
+        }.map { it.value }
+        Observance(start.value, from, to, rule, rDates)
     }
     if (observances.isEmpty()) return null
     return CustomZone(id, observances)
 }
 
+/** `TZOFFSETFROM`/`TZOFFSETTO` in seconds; RFC 5545 also allows an optional seconds part. */
 private fun parseUtcOffset(value: String): Int? {
     val text = value.trim()
     if (text.isEmpty()) return null
@@ -2086,7 +2690,9 @@ private fun parseUtcOffset(value: String): Int? {
     if (digits.length < 4) return null
     val hours = digits.substring(0, 2).toIntOrNull() ?: return null
     val minutes = digits.substring(2, 4).toIntOrNull() ?: return null
-    return sign * (hours * 60 + minutes)
+    val seconds = if (digits.length >= 6) digits.substring(4, 6).toIntOrNull() ?: 0 else 0
+    if (minutes !in 0..59 || seconds !in 0..59) return null
+    return sign * (hours * 3600 + minutes * 60 + seconds)
 }
 
 private fun parseSourceLocal(source: String): LocalDateTime? {
@@ -2173,7 +2779,7 @@ private fun formatIcsLocalDateTime(value: LocalDateTime, utc: Boolean): String =
     if (utc) append('Z')
 }
 
-private fun Instant.minusMinutes(minutes: Int): Instant = this - minutes.minutes
+private fun Instant.minusSeconds(seconds: Int): Instant = this - seconds.seconds
 
 /** Folds at 75 octets without splitting UTF-8 sequences or surrogate pairs. */
 private fun foldLine(line: String): String {
@@ -2197,6 +2803,13 @@ private fun foldLine(line: String): String {
         index += codePoints
     }
     return result.toString()
+}
+
+private fun StringBuilder.appendAttachments(attachments: List<Attachment>) {
+    attachments.forEach { attachment ->
+        val raw = attachment.raw
+        line(raw.ifBlank { "ATTACH:${sanitizeUriValue(attachment.uri)}" })
+    }
 }
 
 /**

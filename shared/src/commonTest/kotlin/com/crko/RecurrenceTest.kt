@@ -11,7 +11,10 @@ import com.crko.domain.occurrenceOrdinal
 import com.crko.domain.occurrenceStartOn
 import com.crko.domain.occursOn
 import com.crko.domain.plusDays
+import com.crko.domain.plusMonths
+import com.crko.domain.plusYears
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.number
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -444,6 +447,57 @@ class RecurrenceTest {
                 }
             }
         }
+    }
+
+    /**
+     * The plain monthly and yearly rules are answered by arithmetic instead of a scan; the same
+     * dates have to come out of the period-by-period count they replaced.
+     */
+    @Test
+    fun ordinalShortCutsAgreeWithThePeriodCountTheyReplace() {
+        // Day-of-month <= 28 is exactly the range the monthly short cut claims to handle.
+        val anchors = listOf(LocalDate(2024, 1, 5), LocalDate(2025, 8, 28), LocalDate(2026, 12, 14))
+        var checked = 0
+        anchors.forEach { start ->
+            listOf(1, 2, 3, 6).forEach { interval ->
+                listOf(
+                    RepeatRule(RepeatFrequency.Monthly, interval = interval),
+                    RepeatRule(RepeatFrequency.Yearly, interval = interval),
+                ).forEach { rule ->
+                    var date = start
+                    repeat(if (rule.frequency == RepeatFrequency.Monthly) 40 else 14) {
+                        date = when (rule.frequency) {
+                            RepeatFrequency.Monthly -> date.plusMonths(1)
+                            else -> date.plusYears(1)
+                        }
+                        assertEquals(
+                            periodOrdinal(rule, start, date),
+                            occurrenceOrdinal(rule, start, date, null),
+                            "$rule from $start on $date",
+                        )
+                        checked++
+                    }
+                }
+            }
+        }
+        assertTrue(checked > 200, "checked $checked dates")
+    }
+
+    /** Counts the matching periods one by one, the way the scanning branch does. */
+    private fun periodOrdinal(rule: RepeatRule, anchor: LocalDate, date: LocalDate): Int? {
+        if (!matchesRule(rule, anchor, date)) return null
+        var ordinal = 1
+        var step = 1
+        while (true) {
+            val candidate = when (rule.frequency) {
+                RepeatFrequency.Monthly -> anchor.plusMonths(step)
+                else -> LocalDate(anchor.year + step, anchor.month.number, anchor.day)
+            }
+            if (candidate > date) break
+            if (matchesRule(rule, anchor, candidate)) ordinal++
+            step++
+        }
+        return ordinal
     }
 
     /** Independent definition: DTSTART is occurrence one, then every matching day in order. */

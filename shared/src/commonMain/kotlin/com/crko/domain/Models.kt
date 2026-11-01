@@ -38,6 +38,80 @@ data class Alarm(
     val extraProperties: List<String> = emptyList(),
 )
 
+/** An `ATTACH` value. URIs can be opened from the editor; binary payloads are kept raw. */
+@Serializable
+data class Attachment(
+    /** Original content line, including parameters, so exporting does not lose them. */
+    val raw: String = "",
+    val uri: String = "",
+    /** `FILENAME` parameter or the last URI segment. */
+    val name: String = "",
+    /** `FMTTYPE` parameter. */
+    val mimeType: String = "",
+    /** Base64 payload for `ENCODING=BASE64` attachments. */
+    val data: String = "",
+    /** `ENCODING=BASE64` payload; it has no openable URI. */
+    val binary: Boolean = false,
+)
+
+/** Characters a file name must never contain when it is handed to the platform file picker. */
+private const val ReservedFileNameCharacters = "\\/:*?\"<>|"
+
+/** Longest attachment name offered to the picker, so a pathological `FILENAME` stays usable. */
+private const val MaxAttachmentNameChars = 80
+
+/**
+ * Safe destination name for [this] attachment. `FILENAME` and URI segments come straight out of an
+ * imported file, so they have to lose path separators, parent references and control characters
+ * before they may be joined to a directory the app does not control.
+ */
+fun safeAttachmentFileName(attachment: Attachment): String {
+    val candidate = listOf(attachment.name, attachment.uri)
+        .asSequence()
+        .map { it.replace('\\', '/').substringAfterLast('/').substringBefore('?').substringBefore('#') }
+        .map(::cleanFileNamePart)
+        .firstOrNull { it.isNotEmpty() }
+        ?: ""
+    if (candidate.isEmpty()) return "attachment${attachmentExtension(attachment)}"
+    return if ('.' in candidate) candidate else candidate + attachmentExtension(attachment)
+}
+
+/**
+ * One path segment without separators, control characters or leading dots, so neither `../` nor an
+ * absolute `FILENAME` can escape the folder the user picked.
+ */
+private fun cleanFileNamePart(value: String): String {
+    val replaced = buildString(value.length) {
+        value.forEach { ch ->
+            val reserved = ch in ReservedFileNameCharacters || ch.code < 0x20 || ch.code == 0x7F
+            append(if (reserved) ' ' else ch)
+        }
+    }
+    return replaced
+        .split(' ')
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+        .trimStart('.')
+        .take(MaxAttachmentNameChars)
+        .trimStart('.', ' ')
+}
+
+private fun attachmentExtension(attachment: Attachment): String = when (
+    val type = attachment.mimeType.substringBefore(';').trim().lowercase()
+) {
+    "image/png" -> ".png"
+    "image/jpeg", "image/jpg" -> ".jpg"
+    "image/gif" -> ".gif"
+    "image/webp" -> ".webp"
+    "image/heic" -> ".heic"
+    "application/pdf" -> ".pdf"
+    "text/plain", "text/csv" -> ".txt"
+    "application/json" -> ".json"
+    "audio/mpeg" -> ".mp3"
+    "video/mp4" -> ".mp4"
+    else -> if (attachment.binary) ".bin" else ""
+}
+
 @Serializable
 data class RepeatRule(
     val frequency: RepeatFrequency,
@@ -92,6 +166,7 @@ data class Event(
     val url: String = "",
     /** Raw `GEO` value, e.g. `37.386013;-122.082932`. */
     val geo: String? = null,
+    val attachments: List<Attachment> = emptyList(),
     val status: EventStatus = EventStatus.Confirmed,
     val transparency: EventTransparency = EventTransparency.Opaque,
     val eventClass: EventClass? = null,
@@ -123,6 +198,8 @@ data class Event(
     val created: String? = null,
     /** ISO-8601 instant. */
     val lastModified: String? = null,
+    /** Original `DTSTAMP`; picks the newest copy when the same UID is imported again. */
+    val dtStamp: String? = null,
     val sequence: Int = 0,
     /** Unknown content lines kept verbatim so a round trip does not drop them. */
     val extraProperties: List<String> = emptyList(),
@@ -148,6 +225,13 @@ data class Event(
     val uid: String? get() = icsUid?.takeIf { it.isNotBlank() } ?: id?.let { "$it@crko" }
 }
 
+/** RFC 5545: a timed event without `DTEND`/`DURATION` has zero length rather than one hour. */
+val Event.isZeroDuration: Boolean
+    get() = !allDay &&
+        endDay == day &&
+        endMinutes == startMinutes &&
+        endSeconds == startSeconds
+
 /**
  * Latest minute of day an event may end at (23:59). Midnight endings are represented by the next
  * day at 00:00 so the editor's LocalTime picker never sees an hour of 24.
@@ -170,16 +254,27 @@ data class Todo(
     val priority: TodoPriority = TodoPriority.Normal,
     /** Creation time in epoch milliseconds; used only for ordering. */
     val createdAt: Long = 0L,
+    /** `DTSTART` date. */
+    val start: String? = null,
+    /** ISO-8601 instant of `DTSTART` when it carried a time. */
+    val startTime: String? = null,
     val due: String? = null,
     /** ISO-8601 instant of `DUE` when it carried a time; [due] stays the date used for ordering. */
     val dueTime: String? = null,
     val note: String = "",
+    val location: String = "",
+    val categories: List<String> = emptyList(),
+    val url: String = "",
+    val attachments: List<Attachment> = emptyList(),
+    /** Raw `RELATED-TO` values; the hierarchy is not shown in the UI yet. */
+    val relatedTo: List<String> = emptyList(),
     /** UID from an imported ICS file. */
     val icsUid: String? = null,
     /** ISO-8601 date the item was completed; used by the statistics screen. */
     val completedAt: String? = null,
     val sequence: Int = 0,
     val lastModified: String? = null,
+    val dtStamp: String? = null,
     val extraProperties: List<String> = emptyList(),
     /** `STATUS`; older saved data defaults to [TodoStatus.NeedsAction]. */
     val status: TodoStatus = TodoStatus.NeedsAction,
@@ -190,10 +285,32 @@ data class Todo(
     val alarms: List<Alarm> = emptyList(),
 )
 
+/** A `VJOURNAL` entry. Parsed and exported so a calendar round trip does not drop journals. */
+@Serializable
+data class Journal(
+    val id: String,
+    val title: String = "",
+    val note: String = "",
+    /** `DTSTART` date. */
+    val date: String? = null,
+    /** ISO-8601 instant of `DTSTART` when it carried a time. */
+    val startTime: String? = null,
+    val url: String = "",
+    val categories: List<String> = emptyList(),
+    val attachments: List<Attachment> = emptyList(),
+    val created: String? = null,
+    val lastModified: String? = null,
+    val dtStamp: String? = null,
+    val sequence: Int = 0,
+    val icsUid: String? = null,
+    val extraProperties: List<String> = emptyList(),
+)
+
 @Serializable
 data class AppState(
     val events: List<Event> = emptyList(),
     val todos: List<Todo> = emptyList(),
+    val journals: List<Journal> = emptyList(),
 )
 
 val AppJson: Json = Json {

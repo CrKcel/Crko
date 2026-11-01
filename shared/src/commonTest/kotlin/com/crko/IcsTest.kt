@@ -1,5 +1,6 @@
 package com.crko
 
+import com.crko.domain.Attachment
 import com.crko.domain.Event
 import com.crko.domain.EventStatus
 import com.crko.domain.EventTransparency
@@ -15,6 +16,7 @@ import com.crko.domain.importCalendar
 import com.crko.domain.importIcs
 import com.crko.domain.occursOn
 import com.crko.domain.plusDays
+import com.crko.domain.safeAttachmentFileName
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
@@ -22,6 +24,7 @@ import kotlinx.datetime.toInstant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -1570,6 +1573,12 @@ class IcsTest {
         )
         val imported = importCalendar(text, utc, "Untitled")
         assertTrue(imported.events.isEmpty())
+        assertTrue(
+            imported.warningDetails.any {
+                it.warning == IcsWarning.InvalidValue && it.record == "Hyphenated"
+            },
+            imported.warningDetails.toString(),
+        )
         assertTrue(IcsWarning.MissingStart in imported.warnings, imported.warnings.toString())
     }
 
@@ -1590,5 +1599,427 @@ class IcsTest {
         // The engine keeps one start per day, so the second round of every day would silently vanish.
         assertTrue(IcsWarning.UnsupportedRecurrence in imported.warnings, imported.warnings.toString())
         assertEquals(listOf(9, 17), imported.events.single().repeat?.byHour)
+    }
+
+    @Test
+    fun hourlyRecurrenceIsImportedAsOneEventWithAWarning() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:hourly
+            SUMMARY:Payroll
+            DTSTART:20261027T090000
+            DTEND:20261027T093000
+            RRULE:FREQ=HOURLY;COUNT=3
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        assertTrue(IcsWarning.UnsupportedRecurrence in imported.warnings, imported.warnings.toString())
+        assertNull(imported.events.single().repeat)
+    }
+
+    @Test
+    fun xWrTimezoneInterpretsFloatingTimesInThatZone() {
+        val text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-WR-TIMEZONE:Europe/Berlin\r\n" +
+            "BEGIN:VEVENT\r\nUID:xwr\r\nSUMMARY:Floating\r\nDTSTART:20261027T090000\r\n" +
+            "DTEND:20261027T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals("Europe/Berlin", event.timeZoneId)
+        // 27 October 2026 is after the DST change, so Berlin is UTC+1.
+        assertEquals(8 * 60, event.startMinutes)
+        assertEquals(9 * 60, event.endMinutes)
+        assertEquals("20261027T090000", event.sourceStart)
+        val exported = exportIcs(listOf(event), now)
+        assertTrue(exported.contains("DTSTART;TZID=Europe/Berlin:20261027T090000\r\n"), exported)
+        assertTrue(exported.contains("DTEND;TZID=Europe/Berlin:20261027T100000\r\n"), exported)
+    }
+
+    @Test
+    fun customZoneRdateTransitionsAndSecondOffsetsAreApplied() {
+        val text = calendar(
+            """
+            BEGIN:VTIMEZONE
+            TZID:Custom/Rdate
+            BEGIN:STANDARD
+            DTSTART:20260101T000000
+            TZOFFSETFROM:+0000
+            TZOFFSETTO:+0000
+            END:STANDARD
+            BEGIN:STANDARD
+            DTSTART:20300101T000000
+            TZOFFSETFROM:+0000
+            TZOFFSETTO:+010030
+            RDATE:20261027T000000
+            END:STANDARD
+            END:VTIMEZONE
+            BEGIN:VEVENT
+            UID:rdate-zone
+            SUMMARY:Shifted
+            DTSTART;TZID=Custom/Rdate:20261027T090000
+            DTEND;TZID=Custom/Rdate:20261027T100000
+            END:VEVENT
+            """,
+        )
+        val event = importIcs(text, utc, "Untitled").single()
+        // The RDATE transition applies +01:00:30 before the observance's own 2030 DTSTART.
+        assertEquals(7 * 60 + 59, event.startMinutes)
+        assertEquals(30, event.startSeconds)
+        assertEquals(8 * 60 + 59, event.endMinutes)
+        assertEquals(30, event.endSeconds)
+    }
+
+    @Test
+    fun observanceUntilAndCountStopTransitions() {
+        val text = calendar(
+            """
+            BEGIN:VTIMEZONE
+            TZID:Custom/Bounded
+            BEGIN:STANDARD
+            DTSTART:20200101T000000
+            TZOFFSETFROM:+0000
+            TZOFFSETTO:+0000
+            RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU
+            END:STANDARD
+            BEGIN:DAYLIGHT
+            DTSTART:20200101T000000
+            TZOFFSETFROM:+0000
+            TZOFFSETTO:+0100
+            RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU;UNTIL=20200330T000000Z
+            END:DAYLIGHT
+            END:VTIMEZONE
+            BEGIN:VEVENT
+            UID:bounded-zone
+            SUMMARY:Summer
+            DTSTART;TZID=Custom/Bounded:20260701T120000
+            END:VEVENT
+            """,
+        )
+        val event = importIcs(text, utc, "Untitled").single()
+        // UNTIL ended the daylight transitions in 2020; an ignored bound would add March 2026
+        // and move this event one hour earlier.
+        assertEquals(12 * 60, event.startMinutes)
+    }
+
+    @Test
+    fun thisAndPriorSplitsTheSeriesAndKeepsTheFutureMaster() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:prior
+            SUMMARY:Base
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            RRULE:FREQ=DAILY;COUNT=5
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:prior
+            RECURRENCE-ID;RANGE=THISANDPRIOR:20261029T090000
+            DTSTART:20261029T090000
+            DTEND:20261029T100000
+            SUMMARY:Past
+            END:VEVENT
+            """,
+        )
+        val events = importCalendar(text, utc, "Untitled").events
+        assertEquals(2, events.size, events.toString())
+        val past = events.first { it.title == "Past" }
+        assertEquals("2026-10-27", past.date)
+        assertEquals("2026-10-29", past.repeat?.until)
+        assertTrue(past.occursOn(LocalDate(2026, 10, 28)))
+        val future = events.first { it.title == "Base" }
+        assertEquals("2026-10-30", future.date)
+        assertEquals(2, future.repeat?.count)
+        assertTrue(future.occursOn(LocalDate(2026, 10, 31)))
+        assertFalse(future.occursOn(LocalDate(2026, 10, 29)))
+    }
+
+    @Test
+    fun eventWithoutEndHasZeroDurationAndRoundTripsWithoutDtend() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:zero
+            SUMMARY:Checkpoint
+            DTSTART:20261027T090000
+            END:VEVENT
+            """,
+        )
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals(540, event.startMinutes)
+        assertEquals(540, event.endMinutes)
+        val exported = exportIcs(listOf(event), now)
+        assertFalse(exported.contains("DTEND"), exported)
+        val back = importIcs(exported, utc, "Untitled").single()
+        assertEquals(event.startMinutes, back.startMinutes)
+        assertEquals(event.endMinutes, back.endMinutes)
+    }
+
+    @Test
+    fun vjournalRoundTrips() {
+        val text = calendar(
+            """
+            BEGIN:VJOURNAL
+            UID:journal-1
+            DTSTAMP:20261027T090000Z
+            SUMMARY:Meeting notes
+            DESCRIPTION:Decisions and follow-ups
+            DTSTART;VALUE=DATE:20261027
+            CATEGORIES:Work,Notes
+            URL:https://example.com/notes
+            END:VJOURNAL
+            """,
+        )
+        val journal = importCalendar(text, utc, "Untitled").journals.single()
+        assertEquals("journal-1", journal.icsUid)
+        assertEquals("Meeting notes", journal.title)
+        assertEquals("2026-10-27", journal.date)
+        assertEquals(listOf("Work", "Notes"), journal.categories)
+        val exported = exportCalendar(emptyList(), now = now, journals = listOf(journal))
+        assertTrue(exported.contains("BEGIN:VJOURNAL\r\n"), exported)
+        assertTrue(exported.contains("DTSTART;VALUE=DATE:20261027\r\n"), exported)
+        val back = importCalendar(exported, utc, "Untitled").journals.single()
+        assertEquals(journal.title, back.title)
+        assertEquals(journal.note, back.note)
+        assertEquals(journal.date, back.date)
+    }
+
+    @Test
+    fun vtodoExtendedFieldsRoundTrip() {
+        val text = calendar(
+            """
+            BEGIN:VTODO
+            UID:todo-extended
+            SUMMARY:Prepare report
+            DTSTART;VALUE=DATE:20261026
+            LOCATION:Office
+            CATEGORIES:Work,Reports
+            URL:https://example.com/report
+            RELATED-TO:parent-todo
+            END:VTODO
+            """,
+        )
+        val todo = importCalendar(text, utc, "Untitled").todos.single()
+        assertEquals("2026-10-26", todo.start)
+        assertEquals("Office", todo.location)
+        assertEquals(listOf("Work", "Reports"), todo.categories)
+        assertEquals("https://example.com/report", todo.url)
+        assertEquals(listOf("parent-todo"), todo.relatedTo)
+        val exported = exportCalendar(emptyList(), listOf(todo), now)
+        assertTrue(exported.contains("DTSTART;VALUE=DATE:20261026\r\n"), exported)
+        assertTrue(exported.contains("LOCATION:Office\r\n"), exported)
+        assertTrue(exported.contains("CATEGORIES:Work,Reports\r\n"), exported)
+        assertTrue(exported.contains("RELATED-TO:parent-todo\r\n"), exported)
+        val back = importCalendar(exported, utc, "Untitled").todos.single()
+        assertEquals(todo.start, back.start)
+        assertEquals(todo.location, back.location)
+        assertEquals(todo.categories, back.categories)
+        assertEquals(todo.relatedTo, back.relatedTo)
+    }
+
+    @Test
+    fun quotedPrintableCalendarValuesAreDecoded() {
+        val text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n" +
+            "BEGIN:VEVENT\r\nUID:qp\r\n" +
+            "SUMMARY;ENCODING=QUOTED-PRINTABLE;CHARSET=UTF-8:=E6=97=A5=E7=A8=8B\r\n" +
+            "DTSTART:20261027T090000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        assertEquals("日程", importIcs(text, utc, "Untitled").single().title)
+    }
+
+    @Test
+    fun attachmentsAreParsedExportedAndShownByName() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:attach
+            SUMMARY:Trip
+            DTSTART:20261027T090000
+            ATTACH;FMTTYPE=image/png;FILENAME=ticket.png:https://example.com/ticket.png
+            ATTACH;ENCODING=BASE64;FMTTYPE=text/plain:VGVzdA==
+            END:VEVENT
+            """,
+        )
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals(2, event.attachments.size, event.attachments.toString())
+        assertEquals("ticket.png", event.attachments[0].name)
+        assertEquals("https://example.com/ticket.png", event.attachments[0].uri)
+        assertEquals("image/png", event.attachments[0].mimeType)
+        assertFalse(event.attachments[0].binary)
+        assertTrue(event.attachments[1].binary)
+        assertEquals("VGVzdA==", event.attachments[1].data)
+        assertEquals("text/plain", event.attachments[1].mimeType)
+        val exported = exportIcs(listOf(event), now)
+        assertEquals(2, exported.split("ATTACH").size - 1, exported)
+        val back = importIcs(exported, utc, "Untitled").single()
+        assertEquals(event.attachments, back.attachments)
+    }
+
+    @Test
+    fun todoAndJournalResolveTheirTimesAgainstTheFilesOwnVtimezone() {
+        val text = calendar(
+            """
+            BEGIN:VTIMEZONE
+            TZID:TESTZONE
+            BEGIN:STANDARD
+            DTSTART:19700101T000000
+            TZOFFSETFROM:+0800
+            TZOFFSETTO:+0800
+            TZNAME:CST
+            END:STANDARD
+            END:VTIMEZONE
+            """,
+            """
+            BEGIN:VTODO
+            UID:todo-zone
+            SUMMARY:Zone due
+            DUE;TZID=TESTZONE:20261101T180000
+            DTSTART;TZID=TESTZONE:20261030T180000
+            END:VTODO
+            BEGIN:VJOURNAL
+            UID:journal-zone
+            SUMMARY:Notes
+            DTSTART;TZID=TESTZONE:20261101T180000
+            END:VJOURNAL
+            """,
+        )
+        val import = importCalendar(text, utc, "Untitled")
+        assertEquals("2026-11-01T10:00:00Z", import.todos.single().dueTime)
+        assertEquals("2026-10-30T10:00:00Z", import.todos.single().startTime)
+        assertEquals("2026-11-01T10:00:00Z", import.journals.single().startTime)
+    }
+
+    @Test
+    fun aFloatingTodoTimeBelongsToTheDeviceRatherThanToUtc() {
+        val newYork = TimeZone.of("America/New_York")
+        val text = calendar(
+            """
+            BEGIN:VTODO
+            UID:todo-floating
+            SUMMARY:Floating due
+            DUE:20261101T040000
+            END:VTODO
+            """,
+        )
+        val todo = importCalendar(text, newYork, "Untitled").todos.single()
+        assertEquals("2026-11-01", todo.due)
+        // Reading the same record back must land on the same day: stamping the wall clock as UTC
+        // would turn 04:00 into the previous evening and move the deadline.
+        val exported = exportCalendar(emptyList(), listOf(todo), now)
+        val back = importCalendar(exported, newYork, "Untitled").todos.single()
+        assertEquals(todo.due, back.due)
+        assertEquals(todo.dueTime, back.dueTime)
+    }
+
+    @Test
+    fun quotedPrintableFoldingWithATrailingEqualsIsJoinedBeforeDecoding() {
+        val text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n" +
+            "BEGIN:VEVENT\r\nUID:qp-fold\r\n" +
+            "SUMMARY;ENCODING=QUOTED-PRINTABLE;CHARSET=UTF-8:=E6=97=A5=\r\n=E7=A8=8B\r\n" +
+            "DTSTART:20261027T090000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        assertEquals("日程", importIcs(text, utc, "Untitled").single().title)
+    }
+
+    @Test
+    fun cachedTimezoneTransitionsCoverTheObservancesOwnAnchorYear() {
+        val text = calendar(
+            """
+            BEGIN:VTIMEZONE
+            TZID:CACHE
+            BEGIN:STANDARD
+            DTSTART:19700101T000000
+            TZOFFSETFROM:+0000
+            TZOFFSETTO:+0000
+            TZNAME:WT
+            RRULE:FREQ=MONTHLY;BYMONTHDAY=15
+            END:STANDARD
+            BEGIN:DAYLIGHT
+            DTSTART:19700110T000000
+            TZOFFSETFROM:+0000
+            TZOFFSETTO:+0100
+            TZNAME:X
+            END:DAYLIGHT
+            END:VTIMEZONE
+            """,
+            """
+            BEGIN:VEVENT
+            UID:cache-1970
+            SUMMARY:Anchor year
+            DTSTART;TZID=CACHE:19700120T120000
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:cache-1971
+            SUMMARY:Next year
+            DTSTART;TZID=CACHE:19710120T120000
+            END:VEVENT
+            """,
+        )
+        val events = importCalendar(text, utc, "Untitled").events
+        // The zero-offset observance repeats on the 15th of every month, including January 1970, and
+        // that transition is later than the daylight start of 1970-01-10. Dropping the anchor year
+        // from the generated transitions would leave the +0100 start as the newest one.
+        assertEquals(720, events.first { it.title == "Anchor year" }.startMinutes)
+        assertEquals(720, events.first { it.title == "Next year" }.startMinutes)
+    }
+
+    @Test
+    fun warningDetailsStayBoundedAndNameTheRecord() {
+        val blocks = (1..300).map { index ->
+            "BEGIN:VEVENT\r\nUID:no-start-$index\r\nSUMMARY:Broken $index\r\nEND:VEVENT\r\n"
+        }
+        val text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n" + blocks.joinToString("") + "END:VCALENDAR\r\n"
+        val import = importCalendar(text, utc, "Untitled")
+        assertTrue(import.warningDetails.isNotEmpty(), import.warnings.toString())
+        assertTrue(import.warningDetails.size <= 20, import.warningDetails.size.toString())
+        assertEquals(1, import.warningDetails.distinctBy { it.warning }.size)
+        assertNotNull(import.warningDetails.first().record)
+        assertTrue(import.warnings.contains(IcsWarning.MissingStart), import.warnings.toString())
+    }
+
+    @Test
+    fun anOpenEndedZoneStopsGeneratingAtTheHorizonAndKeepsTheLastOffset() {
+        val text = calendar(
+            """
+            BEGIN:VTIMEZONE
+            TZID:HORIZON
+            BEGIN:DAYLIGHT
+            DTSTART:19700401T000000
+            TZOFFSETFROM:+0100
+            TZOFFSETTO:+0200
+            TZNAME:D
+            RRULE:FREQ=YEARLY;BYMONTH=4;BYMONTHDAY=1
+            END:DAYLIGHT
+            BEGIN:STANDARD
+            DTSTART:19701001T000000
+            TZOFFSETFROM:+0200
+            TZOFFSETTO:+0100
+            TZNAME:S
+            RRULE:FREQ=YEARLY;BYMONTH=10;BYMONTHDAY=1
+            END:STANDARD
+            END:VTIMEZONE
+            """,
+            """
+            BEGIN:VEVENT
+            UID:horizon
+            SUMMARY:Far future
+            DTSTART;TZID=HORIZON:30001201T120000
+            END:VEVENT
+            """,
+        )
+        val event = importCalendar(text, utc, "Untitled").events.single()
+        // A rule without UNTIL or COUNT would otherwise generate three thousand years of
+        // transitions; the last one before the horizon (+0100) is what the value keeps.
+        assertEquals(660, event.startMinutes)
+    }
+
+    @Test
+    fun attachmentNamesNeverCarryAPath() {
+        assertEquals("Secrets.pdf", safeAttachmentFileName(Attachment(name = "../../Documents/Secrets.pdf")))
+        assertEquals("config", safeAttachmentFileName(Attachment(name = "..\\..\\windows\\config")))
+        assertEquals("note.txt", safeAttachmentFileName(Attachment(name = "/etc/note.txt")))
+        assertEquals("attachment", safeAttachmentFileName(Attachment(name = "....")))
+        assertEquals("a".repeat(80), safeAttachmentFileName(Attachment(name = "a".repeat(400))))
+        assertEquals("report.pdf", safeAttachmentFileName(Attachment(uri = "https://x.test/a/b/report.pdf")))
+        val cleaned = safeAttachmentFileName(Attachment(name = "evil\u0000name"))
+        assertTrue(cleaned.none { it.code < 0x20 }, cleaned)
     }
 }

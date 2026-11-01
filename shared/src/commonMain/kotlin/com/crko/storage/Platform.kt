@@ -4,6 +4,7 @@ import com.crko.dev.sampleState
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.Event
+import com.crko.domain.Journal
 import com.crko.domain.PersistedSettings
 import com.crko.domain.Todo
 import com.crko.domain.today
@@ -132,9 +133,10 @@ internal fun decodeStateWithReport(raw: String): StateDecode {
         ?: return StateDecode(AppState(), LoadDamage(unreadable = true))
     val (events, droppedEvents) = decodeRecords(root["events"], Event.serializer())
     val (todos, droppedTodos) = decodeRecords(root["todos"], Todo.serializer())
+    val (journals, droppedJournals) = decodeRecords(root["journals"], Journal.serializer())
     return StateDecode(
-        state = AppState(events = events, todos = todos),
-        damage = LoadDamage(droppedRecords = droppedEvents + droppedTodos),
+        state = AppState(events = events, todos = todos, journals = journals),
+        damage = LoadDamage(droppedRecords = droppedEvents + droppedTodos + droppedJournals),
     )
 }
 

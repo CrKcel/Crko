@@ -30,11 +30,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.crko.domain.Event
 import com.crko.domain.IcsImportFailure
+import com.crko.domain.IcsWarning
+import com.crko.domain.IcsWarningDetail
 import com.crko.domain.LocalClock
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.exportCalendar
 import com.crko.domain.importCalendar
 import com.crko.domain.occurrenceStartOn
+import com.crko.i18n.Strings
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
 import com.crko.state.WriteResult
@@ -92,15 +95,13 @@ fun CrkoApp(state: AppStateHolder) {
                 AppMessage.Saved -> currentStrings.saved
                 AppMessage.Deleted -> currentStrings.deleted
                 AppMessage.TodoAdded -> currentStrings.todoAdded
-                is AppMessage.EventsImported -> {
-                    if (message.events == 0 && message.todos == 0) {
-                        currentStrings.nothingToImport
-                    } else {
-                        val summary = currentStrings.importedItems(message.events, message.todos)
-                        val warnings = message.warnings.distinct().map(currentStrings::importWarning)
-                        (listOf(summary) + warnings).joinToString("; ")
-                    }
-                }
+                is AppMessage.EventsImported -> importSummaryText(
+                    strings = currentStrings,
+                    events = message.events,
+                    todos = message.todos,
+                    warnings = message.warnings,
+                    details = message.warningDetails,
+                )
                 is AppMessage.ImportFailed -> currentStrings.importFailure(message.failure)
                 AppMessage.Exported -> currentStrings.exported
                 AppMessage.ExportFailed -> currentStrings.exportFailed
@@ -124,7 +125,14 @@ fun CrkoApp(state: AppStateHolder) {
                         state.notify(AppMessage.ImportFailed(IcsImportFailure.InvalidFormat))
                     } else {
                         val (events, todos) = state.importCalendar(imported)
-                        state.notify(AppMessage.EventsImported(events, todos, imported.warnings))
+                        state.notify(
+                            AppMessage.EventsImported(
+                                events,
+                                todos,
+                                imported.warnings,
+                                imported.warningDetails,
+                            ),
+                        )
                     }
                 }
             },
@@ -135,10 +143,16 @@ fun CrkoApp(state: AppStateHolder) {
     fun exportCalendar() {
         val events = state.appState.events
         val todos = state.appState.todos
+        val journals = state.appState.journals
         val fileName = "crko-${state.today}.ics"
         scope.launch {
             val content = withContext(Dispatchers.Default) {
-                exportCalendar(events, todos, calendarName = "Crko")
+                exportCalendar(
+                    events,
+                    todos,
+                    calendarName = "Crko",
+                    journals = journals,
+                )
             }
             fileBridge.saveExport(
                 fileName = fileName,
@@ -370,4 +384,39 @@ private fun localClockNow(): LocalClock {
     val instant = Clock.System.now()
     val local = instant.toLocalDateTime(TimeZone.currentSystemDefault())
     return LocalClock(instant, local.date, local.time)
+}
+
+/** How many records one warning kind may name in the import message. */
+private const val MaxWarningLocations = 3
+
+/**
+ * Text for one import result: a summary plus the records each warning pointed at. The list is
+ * bounded per warning kind, because a file with hundreds of broken records would otherwise produce
+ * a message no one can read in a toast.
+ */
+internal fun importSummaryText(
+    strings: Strings,
+    events: Int,
+    todos: Int,
+    warnings: List<IcsWarning>,
+    details: List<IcsWarningDetail>,
+): String {
+    if (events == 0 && todos == 0) return strings.nothingToImport
+    val parts = mutableListOf(strings.importedItems(events, todos))
+    val kinds = warnings + details.map { it.warning }.filterNot { it in warnings }
+    kinds.distinct().forEach { warning ->
+        val matching = details.filter { it.warning == warning }
+        if (matching.isEmpty()) {
+            parts += strings.importWarning(warning)
+            return@forEach
+        }
+        val shown = matching.take(MaxWarningLocations)
+        shown.forEach { detail ->
+            parts += strings.importWarning(warning) +
+                strings.importWarningLocation(detail.line, detail.record)
+        }
+        val hidden = matching.size - shown.size
+        if (hidden > 0) parts += strings.importWarning(warning) + strings.importWarningMore(hidden)
+    }
+    return parts.joinToString("; ")
 }

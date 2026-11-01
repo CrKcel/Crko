@@ -93,12 +93,46 @@ class StorageTest {
     }
 
     @Test
-    fun calendarBytesMustBeValidUtf8AndALostBomIsIgnored() {
+    fun calendarBytesDecodeUtf8AndFallBackToLegacyCharsets() {
         val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
         assertEquals("BEGIN:VCALENDAR", decodeCalendarBytes(bom + "BEGIN:VCALENDAR".encodeToByteArray()))
         assertEquals("SUMMARY:日程", decodeCalendarBytes("SUMMARY:日程".encodeToByteArray()))
-        // Invalid sequences used to become U+FFFD and import as mojibake with a "success" message.
-        assertNull(decodeCalendarBytes(byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 0x80.toByte())))
+        // GBK bytes for "日程"; older exporters still write these.
+        assertEquals("日程", decodeCalendarBytes(byteArrayOf(0xC8.toByte(), 0xD5.toByte(), 0xB3.toByte(), 0xCC.toByte())))
+        // Windows-1252 bytes for "ÿþ€" used to be rejected as invalid UTF-8.
+        assertEquals("ÿþ€", decodeCalendarBytes(byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 0x80.toByte())))
+    }
+
+    @Test
+    fun singleHighBytesAreReadAsWindows1252InsteadOfChineseGarbage() {
+        // "Résumé" in Windows-1252: every high byte stands alone, which GB18030 would happily pair
+        // with the following letter and turn into an unrelated CJK character.
+        val bytes = "BEGIN:VCALENDAR\r\nSUMMARY:R".encodeToByteArray() +
+            byteArrayOf(0xE9.toByte()) +
+            "sum".encodeToByteArray() +
+            byteArrayOf(0xE9.toByte()) +
+            "e\r\nEND:VCALENDAR\r\n".encodeToByteArray()
+        val text = decodeCalendarBytes(bytes)
+        assertTrue(text != null && text.contains("Résumé"), text ?: "null")
+    }
+
+    @Test
+    fun doubleByteRunsStillWinForChineseExports() {
+        val bytes = "BEGIN:VCALENDAR\r\nSUMMARY:".encodeToByteArray() +
+            byteArrayOf(0xC8.toByte(), 0xD5.toByte(), 0xB3.toByte(), 0xCC.toByte()) +
+            "\r\nEND:VCALENDAR\r\n".encodeToByteArray()
+        val text = decodeCalendarBytes(bytes)
+        assertTrue(text != null && text.contains("日程"), text ?: "null")
+    }
+
+    @Test
+    fun aDeclaredCharsetParameterOverridesTheGuesses() {
+        // "会议" in GB18030 behind a charset declaration the decoder would otherwise guess wrong.
+        val bytes = "BEGIN:VCALENDAR\r\nSUMMARY;CHARSET=GB18030:".encodeToByteArray() +
+            byteArrayOf(0xBB.toByte(), 0xE1.toByte(), 0xD2.toByte(), 0xE9.toByte()) +
+            "\r\nEND:VCALENDAR\r\n".encodeToByteArray()
+        val text = decodeCalendarBytes(bytes)
+        assertTrue(text != null && text.contains("会议"), text ?: "null")
     }
 
     @Test

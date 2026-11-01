@@ -29,6 +29,8 @@ private class PendingTransfer {
     var importCallbacks: Pair<(String) -> Unit, (IcsImportFailure) -> Unit>? = null
     var exportContent: String? = null
     var exportCallbacks: Pair<() -> Unit, () -> Unit>? = null
+    var attachmentBytes: ByteArray? = null
+    var attachmentCallbacks: Pair<() -> Unit, () -> Unit>? = null
 }
 
 @Composable
@@ -70,7 +72,23 @@ actual fun rememberCalendarFileBridge(): CalendarFileBridge {
         }
     }
 
-    return remember(openDocument, createDocument) {
+    val createAttachment = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri ->
+        val bytes = pending.attachmentBytes
+        val callbacks = pending.attachmentCallbacks
+        pending.attachmentBytes = null
+        pending.attachmentCallbacks = null
+        if (uri == null || bytes == null || callbacks == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val saved = runCatching {
+                withContext(Dispatchers.IO) { writeBytes(context, uri, bytes) }
+            }.isSuccess
+            if (saved) callbacks.first() else callbacks.second()
+        }
+    }
+
+    return remember(openDocument, createDocument, createAttachment) {
         object : CalendarFileBridge {
             override fun openImport(onPicked: (String) -> Unit, onError: (IcsImportFailure) -> Unit) {
                 pending.importCallbacks = onPicked to onError
@@ -86,6 +104,18 @@ actual fun rememberCalendarFileBridge(): CalendarFileBridge {
                 pending.exportContent = content
                 pending.exportCallbacks = onExported to onError
                 createDocument.launch(fileName)
+            }
+
+            override fun saveAttachment(
+                fileName: String,
+                bytes: ByteArray,
+                mimeType: String,
+                onSaved: () -> Unit,
+                onError: () -> Unit,
+            ) {
+                pending.attachmentBytes = bytes
+                pending.attachmentCallbacks = onSaved to onError
+                createAttachment.launch(fileName)
             }
         }
     }
@@ -115,4 +145,10 @@ private fun writeText(context: Context, uri: android.net.Uri, content: String) {
     val stream = context.contentResolver.openOutputStream(uri)
         ?: error("Unable to open the destination file")
     stream.use { it.write(content.encodeToByteArray()) }
+}
+
+private fun writeBytes(context: Context, uri: android.net.Uri, bytes: ByteArray) {
+    val stream = context.contentResolver.openOutputStream(uri)
+        ?: error("Unable to open the destination file")
+    stream.use { it.write(bytes) }
 }

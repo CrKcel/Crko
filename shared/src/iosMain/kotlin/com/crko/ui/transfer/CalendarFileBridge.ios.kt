@@ -87,6 +87,41 @@ private class IosCalendarFileBridge : CalendarFileBridge {
         }
         presenter.presentViewController(controller, animated = true, completion = null)
     }
+
+    override fun saveAttachment(
+        fileName: String,
+        bytes: ByteArray,
+        mimeType: String,
+        onSaved: () -> Unit,
+        onError: () -> Unit,
+    ) {
+        val presenter = IosViewControllerHolder.root ?: return onError()
+        val path = NSTemporaryDirectory() + fileName
+        if (!bytes.toNSData().writeToFile(path, atomically = true)) {
+            onError()
+            return
+        }
+        val url = NSURL.fileURLWithPath(path)
+        val controller = UIActivityViewController(activityItems = listOf(url), applicationActivities = null)
+        controller.completionWithItemsHandler = { _, completed, _, error ->
+            NSFileManager.defaultManager.removeItemAtPath(path, error = null)
+            when {
+                error != null -> onError()
+                completed -> onSaved()
+            }
+        }
+        controller.popoverPresentationController?.let { popover ->
+            val view = presenter.view
+            popover.sourceView = view
+            popover.sourceRect = CGRectMake(
+                CGRectGetMidX(view.bounds),
+                CGRectGetMidY(view.bounds),
+                0.0,
+                0.0,
+            )
+        }
+        presenter.presentViewController(controller, animated = true, completion = null)
+    }
 }
 
 private class ImportDelegate(

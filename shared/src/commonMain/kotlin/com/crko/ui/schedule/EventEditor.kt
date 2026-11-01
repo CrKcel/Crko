@@ -24,12 +24,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Alarm
+import com.crko.domain.Attachment
 import com.crko.domain.Event
 import com.crko.domain.EventStatus
 import com.crko.domain.EventTransparency
@@ -41,13 +43,18 @@ import com.crko.domain.localDate
 import com.crko.domain.mondayIndex
 import com.crko.domain.parseRepeatUntil
 import com.crko.domain.plusDays
+import com.crko.domain.safeAttachmentFileName
 import com.crko.domain.startOfWeek
 import com.crko.i18n.Strings
 import com.crko.state.EditScope
 import com.crko.storage.newId
 import com.crko.ui.icons.AppIcons
+import com.crko.ui.transfer.CalendarFileBridge
+import com.crko.ui.transfer.rememberCalendarFileBridge
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
@@ -133,7 +140,9 @@ private fun EventEditorContent(
                 ),
         )
     }
-    var reminder by remember(event) { mutableStateOf(event.alarms.firstOrNull()?.triggerMinutes) }
+    var reminder by remember(event) {
+        mutableStateOf(event.alarms.firstOrNull { it.absoluteTrigger == null }?.triggerMinutes)
+    }
     var scope by remember(event, occurrenceDate) {
         mutableStateOf(
             if (event.repeat != null && occurrenceDate != null) EditScope.ThisEvent else EditScope.AllEvents,
@@ -145,6 +154,8 @@ private fun EventEditorContent(
     var showDatePicker by remember { mutableStateOf(false) }
     var showEndDatePicker by remember { mutableStateOf(false) }
     var showUntilDatePicker by remember { mutableStateOf(false) }
+    val fileBridge = rememberCalendarFileBridge()
+    var attachmentNotice by remember(event) { mutableStateOf<String?>(null) }
 
     val startMinutes = start.hour * 60 + start.minute
     val endMinutes = end.hour * 60 + end.minute
@@ -153,10 +164,10 @@ private fun EventEditorContent(
     val repeatCount = countText.toIntOrNull()?.takeIf { it > 0 }
     val repeatValid = (repeatFrequency != RepeatFrequency.Custom || repeatDays.isNotEmpty()) &&
         (repeatFrequency == null || endMode != RepeatEndMode.Count || repeatCount != null)
-    val timeValid = allDay || resolvedEndDate > date || endMinutes > startMinutes
+    val timeValid = allDay || resolvedEndDate > date || endMinutes >= startMinutes
     val valid = title.isNotBlank() && timeValid && repeatValid
     val canScope = event.repeat != null && occurrenceDate != null
-    val originalReminder = event.alarms.firstOrNull()?.triggerMinutes
+    val originalReminder = event.alarms.firstOrNull { it.absoluteTrigger == null }?.triggerMinutes
 
     val picking: TimeField? = when {
         showStartPicker -> TimeField.START
@@ -425,6 +436,21 @@ private fun EventEditorContent(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (event.attachments.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Caption(strings.attachments)
+                    event.attachments.forEach { attachment ->
+                        AttachmentRow(attachment, strings, fileBridge) { attachmentNotice = it }
+                    }
+                    attachmentNotice?.let { notice ->
+                        Text(
+                            text = notice,
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 4.dp, start = 4.dp),
+                        )
+                    }
+                }
                 Spacer(Modifier.height(10.dp))
                 Caption(strings.eventStatus)
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -530,11 +556,7 @@ private fun EventEditorContent(
                             status = status,
                             transparency = transparency,
                             priority = priority,
-                            alarms = if (reminder == originalReminder) {
-                                event.alarms
-                            } else {
-                                reminder?.let { listOf(Alarm(triggerMinutes = it)) } ?: emptyList()
-                            },
+                            alarms = updateReminderAlarms(event.alarms, originalReminder, reminder),
                             repeat = buildRule(
                                 frequency = repeatFrequency,
                                 old = event.repeat,
@@ -567,6 +589,22 @@ private fun EventEditorContent(
                     colors = ButtonDefaults.textButtonColors(),
                 )
             }
+        }
+    }
+}
+
+/**
+ * Changes only the one relative reminder the editor shows. Other imported `VALARM`s (audio/email,
+ * absolute or extra relative alarms) survive an edit instead of collapsing into one simple alarm.
+ */
+internal fun updateReminderAlarms(alarms: List<Alarm>, original: Int?, reminder: Int?): List<Alarm> {
+    if (reminder == original) return alarms
+    val index = alarms.indexOfFirst { it.absoluteTrigger == null }
+    return when {
+        reminder == null -> if (index < 0) alarms else alarms.filterIndexed { i, _ -> i != index }
+        index < 0 -> alarms + Alarm(triggerMinutes = reminder)
+        else -> alarms.toMutableList().also {
+            it[index] = it[index].copy(triggerMinutes = reminder, relatedToEnd = false)
         }
     }
 }
@@ -643,6 +681,72 @@ private fun MoreOptionsToggle(
             modifier = Modifier.size(16.dp).rotate(if (expanded) 180f else 0f),
         )
     }
+}
+
+@Composable
+private fun AttachmentRow(
+    attachment: Attachment,
+    strings: Strings,
+    bridge: CalendarFileBridge,
+    onNotice: (String) -> Unit,
+) {
+    val uriHandler = LocalUriHandler.current
+    val openable = attachment.uri.startsWith("http://") || attachment.uri.startsWith("https://")
+    // Decoded once per attachment: a several-megabyte payload decoded on every recomposition while
+    // the user types in the editor would stall the frame.
+    val payload = remember(attachment) {
+        if (attachment.binary && attachment.data.isNotBlank()) attachment.decodedBytes() else null
+    }
+    val label = attachment.name.ifBlank {
+        if (attachment.binary) strings.attachments else attachment.uri.ifBlank { strings.attachments }
+    }
+    Text(
+        text = label,
+        style = MiuixTheme.textStyles.body2,
+        fontSize = 13.sp,
+        color = if (openable || payload != null) {
+            MiuixTheme.colorScheme.primary
+        } else {
+            MiuixTheme.colorScheme.onSurfaceVariantSummary
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = openable || attachment.binary) {
+                if (attachment.binary) {
+                    val bytes = payload
+                    if (bytes == null) {
+                        onNotice(strings.attachmentBroken)
+                    } else {
+                        bridge.saveAttachment(
+                            fileName = safeAttachmentFileName(attachment),
+                            bytes = bytes,
+                            mimeType = attachment.mimeType,
+                            onSaved = {},
+                            onError = { onNotice(strings.attachmentSaveFailed) },
+                        )
+                    }
+                } else if (openable) {
+                    uriHandler.openUri(attachment.uri)
+                }
+            }
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+    )
+}
+
+/**
+ * Base64 of an embedded `ATTACH`. Exporters disagree about padding and about the alphabet, so both
+ * are repaired before decoding instead of leaving the row dead.
+ */
+@OptIn(ExperimentalEncodingApi::class)
+internal fun Attachment.decodedBytes(): ByteArray? {
+    val text = data.filterNot { it.isWhitespace() }.replace('-', '+').replace('_', '/')
+    val padded = when (text.length % 4) {
+        0 -> text
+        2, 3 -> text + "=".repeat(4 - text.length % 4)
+        else -> return null
+    }
+    return runCatching { Base64.decode(padded) }.getOrNull()
 }
 
 @Composable

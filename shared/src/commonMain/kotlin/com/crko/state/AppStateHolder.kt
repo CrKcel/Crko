@@ -10,6 +10,8 @@ import com.crko.domain.EventStatus
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsImportFailure
 import com.crko.domain.IcsWarning
+import com.crko.domain.IcsWarningDetail
+import com.crko.domain.Journal
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.PersistedSettings
 import com.crko.domain.RepeatFrequency
@@ -59,6 +61,7 @@ sealed interface AppMessage {
         val events: Int,
         val todos: Int = 0,
         val warnings: List<IcsWarning> = emptyList(),
+        val warningDetails: List<IcsWarningDetail> = emptyList(),
     ) : AppMessage
     data class ImportFailed(val failure: IcsImportFailure) : AppMessage
     data object Exported : AppMessage
@@ -198,6 +201,7 @@ class AppStateHolder(
                 val saved = validated.copy(
                     created = existing?.created ?: validated.created ?: now.toString(),
                     lastModified = now.toString(),
+                    dtStamp = now.toString(),
                     sequence = (existing?.sequence ?: validated.sequence) + if (existing == null) 0 else 1,
                 )
                 val updated = if (existing != null) {
@@ -245,6 +249,7 @@ class AppStateHolder(
             excludedDates = shiftedExclusions,
             created = series.created ?: now.toString(),
             lastModified = now.toString(),
+            dtStamp = now.toString(),
             sequence = series.sequence + 1,
         )
         // Exceptions (and imported THISANDFUTURE segments) belong to the same timeline. Moving the
@@ -321,11 +326,13 @@ class AppStateHolder(
             icsUid = seriesUid?.let { "$it#override-$occurrenceKey" } ?: existingOverride?.icsUid,
             created = existingOverride?.created ?: now.toString(),
             lastModified = now.toString(),
+            dtStamp = now.toString(),
             sequence = (existingOverride?.sequence ?: 0) + if (existingOverride == null) 0 else 1,
         )
         val updatedSeries = series.copy(
             excludedDates = (series.excludedDates + occurrenceKey).distinct(),
             lastModified = now.toString(),
+            dtStamp = now.toString(),
             sequence = series.sequence + 1,
         )
         val events = appState.events.map {
@@ -356,6 +363,7 @@ class AppStateHolder(
             repeat = series.repeat?.copy(until = previous.toString(), count = null),
             excludedDates = series.excludedDates.filter { it < occurrence.toString() },
             lastModified = now.toString(),
+            dtStamp = now.toString(),
             sequence = series.sequence + 1,
         )
         val futureRepeat = when {
@@ -386,6 +394,7 @@ class AppStateHolder(
             timeZoneDefinition = null,
             created = now.toString(),
             lastModified = now.toString(),
+            dtStamp = now.toString(),
             sequence = 0,
         )
         val newUid = newSeries.uid
@@ -498,20 +507,24 @@ class AppStateHolder(
     }
 
     /**
-     * Appends events parsed from an ICS file, skipping ones whose UID is already stored so the
-     * same file can be imported twice. Returns how many events were actually added.
+     * Merges events parsed from an ICS file. A known UID is replaced when the file carries a newer
+     * `SEQUENCE`/`DTSTAMP`, so re-importing an updated file does not keep stale copies.
      */
     fun importEvents(events: List<Event>): Int {
-        val added = newEvents(events)
-        if (added.isNotEmpty()) persist(appState.copy(events = appState.events + added))
-        return added.size
+        val merged = mergeEvents(events, emptySet())
+        if (merged.changed > 0 || merged.items != appState.events) {
+            persist(appState.copy(events = merged.items))
+        }
+        return merged.changed
     }
 
-    /** Appends todos from an ICS file, deduplicating by UID. */
+    /** Merges todos from an ICS file, updating known UIDs newer than the stored copy. */
     fun importTodos(todos: List<Todo>): Int {
-        val added = newTodos(todos)
-        if (added.isNotEmpty()) persist(appState.copy(todos = appState.todos + added))
-        return added.size
+        val merged = mergeTodos(todos)
+        if (merged.changed > 0 || merged.items != appState.todos) {
+            persist(appState.copy(todos = merged.items))
+        }
+        return merged.changed
     }
 
     /**
@@ -519,33 +532,124 @@ class AppStateHolder(
      * calendar with the events of a half-finished import, and serialised the whole state twice.
      */
     fun importCalendar(import: IcsImport): Pair<Int, Int> {
-        if (import.events.isEmpty() && import.todos.isEmpty()) return 0 to 0
-        val addedEvents = newEvents(import.events)
-        val addedTodos = newTodos(import.todos)
-        if (addedEvents.isEmpty() && addedTodos.isEmpty()) return 0 to 0
+        if (import.events.isEmpty() && import.todos.isEmpty() && import.journals.isEmpty() &&
+            import.cancelledUids.isEmpty()
+        ) {
+            return 0 to 0
+        }
+        val events = mergeEvents(import.events, import.cancelledUids)
+        val todos = mergeTodos(import.todos)
+        val journals = mergeJournals(import.journals)
+        val eventsChanged = events.changed > 0 || events.items != appState.events
+        val todosChanged = todos.changed > 0 || todos.items != appState.todos
+        val journalsChanged = journals.changed > 0 || journals.items != appState.journals
+        if (!eventsChanged && !todosChanged && !journalsChanged) return 0 to 0
         persist(
             appState.copy(
-                events = appState.events + addedEvents,
-                todos = appState.todos + addedTodos,
+                events = events.items,
+                todos = todos.items,
+                journals = journals.items,
             ),
         )
-        return addedEvents.size to addedTodos.size
+        return events.changed to todos.changed
     }
 
-    private fun newEvents(events: List<Event>): List<Event> {
-        val knownUids = appState.events.mapNotNull { it.icsUid?.takeIf(String::isNotBlank) }.toMutableSet()
-        val knownIds = appState.events.mapNotNull { it.id }.toSet()
-        return events
-            .filterNot { isAlreadyStored(it.icsUid, knownUids, knownIds) }
-            .map { it.copy(id = idProvider()) }
+    private class MergeResult<T>(val items: List<T>, val changed: Int)
+
+    private fun mergeEvents(events: List<Event>, cancelledUids: Set<String>): MergeResult<Event> {
+        val merged = appState.events.toMutableList()
+        if (cancelledUids.isNotEmpty()) {
+            merged.removeAll { event -> cancelledUids.any { uid -> matchesUid(event, uid) } }
+        }
+        var changed = 0
+        val seen = mutableSetOf<String>()
+        events.forEach { incoming ->
+            val uid = incoming.icsUid
+            if (uid == null) {
+                merged += incoming.copy(id = idProvider())
+                changed++
+                return@forEach
+            }
+            if (!seen.add(uid)) return@forEach
+            val exact = merged.indexOfFirst { it.icsUid == uid }
+            val index = if (exact >= 0) {
+                exact
+            } else if ('#' !in uid) {
+                merged.indexOfFirst { matchesOwnExport(it.id, uid) }
+            } else {
+                -1
+            }
+            if (index >= 0) {
+                val existing = merged[index]
+                if (isNewer(incoming.sequence, incoming.dtStamp, incoming.lastModified, existing.sequence, existing.dtStamp, existing.lastModified)) {
+                    merged[index] = incoming.copy(id = existing.id)
+                    changed++
+                }
+            } else {
+                merged += incoming.copy(id = idProvider())
+                changed++
+            }
+        }
+        // A record that simply stopped appearing in the file is NOT treated as deleted: without
+        // import provenance there is no way to tell "removed in the other calendar" apart from a
+        // partial export or an exception the user created locally, and guessing costs data.
+        return MergeResult(merged, changed)
     }
 
-    private fun newTodos(todos: List<Todo>): List<Todo> {
-        val knownUids = appState.todos.mapNotNull { it.icsUid?.takeIf(String::isNotBlank) }.toMutableSet()
-        val knownIds = appState.todos.map { it.id }.toSet()
-        return todos
-            .filterNot { isAlreadyStored(it.icsUid, knownUids, knownIds) }
-            .map { it.copy(id = idProvider()) }
+    private fun mergeTodos(todos: List<Todo>): MergeResult<Todo> {
+        val merged = appState.todos.toMutableList()
+        var changed = 0
+        val seen = mutableSetOf<String>()
+        todos.forEach { incoming ->
+            val uid = incoming.icsUid
+            if (uid == null) {
+                merged += incoming.copy(id = idProvider())
+                changed++
+                return@forEach
+            }
+            if (!seen.add(uid)) return@forEach
+            val exact = merged.indexOfFirst { it.icsUid == uid }
+            val index = if (exact >= 0) exact else if ('#' !in uid) merged.indexOfFirst { matchesOwnExport(it.id, uid) } else -1
+            if (index >= 0) {
+                val existing = merged[index]
+                if (isNewer(incoming.sequence, incoming.dtStamp, incoming.lastModified, existing.sequence, existing.dtStamp, existing.lastModified)) {
+                    merged[index] = incoming.copy(id = existing.id)
+                    changed++
+                }
+            } else {
+                merged += incoming.copy(id = idProvider())
+                changed++
+            }
+        }
+        return MergeResult(merged, changed)
+    }
+
+    private fun mergeJournals(journals: List<Journal>): MergeResult<Journal> {
+        val merged = appState.journals.toMutableList()
+        var changed = 0
+        val seen = mutableSetOf<String>()
+        journals.forEach { incoming ->
+            val uid = incoming.icsUid
+            if (uid == null) {
+                merged += incoming.copy(id = idProvider())
+                changed++
+                return@forEach
+            }
+            if (!seen.add(uid)) return@forEach
+            val exact = merged.indexOfFirst { it.icsUid == uid }
+            val index = if (exact >= 0) exact else if ('#' !in uid) merged.indexOfFirst { matchesOwnExport(it.id, uid) } else -1
+            if (index >= 0) {
+                val existing = merged[index]
+                if (isNewer(incoming.sequence, incoming.dtStamp, incoming.lastModified, existing.sequence, existing.dtStamp, existing.lastModified)) {
+                    merged[index] = incoming.copy(id = existing.id)
+                    changed++
+                }
+            } else {
+                merged += incoming.copy(id = idProvider())
+                changed++
+            }
+        }
+        return MergeResult(merged, changed)
     }
 
     /**
@@ -592,6 +696,7 @@ class AppStateHolder(
             due = due?.toString(),
             createdAt = now.toEpochMilliseconds(),
             lastModified = now.toString(),
+            dtStamp = now.toString(),
         )
         persist(appState.copy(todos = appState.todos + todo))
         return WriteResult.Success
@@ -610,6 +715,7 @@ class AppStateHolder(
                             status = if (done) TodoStatus.Completed else TodoStatus.NeedsAction,
                             percentComplete = if (done) 100 else 0,
                             lastModified = now.toString(),
+                            dtStamp = now.toString(),
                             sequence = todo.sequence + 1,
                         )
                     } else {
@@ -697,7 +803,7 @@ class AppStateHolder(
         val startSeconds = if (allDay) 0 else event.startSeconds.coerceIn(0, 59)
         val endSeconds = if (allDay) 0 else event.endSeconds.coerceIn(0, 59)
         val endDay = event.endDay
-        if (!allDay && endDay == event.day && end <= start) return null
+        if (!allDay && endDay == event.day && end < start) return null
         if (!allDay && endDay < event.day) return null
         return event.copy(
             title = event.title.trim(),
@@ -721,16 +827,40 @@ class AppStateHolder(
 }
 
 /**
- * Whether an imported record is already stored, either under the same `icsUid` or as one of this
- * app's own exports (`<id>@crko`, optionally suffixed with `#override-...`). [knownUids] grows as it
- * is consulted, so records repeated inside one file are collapsed the same way.
+ * Whether [event] belongs to [uid], including this app's own export ids (`<id>@crko`) and the
+ * `#override-`, `#future-` and `#prior-` copies derived from a series UID.
  */
-private fun isAlreadyStored(uid: String?, knownUids: MutableSet<String>, knownIds: Set<String>): Boolean {
-    val key = uid?.takeIf { it.isNotBlank() } ?: return false
-    if (!knownUids.add(key)) return true
-    val base = key.substringBefore('#')
-    return base.endsWith("@crko") && base.removeSuffix("@crko") in knownIds
+private fun matchesUid(event: Event, uid: String): Boolean {
+    val eventUid = event.icsUid
+    if (eventUid == uid || event.seriesUid == uid) return true
+    if (eventUid != null && eventUid.substringBefore('#') == uid) return true
+    if (event.seriesUid?.substringBefore('#') == uid) return true
+    return '#' !in uid && matchesOwnExport(event.id, uid)
 }
+
+/** Whether [uid] is the own-export id (`<recordId>@crko`) of [recordId]. */
+private fun matchesOwnExport(recordId: String?, uid: String): Boolean {
+    if (!uid.endsWith("@crko")) return false
+    return uid.removeSuffix("@crko") == recordId
+}
+
+/** `SEQUENCE` wins, then `DTSTAMP`, then `LAST-MODIFIED`; missing metadata never overwrites. */
+private fun isNewer(
+    sequence: Int,
+    dtStamp: String?,
+    lastModified: String?,
+    existingSequence: Int,
+    existingDtStamp: String?,
+    existingLastModified: String?,
+): Boolean {
+    if (sequence != existingSequence) return sequence > existingSequence
+    val incoming = parseInstantOrNull(dtStamp ?: lastModified) ?: return false
+    val existing = parseInstantOrNull(existingDtStamp ?: existingLastModified)
+    return existing == null || incoming > existing
+}
+
+private fun parseInstantOrNull(value: String?): kotlin.time.Instant? =
+    value?.let { runCatching { kotlin.time.Instant.parse(it) }.getOrNull() }
 
 private fun shiftDateText(text: String, days: Int): String? =
     runCatching { LocalDate.parse(text) }.getOrNull()?.plusDays(days)?.toString()
