@@ -8,6 +8,8 @@ import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
 import platform.CoreFoundation.CFStringConvertEncodingToNSStringEncoding
 import platform.CoreFoundation.kCFStringEncodingGB_18030_2000
+import platform.CoreFoundation.kCFStringEncodingUTF16BE
+import platform.CoreFoundation.kCFStringEncodingUTF16LE
 import platform.Foundation.NSData
 import platform.Foundation.NSISOLatin1StringEncoding
 import platform.Foundation.NSString
@@ -18,6 +20,8 @@ import platform.Foundation.create
 internal actual fun decodeBytesWithCharset(bytes: ByteArray, charsetName: String): String? {
     val encoding = when (charsetName.trim().uppercase()) {
         "UTF-8", "UTF8" -> NSUTF8StringEncoding
+        "UTF-16LE", "UTF16LE" -> CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingUTF16LE.toUInt())
+        "UTF-16BE", "UTF16BE" -> CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingUTF16BE.toUInt())
         "GB18030", "GBK", "GB2312" ->
             CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingGB_18030_2000.toUInt())
         "WINDOWS-1252", "CP1252" -> NSWindowsCP1252StringEncoding

@@ -11,7 +11,11 @@ import com.crko.domain.replacementCharacter
  * report back on the main thread.
  */
 interface CalendarFileBridge {
-    fun openImport(onPicked: (String) -> Unit, onError: (IcsImportFailure) -> Unit)
+    /**
+     * [onPicked] receives the picked file as chunks (so decoding never needs one giant array) and,
+     * when the platform says so, the file's own name.
+     */
+    fun openImport(onPicked: (chunks: List<ByteArray>, fileName: String?) -> Unit, onError: (IcsImportFailure) -> Unit)
 
     fun saveExport(fileName: String, content: String, onExported: () -> Unit, onError: () -> Unit)
 

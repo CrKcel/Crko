@@ -10,6 +10,9 @@ import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
+import com.crko.storage.AppAttachmentStore
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
  * RFC 5545 reader/writer for the parts of a calendar the app can represent. Unknown content lines
@@ -111,6 +114,18 @@ data class IcsImport(
     val warningDetails: List<IcsWarningDetail> = emptyList(),
     /** UIDs whose newest master copy is `STATUS:CANCELLED`; matching local records are removed. */
     val cancelledUids: Set<String> = emptySet(),
+    /**
+     * The cancelled series themselves, with title and line, so a per-record preview can offer the
+     * removal as a choice instead of applying it behind the user's back.
+     */
+    val cancelled: List<CancelledIcsRecord> = emptyList(),
+)
+
+/** A series whose newest master copy is `STATUS:CANCELLED`; importing it removes local records. */
+data class CancelledIcsRecord(
+    val uid: String,
+    val summary: String,
+    val line: Int? = null,
 )
 
 /** One warning occurrence, so the UI can say which record or line was affected. */
@@ -183,10 +198,20 @@ fun importCalendar(
     text: String,
     timeZone: TimeZone = TimeZone.currentSystemDefault(),
     untitledTitle: String,
+): IcsImport = importCalendarLines(unfold(text).asSequence(), timeZone, untitledTitle)
+
+/**
+ * Same as [importCalendar] for lines that already arrived incrementally, so a file never has to be
+ * in memory as one decoded text (see `CalendarTextReader`).
+ */
+internal fun importCalendarLines(
+    lines: Sequence<UnfoldedLine>,
+    timeZone: TimeZone = TimeZone.currentSystemDefault(),
+    untitledTitle: String,
 ): IcsImport {
     val warnings = linkedSetOf<IcsWarning>()
     val details = mutableListOf<IcsWarningDetail>()
-    val roots = parseComponents(text)
+    val roots = parseComponents(lines)
     val calendars = roots.filter { it.name == "VCALENDAR" }
     val components = if (calendars.isEmpty()) roots else calendars.flatMap { it.children }
     val zones = mutableMapOf<String, CustomZone>()
@@ -230,10 +255,13 @@ fun importCalendar(
     }
     // Only the newest master copy of a UID can cancel the series; a stale CANCELLED copy next to a
     // live one must not remove the user's event.
-    val cancelledUids = groups.mapNotNull { (uid, group) ->
+    val cancelled = groups.mapNotNull { (uid, group) ->
         val newest = group.filter { it.recurrenceId == null }.maxWithOrNull(masterCopyComparator)
-        uid.takeIf { newest?.isCancelled() == true }
-    }.toSet()
+            ?: return@mapNotNull null
+        if (!newest.isCancelled()) return@mapNotNull null
+        CancelledIcsRecord(uid = uid, summary = newest.summary, line = newest.lineNumber.takeIf { it > 0 })
+    }
+    val cancelledUids = cancelled.mapTo(mutableSetOf()) { it.uid }
 
     val todos = components
         .filter { it.name == "VTODO" }
@@ -252,6 +280,7 @@ fun importCalendar(
         warnings = allWarnings.toList(),
         warningDetails = details.asWarningDetails(),
         cancelledUids = cancelledUids,
+        cancelled = cancelled,
     )
 }
 
@@ -819,7 +848,7 @@ private fun formatUntil(untilText: String, event: Event): String? {
     }
 }
 
-private class ContentLine(
+internal class ContentLine(
     val name: String,
     val params: Map<String, String>,
     val value: String,
@@ -827,7 +856,7 @@ private class ContentLine(
     val lineNumber: Int = 0,
 )
 
-private class IcsComponent(
+internal class IcsComponent(
     val name: String,
     val lineNumber: Int = 0,
     val properties: MutableList<ContentLine> = mutableListOf(),
@@ -863,12 +892,14 @@ private fun rewriteDeclaredZoneId(text: String, id: String): String {
     return rebuilt.joinToString("\n")
 }
 
-private data class UnfoldedLine(val text: String, val lineNumber: Int)
+internal data class UnfoldedLine(val text: String, val lineNumber: Int)
 
-private fun parseComponents(text: String): List<IcsComponent> {
+private fun parseComponents(text: String): List<IcsComponent> = parseComponents(unfold(text).asSequence())
+
+private fun parseComponents(lines: Sequence<UnfoldedLine>): List<IcsComponent> {
     val roots = mutableListOf<IcsComponent>()
     val stack = ArrayDeque<IcsComponent>()
-    unfold(text).forEach { unfolded ->
+    lines.forEach { unfolded ->
         val parsed = parseContentLine(unfolded) ?: return@forEach
         when (parsed.name) {
             "BEGIN" -> {
@@ -888,30 +919,104 @@ private fun parseComponents(text: String): List<IcsComponent> {
     return roots
 }
 
-private fun unfold(text: String): List<UnfoldedLine> {
-    val normalized = text.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n')
-    val logical = mutableListOf<UnfoldedLine>()
-    var lineNumber = 0
-    normalized.split('\n').forEach { line ->
+/**
+ * Turns a whole calendar text into unfolded logical lines. For text that arrives in pieces, use
+ * [IcsUnfolder], which produces the very same lines without the whole text in memory.
+ */
+internal fun unfold(text: String): List<UnfoldedLine> {
+    val unfolder = IcsUnfolder()
+    val lines = unfolder.feed(text)
+    return lines + unfolder.finish()
+}
+
+/**
+ * Assembles physical lines into folded ICS logical lines, one piece at a time. Line numbers follow
+ * the physical lines of the original file, so warnings can point at them. Feeding the same text as
+ * one piece produces the lines of the previous whole-text [unfold], including its edge cases: a
+ * byte order mark is dropped, `\r\n` and lone `\r` both end a line, and a trailing newline counts
+ * as one final (empty) physical line.
+ */
+internal class IcsUnfolder {
+    private var logical: String? = null
+    private var logicalNumber = 0
+    private var lineNumber = 0
+    private val pending = StringBuilder()
+    private var pendingCarriageReturn = false
+    private var started = false
+    private var endedWithNewline = false
+
+    /** Feeds one decoded piece of the file; returns the logical lines completed by it. */
+    fun feed(piece: String): List<UnfoldedLine> {
+        val lines = mutableListOf<UnfoldedLine>()
+        var text = piece
+        if (!started) {
+            started = true
+            // A byte order mark is produced by real exporters but is not part of the first line.
+            if (text.startsWith('\uFEFF')) text = text.substring(1)
+        }
+        if (pendingCarriageReturn) {
+            pendingCarriageReturn = false
+            // `\r\n` split across pieces is one line break, not two.
+            if (text.startsWith('\n')) text = text.substring(1)
+        }
+        var index = 0
+        while (index < text.length) {
+            when (val ch = text[index]) {
+                '\r' -> {
+                    flush(pending.toString(), lines)
+                    pending.clear()
+                    endedWithNewline = true
+                    if (index + 1 < text.length) {
+                        if (text[index + 1] == '\n') index++
+                    } else {
+                        pendingCarriageReturn = true
+                    }
+                }
+                '\n' -> {
+                    flush(pending.toString(), lines)
+                    pending.clear()
+                    endedWithNewline = true
+                }
+                else -> {
+                    pending.append(ch)
+                    endedWithNewline = false
+                }
+            }
+            index++
+        }
+        return lines
+    }
+
+    /** Ends the stream; call after the last [feed]. */
+    fun finish(): List<UnfoldedLine> {
+        val lines = mutableListOf<UnfoldedLine>()
+        // A file ending in a line break has one final empty physical line, which still counts.
+        if (pending.isNotEmpty() || endedWithNewline) {
+            flush(pending.toString(), lines)
+            pending.clear()
+        }
+        logical?.let { lines += UnfoldedLine(it, logicalNumber) }
+        logical = null
+        return lines
+    }
+
+    private fun flush(physical: String, lines: MutableList<UnfoldedLine>) {
         lineNumber++
-        val continuesFolded = line.startsWith(' ') || line.startsWith('\t')
-        val continuesQuotedPrintable = logical.isNotEmpty() &&
-            logical.last().text.endsWith("=") &&
-            logical.last().text.contains("ENCODING=QUOTED-PRINTABLE", ignoreCase = true)
+        val current = logical
         when {
-            continuesFolded && logical.isNotEmpty() -> {
-                val last = logical.last()
-                logical[logical.lastIndex] = last.copy(text = last.text + line.substring(1))
+            current != null && (physical.startsWith(' ') || physical.startsWith('\t')) ->
+                logical = current + physical.substring(1)
+            current != null && current.endsWith("=") &&
+                current.contains("ENCODING=QUOTED-PRINTABLE", ignoreCase = true) ->
+                // vCalendar 1.0 folds a quoted-printable value with a trailing "=" instead of a space.
+                logical = current.dropLast(1) + physical
+            else -> {
+                if (current != null) lines += UnfoldedLine(current, logicalNumber)
+                logical = physical
+                logicalNumber = lineNumber
             }
-            // vCalendar 1.0 folds a quoted-printable value with a trailing "=" instead of a space.
-            continuesQuotedPrintable -> {
-                val last = logical.last()
-                logical[logical.lastIndex] = last.copy(text = last.text.dropLast(1) + line)
-            }
-            else -> logical += UnfoldedLine(line, lineNumber)
         }
     }
-    return logical
 }
 
 private fun parseContentLine(unfolded: UnfoldedLine): ContentLine? {
@@ -1871,6 +1976,11 @@ private fun mapPriorSplit(
         rDates = series.repeat.rDates.filter { parseDateText(it)?.let { date -> date <= priorRid } == true },
     )
     val span = prior.day.daysTo(prior.endDay)
+    // The source text describes the exception slot, not the series anchor, so the date part has to
+    // move to the anchor. The override governs every past occurrence, which keeps its own wall time
+    // and zone: dropping them made the next export fall back to floating time.
+    val pastDelta = priorRid.daysTo(series.day)
+    val pastStart = prior.sourceStart?.let { rewriteSourceDate(it, series.day) }
     val past = prior.copy(
         id = null,
         date = series.day.toString(),
@@ -1883,11 +1993,10 @@ private fun mapPriorSplit(
         recurrenceId = null,
         thisAndFuture = false,
         icsUid = pastUid,
-        // The source text describes the exception slot, not the series anchor.
-        sourceStart = null,
-        sourceEnd = null,
-        timeZoneId = null,
-        timeZoneDefinition = null,
+        sourceStart = pastStart,
+        sourceEnd = shiftSourceDate(prior.sourceEnd, pastDelta).takeIf { pastStart != null },
+        timeZoneId = prior.timeZoneId.takeIf { pastStart != null },
+        timeZoneDefinition = prior.timeZoneDefinition.takeIf { pastStart != null },
         created = series.created,
         lastModified = prior.lastModified ?: series.lastModified,
         sequence = prior.sequence,
@@ -1905,6 +2014,10 @@ private fun mapPriorSplit(
         val futureSpan = series.day.daysTo(series.endDay)
         val cancelledAfter = overridesAfter.filter { (_, override) -> override.isCancelled() }
             .map { it.first.toString() }
+        // The anchor moved to a later occurrence, so the original DTSTART text no longer applies.
+        // The future occurrences keep the series' wall time and zone, so only the date part is
+        // rewritten; clearing the source here used to degrade the next export to floating time.
+        val futureStart = series.sourceStart?.let { rewriteSourceDate(it, start) }
         series.copy(
             date = start.toString(),
             endDate = start.plusDays(futureSpan).takeIf { futureSpan != 0 }?.toString(),
@@ -1915,11 +2028,10 @@ private fun mapPriorSplit(
             recurrenceId = null,
             thisAndFuture = false,
             icsUid = uid,
-            // The anchor moved to a later occurrence, so the original DTSTART text no longer applies.
-            sourceStart = null,
-            sourceEnd = null,
-            timeZoneId = null,
-            timeZoneDefinition = null,
+            sourceStart = futureStart,
+            sourceEnd = shiftSourceDate(series.sourceEnd, series.day.daysTo(start)).takeIf { futureStart != null },
+            timeZoneId = series.timeZoneId.takeIf { futureStart != null },
+            timeZoneDefinition = series.timeZoneDefinition.takeIf { futureStart != null },
         )
     }
 
@@ -2130,6 +2242,7 @@ private fun mapSingle(
             dtStamp = raw.dtStamp,
             sequence = raw.sequence,
             extraProperties = raw.extraProperties,
+            sourceLine = raw.lineNumber,
         )
     }
 
@@ -2203,6 +2316,7 @@ private fun mapSingle(
         dtStamp = raw.dtStamp,
         sequence = raw.sequence,
         extraProperties = raw.extraProperties,
+        sourceLine = raw.lineNumber,
     )
 }
 
@@ -2506,6 +2620,7 @@ private fun readTodo(
         alarms = alarms.map { it.toAlarm() },
         repeat = repeat,
         excludedDates = exdates.map { it.localDate(deviceZone).toString() }.distinct(),
+        sourceLine = component.lineNumber,
     )
 }
 
@@ -2582,6 +2697,7 @@ private fun readJournal(
         sequence = sequence,
         icsUid = uid,
         extraProperties = extra,
+        sourceLine = component.lineNumber,
     )
 }
 
@@ -2777,6 +2893,28 @@ private fun parseUtcOffset(value: String): Int? {
     return sign * (hours * 3600 + minutes * 60 + seconds)
 }
 
+/**
+ * Rewrites the date part of an ICS DATE-TIME value, keeping the time of day and any `Z`. Used when
+ * an event's anchor moves but its wall time and zone stay the same.
+ */
+private fun rewriteSourceDate(source: String, date: LocalDate): String? {
+    val utc = source.endsWith("Z", ignoreCase = true)
+    val body = if (utc) source.dropLast(1) else source
+    if (body.length < 15 || body[8] != 'T') return null
+    return formatDate(date) + body.substring(8) + if (utc) "Z" else ""
+}
+
+/** Moves the date part of an ICS DATE-TIME value by [days]; null when [source] is not parseable. */
+private fun shiftSourceDate(source: String?, days: Int): String? {
+    if (source == null) return null
+    if (days == 0) return source
+    val utc = source.endsWith("Z", ignoreCase = true)
+    val body = if (utc) source.dropLast(1) else source
+    if (body.length < 15 || body[8] != 'T') return null
+    val date = parseDate(body.substring(0, 8)) ?: return null
+    return formatDate(date.plusDays(days)) + body.substring(8) + if (utc) "Z" else ""
+}
+
 private fun parseSourceLocal(source: String): LocalDateTime? {
     val body = if (source.endsWith("Z", ignoreCase = true)) source.dropLast(1) else source
     if (body.length < 13 || body[8] != 'T') return null
@@ -2887,8 +3025,29 @@ private fun foldLine(line: String): String {
     return result.toString()
 }
 
+@OptIn(ExperimentalEncodingApi::class)
 private fun StringBuilder.appendAttachments(attachments: List<Attachment>) {
     attachments.forEach { attachment ->
+        // A stored payload is re-encoded at export time. The record keeps the parameter head of the
+        // original line, so FMTTYPE and any other parameters survive the round trip without the
+        // base64 blob ever living inside the serialized state.
+        val stored = attachment.storedFile?.takeIf { it.isNotBlank() }
+        if (attachment.binary && attachment.data.isBlank() && stored != null) {
+            val bytes = stored.let(AppAttachmentStore::read)
+            if (bytes != null) {
+                val head = attachment.raw.ifBlank {
+                    buildString {
+                        append("ATTACH;ENCODING=BASE64")
+                        if (attachment.mimeType.isNotBlank()) append(";FMTTYPE=${attachment.mimeType}")
+                        if (attachment.name.isNotBlank()) append(";FILENAME=${escapeText(attachment.name)}")
+                    }
+                }
+                line("$head:${Base64.encode(bytes)}")
+            }
+            // A payload whose file is gone cannot be invented; the attachment is left out instead
+            // of exporting an empty value every client would reject.
+            return@forEach
+        }
         val raw = attachment.raw
         line(raw.ifBlank { "ATTACH:${sanitizeUriValue(attachment.uri)}" })
     }

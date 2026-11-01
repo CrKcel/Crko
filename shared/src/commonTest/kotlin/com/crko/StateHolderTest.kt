@@ -1,17 +1,21 @@
 package com.crko
 
 import com.crko.domain.Alarm
+import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.Attachment
 import com.crko.domain.Event
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsWarning
 import com.crko.domain.IcsWarningDetail
+import com.crko.domain.Journal
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
 import com.crko.domain.TodoStatus
+import com.crko.domain.attachmentMimeType
+import com.crko.domain.exportIcs
 import com.crko.domain.importCalendar
 import com.crko.domain.normalizedForZone
 import com.crko.domain.occurrenceStartOn
@@ -25,10 +29,11 @@ import com.crko.i18n.resolveLanguage
 import com.crko.i18n.systemLanguage
 import com.crko.state.AppStateHolder
 import com.crko.state.EditScope
+import com.crko.state.ImportOutcome
 import com.crko.state.WriteResult
 import com.crko.storage.StateStorage
+import com.crko.domain.decodedBytes
 import com.crko.ui.common.importSummaryText
-import com.crko.ui.schedule.decodedBytes
 import com.crko.ui.schedule.endMinutesAfterStartChange
 import com.crko.ui.schedule.updateReminderAlarms
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -465,8 +470,8 @@ class StateHolderTest {
     fun importedTodosGetIdsAndAreDeduplicatedByUid() {
         val f = Fixture()
         val todo = Todo("", "Imported", icsUid = "todo-uid")
-        assertEquals(0 to 1, f.holder.importCalendar(IcsImport(todos = listOf(todo))))
-        assertEquals(0 to 0, f.holder.importCalendar(IcsImport(todos = listOf(todo))))
+        assertEquals(ImportOutcome(todos = 1), f.holder.importCalendar(IcsImport(todos = listOf(todo))))
+        assertEquals(ImportOutcome(), f.holder.importCalendar(IcsImport(todos = listOf(todo))))
         val stored = f.holder.appState.todos.single()
         assertTrue(stored.id.isNotBlank())
         assertEquals("todo-uid", stored.icsUid)
@@ -834,13 +839,13 @@ class StateHolderTest {
             todos = listOf(Todo(id = "", title = "File todo", icsUid = "file-2")),
         )
         val writesBefore = f.storage.writes
-        assertEquals(1 to 1, f.holder.importCalendar(import))
+        assertEquals(ImportOutcome(events = 1, todos = 1), f.holder.importCalendar(import))
         // Two writes meant a calendar left half-imported when the process died in between.
         assertEquals(1, f.storage.writes - writesBefore)
         assertEquals(1, f.holder.appState.events.size)
         assertEquals(1, f.holder.appState.todos.size)
         val afterFirst = f.storage.writes
-        assertEquals(0 to 0, f.holder.importCalendar(IcsImport(events = import.events, todos = import.todos)))
+        assertEquals(ImportOutcome(), f.holder.importCalendar(IcsImport(events = import.events, todos = import.todos)))
         // Nothing was new, so nothing was serialised either.
         assertEquals(afterFirst, f.storage.writes)
     }
@@ -922,6 +927,89 @@ class StateHolderTest {
         assertEquals(2, f.holder.importEvents(listOf(series, exception)))
         f.holder.importCalendar(IcsImport(cancelledUids = setOf("cancel-uid")))
         assertTrue(f.holder.appState.events.isEmpty())
+    }
+
+    @Test
+    fun theImportFeedbackCountsJournalsAndRemovals() {
+        val f = Fixture()
+        val journal = Journal(id = "", title = "Note", icsUid = "j-1")
+        assertEquals(ImportOutcome(journals = 1), f.holder.importCalendar(IcsImport(journals = listOf(journal))))
+        assertEquals(1, f.holder.importEvents(listOf(Event(null, "Gone", "2026-10-27", 540, 600, icsUid = "gone"))))
+        assertEquals(ImportOutcome(removed = 1), f.holder.importCalendar(IcsImport(cancelledUids = setOf("gone"))))
+    }
+
+    @Test
+    fun reimportingTheSameSourceRemovesRecordsTheFileNoLongerLists() {
+        val f = Fixture()
+        val kept = Event(null, "Kept", "2026-10-27", 540, 600, icsUid = "kept-1")
+        val gone = Event(null, "Gone", "2026-10-28", 540, 600, icsUid = "gone-1")
+        assertEquals(ImportOutcome(events = 2), f.holder.importCalendar(IcsImport(events = listOf(kept, gone)), "plan.ics"))
+        // The file still carries one of the two records, so the other one was removed upstream.
+        assertEquals(
+            ImportOutcome(removed = 1),
+            f.holder.importCalendar(IcsImport(events = listOf(kept)), "plan.ics"),
+        )
+        assertEquals(listOf("Kept"), f.holder.appState.events.map { it.title })
+    }
+
+    @Test
+    fun recordsFromOtherSourcesSurviveAReimport() {
+        val f = Fixture()
+        f.holder.importEvents(listOf(Event(null, "Mine", "2026-10-27", 540, 600, icsUid = "mine-1")))
+        f.holder.importCalendar(
+            IcsImport(events = listOf(Event(null, "Other", "2026-10-28", 540, 600, icsUid = "other-1"))),
+            "other.ics",
+        )
+        // An empty file of a source says nothing about records the source does not own.
+        assertEquals(ImportOutcome(), f.holder.importCalendar(IcsImport(), "other.ics"))
+        assertEquals(2, f.holder.appState.events.size)
+    }
+
+    @Test
+    fun locallyCreatedRecordsSurviveSourceReconciliation() {
+        val f = Fixture()
+        assertEquals(1, f.holder.importEvents(listOf(Event(null, "Mine", "2026-10-27", 540, 600))))
+        val first = Event(null, "Imported", "2026-10-28", 540, 600, icsUid = "imp-1")
+        f.holder.importCalendar(IcsImport(events = listOf(first)), "plan.ics")
+        val second = Event(null, "Imported", "2026-10-29", 540, 600, icsUid = "imp-2")
+        assertEquals(
+            ImportOutcome(events = 1, removed = 1),
+            f.holder.importCalendar(IcsImport(events = listOf(second)), "plan.ics"),
+        )
+        assertEquals(listOf("Imported", "Mine"), f.holder.appState.events.map { it.title }.sorted())
+    }
+
+    @Test
+    fun embeddedAttachmentsAreStoredAsFilesAndReEncodedOnExport() {
+        val f = Fixture()
+        val attachment = Attachment(
+            raw = "ATTACH;FMTTYPE=text/plain;ENCODING=BASE64;FILENAME=notes.txt",
+            data = "VGVzdA==",
+            binary = true,
+        )
+        val event = Event(null, "With file", "2026-10-27", 540, 600, icsUid = "att-1", attachments = listOf(attachment))
+        f.holder.importCalendar(IcsImport(events = listOf(event)), "plan.ics")
+        val stored = f.holder.appState.events.single().attachments.single()
+        assertEquals("", stored.data)
+        assertTrue(!stored.storedFile.isNullOrBlank(), stored.toString())
+        // The payload no longer lives inside the serialized state, or imports would accumulate it.
+        val serialized = AppJson.encodeToString(AppState.serializer(), f.storage.state)
+        assertFalse(serialized.contains("VGVzdA=="), serialized)
+        // Export re-encodes the payload from the stored file, parameters included.
+        val exported = exportIcs(listOf(f.holder.appState.events.single()))
+        assertTrue(
+            exported.contains("ATTACH;FMTTYPE=text/plain;ENCODING=BASE64;FILENAME=notes.txt:VGVzdA=="),
+            exported,
+        )
+    }
+
+    @Test
+    fun attachmentMimeTypesAreDerivedFromFmttypeOrFileName() {
+        assertEquals("image/png", attachmentMimeType(Attachment(mimeType = "image/png")))
+        assertEquals("image/png", attachmentMimeType(Attachment(name = "picture.png")))
+        assertEquals("text/plain", attachmentMimeType(Attachment(name = "readme.txt", binary = true)))
+        // Without any hint the payload is an opaque binary download.
+        assertEquals("application/octet-stream", attachmentMimeType(Attachment(binary = true)))
     }
 
     @Test
@@ -1060,6 +1148,8 @@ class StateHolderTest {
             strings = EnStrings,
             events = 1,
             todos = 0,
+            journals = 0,
+            removed = 0,
             warnings = listOf(IcsWarning.MissingStart),
             details = details,
         )

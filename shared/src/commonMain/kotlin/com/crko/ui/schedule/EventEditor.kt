@@ -41,6 +41,8 @@ import com.crko.domain.EventTransparency
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
+import com.crko.domain.attachmentMimeType
+import com.crko.domain.attachmentBytes
 import com.crko.domain.daysTo
 import com.crko.domain.localDate
 import com.crko.domain.mondayIndex
@@ -57,8 +59,6 @@ import com.crko.ui.transfer.CalendarFileBridge
 import com.crko.ui.transfer.rememberCalendarFileBridge
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
@@ -722,11 +722,9 @@ private fun AttachmentRow(
 ) {
     val uriHandler = LocalUriHandler.current
     val openable = attachment.uri.startsWith("http://") || attachment.uri.startsWith("https://")
-    // Decoded once per attachment: a several-megabyte payload decoded on every recomposition while
-    // the user types in the editor would stall the frame.
-    val payload = remember(attachment) {
-        if (attachment.binary && attachment.data.isNotBlank()) attachment.decodedBytes() else null
-    }
+    // Read once per attachment: a several-megabyte payload decoded on every recomposition while the
+    // user types in the editor would stall the frame.
+    val payload = remember(attachment) { if (attachment.binary) attachment.attachmentBytes() else null }
     val label = attachment.name.ifBlank {
         if (attachment.binary) strings.attachments else attachment.uri.ifBlank { strings.attachments }
     }
@@ -751,7 +749,7 @@ private fun AttachmentRow(
                         bridge.saveAttachment(
                             fileName = safeAttachmentFileName(attachment),
                             bytes = bytes,
-                            mimeType = attachment.mimeType,
+                            mimeType = attachmentMimeType(attachment),
                             onSaved = {},
                             onError = { onNotice(strings.attachmentSaveFailed) },
                         )
@@ -762,21 +760,6 @@ private fun AttachmentRow(
             }
             .padding(horizontal = 4.dp, vertical = 6.dp),
     )
-}
-
-/**
- * Base64 of an embedded `ATTACH`. Exporters disagree about padding and about the alphabet, so both
- * are repaired before decoding instead of leaving the row dead.
- */
-@OptIn(ExperimentalEncodingApi::class)
-internal fun Attachment.decodedBytes(): ByteArray? {
-    val text = data.filterNot { it.isWhitespace() }.replace('-', '+').replace('_', '/')
-    val padded = when (text.length % 4) {
-        0 -> text
-        2, 3 -> text + "=".repeat(4 - text.length % 4)
-        else -> return null
-    }
-    return runCatching { Base64.decode(padded) }.getOrNull()
 }
 
 @Composable

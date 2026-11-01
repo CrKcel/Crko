@@ -121,6 +121,7 @@ class IcsTest {
                 endMinutes = 570,
                 note = "Line one\nLine two",
                 icsUid = "abc-1",
+                sourceLine = 3,
             ),
             event,
         )
@@ -1776,6 +1777,70 @@ class IcsTest {
         assertEquals(2, future.repeat?.count)
         assertTrue(future.occursOn(LocalDate(2026, 10, 31)))
         assertFalse(future.occursOn(LocalDate(2026, 10, 29)))
+    }
+
+    @Test
+    fun thisAndPriorSplitKeepsTimeZonesForTheNextExport() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:prior-zone
+            SUMMARY:Base
+            DTSTART;TZID=Asia/Shanghai:20261027T090000
+            DTEND;TZID=Asia/Shanghai:20261027T100000
+            RRULE:FREQ=DAILY;COUNT=5
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:prior-zone
+            RECURRENCE-ID;RANGE=THISANDPRIOR;TZID=Asia/Shanghai:20261029T090000
+            DTSTART;TZID=Asia/Shanghai:20261029T100000
+            DTEND;TZID=Asia/Shanghai:20261029T110000
+            SUMMARY:Past
+            END:VEVENT
+            """,
+        )
+        val events = importCalendar(text, utc, "Untitled").events
+        val past = events.first { it.title == "Past" }
+        val future = events.first { it.title == "Base" }
+        // Clearing the zone made the next export fall back to floating time; both segments must
+        // keep the source text (with the anchor's new date) and the zone they were read in.
+        assertEquals("Asia/Shanghai", past.timeZoneId)
+        assertEquals("20261027T100000", past.sourceStart)
+        assertEquals("20261027T110000", past.sourceEnd)
+        assertEquals("Asia/Shanghai", future.timeZoneId)
+        assertEquals("20261030T090000", future.sourceStart)
+        val exported = exportIcs(events, now)
+        assertTrue(exported.contains("DTSTART;TZID=Asia/Shanghai:20261027T100000\r\n"), exported)
+        assertTrue(exported.contains("DTSTART;TZID=Asia/Shanghai:20261030T090000\r\n"), exported)
+        // The round trip keeps the wall clock of both segments in the same zone.
+        val back = importCalendar(exported, utc, "Untitled").events
+        assertEquals(past.date to past.startMinutes, back.first { it.title == "Past" }.let { it.date to it.startMinutes })
+        assertEquals(future.date to future.startMinutes, back.first { it.title == "Base" }.let { it.date to it.startMinutes })
+        assertEquals("20261027T100000", back.first { it.title == "Past" }.sourceStart)
+        assertEquals("20261030T090000", back.first { it.title == "Base" }.sourceStart)
+    }
+
+    @Test
+    fun aCancelledMasterIsListedForThePreview() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:gone
+            DTSTAMP:20261027T090000Z
+            SEQUENCE:2
+            STATUS:CANCELLED
+            SUMMARY:Cancelled series
+            DTSTART:20261027T090000
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        assertEquals(0, imported.events.size)
+        assertEquals(setOf("gone"), imported.cancelledUids)
+        val cancelled = imported.cancelled.single()
+        assertEquals("gone", cancelled.uid)
+        assertEquals("Cancelled series", cancelled.summary)
+        assertEquals(3, cancelled.line)
     }
 
     @Test

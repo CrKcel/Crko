@@ -122,9 +122,38 @@ class StorageTest {
         assertEquals("SUMMARY:日程", decodeCalendarBytes("SUMMARY:日程".encodeToByteArray()))
         // GBK bytes for "日程"; older exporters still write these.
         assertEquals("日程", decodeCalendarBytes(byteArrayOf(0xC8.toByte(), 0xD5.toByte(), 0xB3.toByte(), 0xCC.toByte())))
-        // Windows-1252 bytes for "ÿþ€" used to be rejected as invalid UTF-8.
-        assertEquals("ÿþ€", decodeCalendarBytes(byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 0x80.toByte())))
+        // Windows-1252 bytes for "ÿ€" used to be rejected as invalid UTF-8. (A leading FF FE is now
+        // read as a UTF-16 byte order mark; see utf16FilesAreDecodedThroughTheirByteOrderMark.)
+        assertEquals("ÿ€", decodeCalendarBytes(byteArrayOf(0xFF.toByte(), 0x80.toByte())))
     }
+
+    @Test
+    fun utf16FilesAreDecodedThroughTheirByteOrderMark() {
+        val text = "BEGIN:VCALENDAR\r\nSUMMARY:会议\r\nEND:VCALENDAR\r\n"
+        val bom = byteArrayOf(0xFF.toByte(), 0xFE.toByte())
+        assertEquals(text, decodeCalendarBytes(bom + text.utf16LeBytes()))
+        val bigEndian = byteArrayOf(0xFE.toByte(), 0xFF.toByte()) + text.utf16BeBytes()
+        assertEquals(text, decodeCalendarBytes(bigEndian))
+    }
+
+    @Test
+    fun accentedRunsAreReadAsWindows1252EvenWhenGb18030WouldAcceptThem() {
+        // "ÄÖÜa" is two GB18030-readable pairs, but real Chinese text is built almost entirely from
+        // pairs whose both bytes are high, so the statistics still pick Windows-1252 here.
+        val bytes = "BEGIN:VCALENDAR\r\nSUMMARY:".encodeToByteArray() +
+            byteArrayOf(0xC4.toByte(), 0xD6.toByte(), 0xDC.toByte(), 0x61.toByte()) +
+            "\r\nEND:VCALENDAR\r\n".encodeToByteArray()
+        val text = decodeCalendarBytes(bytes)
+        assertTrue(text != null && text.contains("ÄÖÜa"), text ?: "null")
+    }
+
+    private fun String.utf16LeBytes(): ByteArray = flatMap { char ->
+        listOf((char.code and 0xFF).toByte(), (char.code shr 8).toByte())
+    }.toByteArray()
+
+    private fun String.utf16BeBytes(): ByteArray = flatMap { char ->
+        listOf((char.code shr 8).toByte(), (char.code and 0xFF).toByte())
+    }.toByteArray()
 
     @Test
     fun singleHighBytesAreReadAsWindows1252InsteadOfChineseGarbage() {

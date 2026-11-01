@@ -1,8 +1,11 @@
 package com.crko.domain
 
+import com.crko.storage.AppAttachmentStore
 import kotlinx.datetime.LocalDate
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 enum class RepeatFrequency { Daily, Weekly, Monthly, Yearly, Custom }
 
@@ -38,21 +41,57 @@ data class Alarm(
     val extraProperties: List<String> = emptyList(),
 )
 
-/** An `ATTACH` value. URIs can be opened from the editor; binary payloads are kept raw. */
+/**
+ * An `ATTACH` value. URIs can be opened from the editor; binary payloads are kept in the attachment
+ * store and referenced by [storedFile], so the serialized calendar never carries megabytes of
+ * base64 text that every import would accumulate.
+ */
 @Serializable
 data class Attachment(
-    /** Original content line, including parameters, so exporting does not lose them. */
+    /**
+     * Original content line, including parameters, so exporting does not lose them. For a stored
+     * binary payload this holds only the parameter head (up to the value), because the base64 value
+     * itself lives in a file and is re-encoded on export.
+     */
     val raw: String = "",
     val uri: String = "",
     /** `FILENAME` parameter or the last URI segment. */
     val name: String = "",
     /** `FMTTYPE` parameter. */
     val mimeType: String = "",
-    /** Base64 payload for `ENCODING=BASE64` attachments. */
+    /** Base64 payload for `ENCODING=BASE64` attachments; empty once [storedFile] takes over. */
     val data: String = "",
     /** `ENCODING=BASE64` payload; it has no openable URI. */
     val binary: Boolean = false,
+    /** Name of the file in the attachment store holding the payload of a binary attachment. */
+    val storedFile: String? = null,
 )
+
+/**
+ * Decoded bytes of an embedded `ATTACH`. Exporters disagree about padding and about the alphabet,
+ * so both are repaired before decoding instead of leaving the payload unreadable.
+ */
+@OptIn(ExperimentalEncodingApi::class)
+fun Attachment.decodedBytes(): ByteArray? {
+    val text = data.filterNot { it.isWhitespace() }.replace('-', '+').replace('_', '/')
+    val padded = when (text.length % 4) {
+        0 -> text
+        2, 3 -> text + "=".repeat(4 - text.length % 4)
+        else -> return null
+    }
+    return runCatching { Base64.decode(padded) }.getOrNull()
+}
+
+/**
+ * Bytes of [this] attachment wherever they live: the attachment-store file for an imported payload,
+ * the inline base64 for one that has not been materialized yet. Null when neither is readable.
+ */
+fun Attachment.attachmentBytes(): ByteArray? {
+    val file = storedFile?.takeIf { it.isNotBlank() }
+    if (file != null && data.isBlank()) return AppAttachmentStore.read(file)
+    if (data.isNotBlank()) return decodedBytes()
+    return null
+}
 
 /** Characters a file name must never contain when it is handed to the platform file picker. */
 private const val ReservedFileNameCharacters = "\\/:*?\"<>|"
@@ -96,9 +135,13 @@ private fun cleanFileNamePart(value: String): String {
         .trimStart('.', ' ')
 }
 
-private fun attachmentExtension(attachment: Attachment): String = when (
-    val type = attachment.mimeType.substringBefore(';').trim().lowercase()
-) {
+private fun attachmentExtension(attachment: Attachment): String = mimeTypeExtension(
+    attachment.mimeType.substringBefore(';').trim().lowercase(),
+    fallback = if (attachment.binary) ".bin" else "",
+)
+
+/** Extension for a MIME type, or [fallback] when one is not known. */
+private fun mimeTypeExtension(type: String, fallback: String): String = when (type) {
     "image/png" -> ".png"
     "image/jpeg", "image/jpg" -> ".jpg"
     "image/gif" -> ".gif"
@@ -109,7 +152,37 @@ private fun attachmentExtension(attachment: Attachment): String = when (
     "application/json" -> ".json"
     "audio/mpeg" -> ".mp3"
     "video/mp4" -> ".mp4"
-    else -> if (attachment.binary) ".bin" else ""
+    else -> fallback
+}
+
+private val extensionMimeTypes = mapOf(
+    "png" to "image/png",
+    "jpg" to "image/jpeg",
+    "jpeg" to "image/jpeg",
+    "gif" to "image/gif",
+    "webp" to "image/webp",
+    "heic" to "image/heic",
+    "pdf" to "application/pdf",
+    "txt" to "text/plain",
+    "csv" to "text/csv",
+    "json" to "application/json",
+    "mp3" to "audio/mpeg",
+    "mp4" to "video/mp4",
+    "ics" to "text/calendar",
+)
+
+/**
+ * MIME type for saving [this] attachment: `FMTTYPE` when the file declares one, else the type its
+ * file name extension implies, else a generic binary type. The platform picker builds its document
+ * from this value, so a payload should not be forced to `application/octet-stream` when its type is
+ * known.
+ */
+fun attachmentMimeType(attachment: Attachment): String {
+    val declared = attachment.mimeType.substringBefore(';').trim().lowercase()
+    if (declared.isNotEmpty()) return declared
+    val name = safeAttachmentFileName(attachment)
+    val extension = name.substringAfterLast('.', "").lowercase()
+    return extensionMimeTypes[extension] ?: "application/octet-stream"
 }
 
 @Serializable
@@ -207,6 +280,10 @@ data class Event(
     val organizerRaw: String? = null,
     /** Original ATTENDEE lines, including CN/ROLE/PARTSTAT/... parameters. */
     val attendeeRaw: List<String> = emptyList(),
+    /** Name of the file this record was imported from; local records have none. */
+    val importSource: String? = null,
+    /** Line of `BEGIN:VEVENT` in the imported file, for pointing feedback at the record. */
+    val sourceLine: Int = 0,
 ) {
     /** Parsed [date], cached because [occursOn] runs for every visible calendar cell. */
     val day: LocalDate by lazy(LazyThreadSafetyMode.NONE) { LocalDate.parse(date) }
@@ -300,6 +377,10 @@ data class Todo(
     val repeat: RepeatRule? = null,
     /** Occurrence dates the series skips, from `EXDATE`. */
     val excludedDates: List<String> = emptyList(),
+    /** Name of the file this record was imported from; local records have none. */
+    val importSource: String? = null,
+    /** Line of `BEGIN:VTODO` in the imported file, for pointing feedback at the record. */
+    val sourceLine: Int = 0,
 )
 
 /** A `VJOURNAL` entry. Parsed and exported so a calendar round trip does not drop journals. */
@@ -321,6 +402,10 @@ data class Journal(
     val sequence: Int = 0,
     val icsUid: String? = null,
     val extraProperties: List<String> = emptyList(),
+    /** Name of the file this journal was imported from; local records have none. */
+    val importSource: String? = null,
+    /** Line of `BEGIN:VJOURNAL` in the imported file, for pointing feedback at the record. */
+    val sourceLine: Int = 0,
 )
 
 @Serializable

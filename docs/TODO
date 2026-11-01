@@ -1,14 +1,3 @@
-## ICS 导入 / 导出
-
-- [ ] 导入反馈只统计日程与待办：仅导入 `VJOURNAL`、或 `CANCELLED` 清掉本地记录时提示“没有可导入内容”，需要把日记条数与被移除的条数也体现出来。
-- [ ] 文件内静默删除（记录不再出现在文件中）需要记录导入来源或明确的导入范围。
-- [ ] 逐条导入预览与选择（与“警告带行号”配套）。
-- [ ] 导入分块 / 流式读取：当前仍是一次读取整份文本，上限 5 MB。
-- [ ] 编码识别的进一步处理：带 BOM 的 UTF-16 文件目前按“无法识别的格式”失败，可按 BOM 识别后解码；GB18030 与 Windows-1252 无法从字节特征区分时，需要统计判定或让用户指定。
-- [ ] Android 保存附件固定用 `application/octet-stream`，没有使用 `FMTTYPE`（`CreateDocument` 的类型在选择器构造时就定死），可按 MIME 或扩展名派生。
-- [ ] 内嵌 `ENCODING=BASE64` 附件另存为文件、状态里只留引用：目前 payload 进入 SharedPreferences / UserDefaults 的全量 JSON，多次导入会持续累积。
-- [ ] `RECURRENCE-ID;RANGE=THISANDPRIOR` 拆分保留时区：过去与未来两段目前清空 `sourceStart` / `timeZoneId`，再次导出会退化为浮动时间。
-
 ## 日历互操作与同步
 
 - [ ] `METHOD` / iTIP 邀请流程（`REQUEST` / `REPLY` / `CANCEL`）。

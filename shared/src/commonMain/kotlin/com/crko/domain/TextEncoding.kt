@@ -38,29 +38,71 @@ internal fun declaredCalendarCharset(bytes: ByteArray): String? =
         }
 
 /**
- * Whether [bytes] hold a run of two or more high bytes. GBK/GB18030 characters always come in such
- * runs, while a Windows-1252 file has accented letters one at a time. Without this test a French
- * title like "Noël" is silently read as one Chinese character.
+ * Whether [bytes] read more plausibly as double-byte Chinese than as Windows-1252. The two encodings
+ * cannot always be told apart byte by byte: "ÄÖ" and one Chinese character are both two high bytes
+ * that GB18030 would accept. The statistics still separate almost everything: real Chinese text is
+ * built from pairs where both bytes are high, while accented Western text puts single high bytes
+ * between ASCII letters — pairs whose second byte is low. A sequence GB18030 cannot read at all
+ * settles the question for Windows-1252, since a strict decoder would reject the file anyway.
  */
 internal fun looksLikeDoubleByteText(bytes: ByteArray): Boolean {
-    var run = 0
-    bytes.forEach { byte ->
-        run = if ((byte.toInt() and 0xFF) >= 0x80) run + 1 else 0
-        if (run >= 2) return true
+    var purePairs = 0
+    var mixedPairs = 0
+    var broken = false
+    var index = 0
+    while (index < bytes.size) {
+        val lead = bytes[index].toInt() and 0xFF
+        when {
+            lead < 0x80 || lead == 0x80 -> index++
+            lead in 0x81..0xFE -> {
+                val second = if (index + 1 < bytes.size) (bytes[index + 1].toInt() and 0xFF) else null
+                when {
+                    // Truncated at the end of the file: no evidence either way.
+                    second == null -> index = bytes.size
+                    second in 0x30..0x39 -> {
+                        // Four-byte GB18030 form.
+                        val third = if (index + 2 < bytes.size) (bytes[index + 2].toInt() and 0xFF) else null
+                        val fourth = if (index + 3 < bytes.size) (bytes[index + 3].toInt() and 0xFF) else null
+                        if (third != null && fourth != null && third in 0x81..0xFE && fourth in 0x30..0x39) {
+                            purePairs++
+                            index += 4
+                        } else {
+                            if (third != null && fourth != null) broken = true
+                            index = bytes.size
+                        }
+                    }
+                    second in 0x40..0x7E || second in 0x80..0xFE -> {
+                        if (second >= 0x80) purePairs++ else mixedPairs++
+                        index += 2
+                    }
+                    else -> {
+                        broken = true
+                        index = bytes.size
+                    }
+                }
+            }
+            else -> {
+                broken = true
+                index = bytes.size
+            }
+        }
     }
-    return false
+    if (broken) return false
+    return purePairs >= 2 || (purePairs >= 1 && mixedPairs == 0)
 }
 
 /**
- * Charsets to try for [bytes], best evidence first: UTF-8 (the only encoding RFC 5545 allows, and a
- * strict decoder that fails on anything else), then what the file declares for itself, then the
- * remaining fallbacks. A declaration is trusted after UTF-8 rather than before it because prose can
- * mention `CHARSET=` inside a description without meaning the whole file.
+ * Charsets to try for [bytes], best evidence first: a byte order mark (some exporters write UTF-16
+ * although RFC 5545 allows only UTF-8), then UTF-8 itself (a strict decoder that fails on anything
+ * else), then what the file declares for itself, then the remaining fallbacks. A declaration is
+ * trusted after UTF-8 rather than before it because prose can mention `CHARSET=` inside a
+ * description without meaning the whole file.
  */
 internal fun calendarCharsetCandidates(bytes: ByteArray): List<String> {
     val declared = declaredCalendarCharset(bytes)
     val doubleByte = looksLikeDoubleByteText(bytes)
     return buildList {
+        byteOrderCharset(bytes)?.let(::add)
         add("UTF-8")
         declared?.let(::add)
         CalendarCharsets.forEach { name ->
@@ -68,6 +110,14 @@ internal fun calendarCharsetCandidates(bytes: ByteArray): List<String> {
             if (name !in this) add(name)
         }
     }
+}
+
+/** Charset named by the byte order mark of [bytes], if it carries one. */
+internal fun byteOrderCharset(bytes: ByteArray): String? = when {
+    bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte() -> "UTF-8"
+    bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte() -> "UTF-16LE"
+    bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte() -> "UTF-16BE"
+    else -> null
 }
 
 /**

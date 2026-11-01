@@ -159,13 +159,24 @@ interface Strings {
     val importFailed: String
     val exportFailed: String
     val exported: String
-    fun importedItems(events: Int, todos: Int): String
+    fun importedItems(events: Int, todos: Int, journals: Int, removed: Int): String
     fun importFailure(failure: IcsImportFailure): String
     fun importWarning(warning: IcsWarning): String
     fun importWarningLocation(line: Int?, record: String?): String
     fun importWarningMore(count: Int): String
     fun storageRecovered(droppedRecords: Int): String
     val untitledEvent: String
+
+    /** Per-record import preview. */
+    val importPreviewTitle: String
+    val importPreviewEvent: String
+    val importPreviewTodo: String
+    val importPreviewJournal: String
+    val importPreviewRemove: String
+    val importPreviewEmpty: String
+    val importSelectAll: String
+    val importSelectNone: String
+    val importConfirm: String
 
     val language: String
     val languageSystem: String
@@ -321,10 +332,15 @@ object ZhStrings : Strings {
     override val importFailed = "导入失败，请检查文件格式"
     override val exportFailed = "导出失败"
     override val exported = "已导出"
-    override fun importedItems(events: Int, todos: Int): String = when {
-        events > 0 && todos > 0 -> "已导入 $events 项日程、$todos 项待办"
-        todos > 0 -> "已导入 $todos 项待办"
-        else -> "已导入 $events 项日程"
+    override fun importedItems(events: Int, todos: Int, journals: Int, removed: Int): String {
+        val items = listOf(
+            events.takeIf { it > 0 }?.let { "$it 项日程" },
+            todos.takeIf { it > 0 }?.let { "$it 项待办" },
+            journals.takeIf { it > 0 }?.let { "$it 篇日记" },
+        ).filterNotNull()
+        val imported = if (items.isEmpty()) "" else "已导入 " + items.joinToString("、")
+        val removedText = if (removed > 0) "已移除 $removed 条记录" else ""
+        return listOf(imported, removedText).filter { it.isNotEmpty() }.joinToString("，")
     }
     override fun importFailure(failure: IcsImportFailure): String = when (failure) {
         IcsImportFailure.TooLarge -> "文件超过 5 MB，无法导入；请先在原日历中缩小导出范围后重试"
@@ -357,6 +373,15 @@ object ZhStrings : Strings {
             "本地日程数据无法读取，已备份原始文件以便恢复"
         }
     override val untitledEvent = "无标题日程"
+    override val importPreviewTitle = "选择要导入的内容"
+    override val importPreviewEvent = "日程"
+    override val importPreviewTodo = "待办"
+    override val importPreviewJournal = "日记"
+    override val importPreviewRemove = "移除已取消的日程"
+    override val importPreviewEmpty = "文件中没有可选择的记录"
+    override val importSelectAll = "全选"
+    override val importSelectNone = "全不选"
+    override val importConfirm = "导入所选"
     override val language = "语言"
     override val languageSystem = "跟随系统"
     override val languageChinese = "中文"
@@ -516,10 +541,23 @@ object EnStrings : Strings {
     override val importFailed = "Import failed. Check the file format."
     override val exportFailed = "Export failed"
     override val exported = "Exported"
-    override fun importedItems(events: Int, todos: Int): String = when {
-        events > 0 && todos > 0 -> "$events events and $todos todos imported"
-        todos > 0 -> if (todos == 1) "1 todo imported" else "$todos todos imported"
-        else -> if (events == 1) "1 event imported" else "$events events imported"
+    override fun importedItems(events: Int, todos: Int, journals: Int, removed: Int): String {
+        val items = listOf(
+            events.takeIf { it > 0 }?.let { if (it == 1) "1 event" else "$it events" },
+            todos.takeIf { it > 0 }?.let { if (it == 1) "1 todo" else "$it todos" },
+            journals.takeIf { it > 0 }?.let { if (it == 1) "1 journal" else "$it journals" },
+        ).filterNotNull()
+        val imported = when {
+            items.isEmpty() -> ""
+            items.size == 1 -> "${items[0]} imported"
+            else -> "${items.dropLast(1).joinToString(", ")} and ${items.last()} imported"
+        }
+        val removedText = if (removed > 0) {
+            if (removed == 1) "1 record removed" else "$removed records removed"
+        } else {
+            ""
+        }
+        return listOf(imported, removedText).filter { it.isNotEmpty() }.joinToString("; ")
     }
     override fun importFailure(failure: IcsImportFailure): String = when (failure) {
         IcsImportFailure.TooLarge -> "The file is larger than 5 MB. Export a shorter date range and try again."
@@ -552,6 +590,15 @@ object EnStrings : Strings {
             "Stored calendar data could not be read. The original file was kept as a backup."
         }
     override val untitledEvent = "Untitled event"
+    override val importPreviewTitle = "Choose what to import"
+    override val importPreviewEvent = "Event"
+    override val importPreviewTodo = "Todo"
+    override val importPreviewJournal = "Journal"
+    override val importPreviewRemove = "Remove cancelled events"
+    override val importPreviewEmpty = "The file has no records to choose from"
+    override val importSelectAll = "Select all"
+    override val importSelectNone = "Clear"
+    override val importConfirm = "Import selected"
     override val language = "Language"
     override val languageSystem = "System"
     override val languageChinese = "中文"

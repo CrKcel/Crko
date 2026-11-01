@@ -35,7 +35,6 @@ import com.crko.domain.IcsWarningDetail
 import com.crko.domain.LocalClock
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.exportCalendar
-import com.crko.domain.importCalendar
 import com.crko.domain.occurrenceStartOn
 import com.crko.i18n.Strings
 import com.crko.state.AppMessage
@@ -47,7 +46,13 @@ import com.crko.ui.schedule.EventEditorDialog
 import com.crko.ui.schedule.ScheduleTab
 import com.crko.ui.todo.TodoEditorDialog
 import com.crko.ui.todo.TodoTab
+import com.crko.ui.transfer.CalendarReadException
+import com.crko.ui.transfer.ImportPreview
+import com.crko.ui.transfer.ImportPreviewDialog
+import com.crko.ui.transfer.importCalendarChunks
+import com.crko.ui.transfer.importSelection
 import com.crko.ui.transfer.rememberCalendarFileBridge
+import com.crko.ui.transfer.toIcsImport
 import com.crko.ui.components.AddFab
 import com.crko.ui.components.GlassNavigationBar
 import com.crko.ui.components.GlassNavigationBarDefaults
@@ -80,6 +85,7 @@ fun CrkoApp(state: AppStateHolder) {
     var eventEditor by remember { mutableStateOf<EventEditorTarget?>(null) }
     var showTodoEditor by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var importPreview by remember { mutableStateOf<ImportPreview?>(null) }
 
     val now = rememberClock(state)
     val scope = rememberCoroutineScope()
@@ -99,6 +105,8 @@ fun CrkoApp(state: AppStateHolder) {
                     strings = currentStrings,
                     events = message.events,
                     todos = message.todos,
+                    journals = message.journals,
+                    removed = message.removed,
                     warnings = message.warnings,
                     details = message.warningDetails,
                 )
@@ -114,30 +122,57 @@ fun CrkoApp(state: AppStateHolder) {
     fun importCalendar() {
         val untitled = state.strings.untitledEvent
         fileBridge.openImport(
-            onPicked = { text ->
+            onPicked = { chunks, fileName ->
                 scope.launch {
-                    val imported = runCatching {
+                    val parsed = runCatching {
                         withContext(Dispatchers.Default) {
-                            importCalendar(text, TimeZone.currentSystemDefault(), untitled)
+                            importCalendarChunks(chunks, TimeZone.currentSystemDefault(), untitled)
                         }
-                    }.getOrNull()
+                    }
+                    val imported = parsed.getOrNull()
                     if (imported == null) {
-                        state.notify(AppMessage.ImportFailed(IcsImportFailure.InvalidFormat))
-                    } else {
-                        val (events, todos) = state.importCalendar(imported)
+                        val failure = (parsed.exceptionOrNull() as? CalendarReadException)?.failure
+                            ?: IcsImportFailure.InvalidFormat
+                        state.notify(AppMessage.ImportFailed(failure))
+                        return@launch
+                    }
+                    val selection = importSelection(imported)
+                    if (selection.rows.isEmpty()) {
                         state.notify(
                             AppMessage.EventsImported(
-                                events,
-                                todos,
+                                0,
+                                0,
+                                0,
+                                0,
                                 imported.warnings,
                                 imported.warningDetails,
                             ),
                         )
+                        return@launch
                     }
+                    importPreview = ImportPreview(selection = selection, fileName = fileName)
                 }
             },
             onError = { failure -> state.notify(AppMessage.ImportFailed(failure)) },
         )
+    }
+
+    /** Applies the records the user kept in the import preview. */
+    fun applyImport(preview: ImportPreview, checked: List<Boolean>) {
+        val selection = preview.selection
+        scope.launch {
+            val outcome = state.importCalendar(selection.toIcsImport(checked), preview.fileName)
+            state.notify(
+                AppMessage.EventsImported(
+                    outcome.events,
+                    outcome.todos,
+                    outcome.journals,
+                    outcome.removed,
+                    selection.warnings,
+                    selection.warningDetails,
+                ),
+            )
+        }
     }
 
     fun exportCalendar() {
@@ -304,6 +339,18 @@ fun CrkoApp(state: AppStateHolder) {
         strings = strings,
         onDismiss = { showSettings = false },
     )
+
+    importPreview?.let { preview ->
+        ImportPreviewDialog(
+            preview = preview,
+            strings = strings,
+            onConfirm = { checked ->
+                importPreview = null
+                applyImport(preview, checked)
+            },
+            onDismiss = { importPreview = null },
+        )
+    }
 }
 
 /**
@@ -398,11 +445,13 @@ internal fun importSummaryText(
     strings: Strings,
     events: Int,
     todos: Int,
+    journals: Int,
+    removed: Int,
     warnings: List<IcsWarning>,
     details: List<IcsWarningDetail>,
 ): String {
-    if (events == 0 && todos == 0) return strings.nothingToImport
-    val parts = mutableListOf(strings.importedItems(events, todos))
+    if (events == 0 && todos == 0 && journals == 0 && removed == 0) return strings.nothingToImport
+    val parts = mutableListOf(strings.importedItems(events, todos, journals, removed))
     val kinds = warnings + details.map { it.warning }.filterNot { it in warnings }
     kinds.distinct().forEach { warning ->
         val matching = details.filter { it.warning == warning }

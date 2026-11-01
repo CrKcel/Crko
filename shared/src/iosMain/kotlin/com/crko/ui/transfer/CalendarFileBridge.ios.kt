@@ -31,6 +31,7 @@ import platform.UIKit.popoverPresentationController
 import platform.darwin.NSObject
 
 private const val MaxImportBytes = 5 * 1024 * 1024
+private const val ChunkSize = 64 * 1024
 
 @Composable
 actual fun rememberCalendarFileBridge(): CalendarFileBridge = remember { IosCalendarFileBridge() }
@@ -38,7 +39,10 @@ actual fun rememberCalendarFileBridge(): CalendarFileBridge = remember { IosCale
 private class IosCalendarFileBridge : CalendarFileBridge {
     private var importDelegate: ImportDelegate? = null
 
-    override fun openImport(onPicked: (String) -> Unit, onError: (IcsImportFailure) -> Unit) {
+    override fun openImport(
+        onPicked: (List<ByteArray>, String?) -> Unit,
+        onError: (IcsImportFailure) -> Unit,
+    ) {
         val presenter = IosViewControllerHolder.root ?: return onError(IcsImportFailure.Unreadable)
         val picker = UIDocumentPickerViewController(
             documentTypes = listOf("public.calendar-event", "public.text", "public.data"),
@@ -125,7 +129,7 @@ private class IosCalendarFileBridge : CalendarFileBridge {
 }
 
 private class ImportDelegate(
-    private val onPicked: (String) -> Unit,
+    private val onPicked: (List<ByteArray>, String?) -> Unit,
     private val onError: (IcsImportFailure) -> Unit,
     private val onFinished: () -> Unit,
 ) : NSObject(), UIDocumentPickerDelegateProtocol {
@@ -158,13 +162,9 @@ private class ImportDelegate(
                 onError(IcsImportFailure.TooLarge)
                 return
             }
-            // An undecodable file is rejected rather than imported with replacement characters.
-            val text = decodeCalendarBytes(data.toByteArray())
-            if (text == null) {
-                onError(IcsImportFailure.InvalidEncoding)
-                return
-            }
-            onPicked(text)
+            // The bytes are handed over in chunks so decoding never needs one giant array; the
+            // charset and any decoding failure are decided by the shared reader.
+            onPicked(data.toByteArray().toChunks(), url.lastPathComponent)
         } catch (_: Throwable) {
             onError(IcsImportFailure.Unreadable)
         } finally {
@@ -200,4 +200,17 @@ private fun NSData.toByteArray(): ByteArray {
     val bytes = ByteArray(size)
     bytes.usePinned { pinned -> getBytes(pinned.addressOf(0), length = length) }
     return bytes
+}
+
+/** The bytes in 64 KB pieces, so decoding never needs the whole file as one array. */
+private fun ByteArray.toChunks(): List<ByteArray> {
+    if (isEmpty()) return emptyList()
+    val chunks = ArrayList<ByteArray>(size / ChunkSize + 1)
+    var offset = 0
+    while (offset < size) {
+        val end = minOf(offset + ChunkSize, size)
+        chunks += copyOfRange(offset, end)
+        offset = end
+    }
+    return chunks
 }
