@@ -2103,7 +2103,9 @@ private fun mapSingle(
         warnings = warnings,
     )
     val eventEndSource = when {
-        sourceStart == null -> null
+        // `source` is non-null, so `startTimed == null` is exactly `sourceStart == null`; checking
+        // startTimed directly lets the compiler smart-cast it below instead of a redundant `?.`.
+        startTimed == null -> null
         sourceEnd != null -> sourceEnd
         else -> {
             // The end had no source text (it was floating or absent). Measure it against the start's
@@ -2112,9 +2114,7 @@ private fun mapSingle(
             val endWall = (raw.end as? IcsTime.DateTime)?.value ?: endLocal
             val duration = raw.durationMinutes ?: startWall.wallMinutesUntil(endWall)
             if (duration > 0) {
-                startTimed?.let { timed ->
-                    formatIcsLocalDateTime(timed.value.plusMinutes(duration), timed.zone is IcsZone.Utc)
-                }
+                formatIcsLocalDateTime(startTimed.value.plusMinutes(duration), startTimed.zone is IcsZone.Utc)
             } else {
                 null
             }

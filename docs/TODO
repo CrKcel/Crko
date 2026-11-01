@@ -29,8 +29,4 @@
 
 ## 日记（VJOURNAL）
 
-- [ ] `VJOURNAL` 的浏览 / 编辑界面。
-
-## 代码质量
-
-- [ ] 清理 `Ics.kt` 里 `eventEndSource` 分支的多余安全调用告警（`startTimed` 已由 `sourceStart` 推出非空）。
+- [ ] `VJOURNAL` 的浏览 / 编辑界面。。
