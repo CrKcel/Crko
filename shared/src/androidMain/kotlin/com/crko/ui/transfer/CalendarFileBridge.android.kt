@@ -97,7 +97,9 @@ private fun readText(context: Context, uri: android.net.Uri): String {
             check(total <= MaxImportBytes) { "Calendar file is too large" }
             output.write(buffer, 0, read)
         }
-        return output.toByteArray().decodeToString()
+        // Rejecting an undecodable file beats importing replacement characters as if it were fine.
+        return decodeCalendarBytes(output.toByteArray())
+            ?: error("Calendar file is not valid UTF-8")
     }
 }
 

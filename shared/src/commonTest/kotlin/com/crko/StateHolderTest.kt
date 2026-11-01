@@ -40,8 +40,11 @@ private class MemoryStorage(
     var state: AppState = AppState(),
     var settings: PersistedSettings = PersistedSettings(),
 ) : StateStorage {
+    var writes = 0
+
     override fun loadState() = state
     override fun saveState(state: AppState) {
+        writes++
         this.state = state
     }
 
@@ -776,5 +779,57 @@ class StateHolderTest {
         f.holder.addTodo("Due tomorrow", TodoPriority.Normal, f.holder.today.plusDays(1))
         f.holder.setTodoDone(f.holder.appState.todos.single().id, true)
         assertEquals(1, f.holder.completedToday())
+    }
+
+    @Test
+    fun importingAFileWritesEventsAndTodosTogether() {
+        val f = Fixture()
+        val import = IcsImport(
+            events = listOf(Event(null, "Imported", "2026-10-27", 540, 600, icsUid = "file-1")),
+            todos = listOf(Todo(id = "", title = "File todo", icsUid = "file-2")),
+        )
+        val writesBefore = f.storage.writes
+        assertEquals(1 to 1, f.holder.importCalendar(import))
+        // Two writes meant a calendar left half-imported when the process died in between.
+        assertEquals(1, f.storage.writes - writesBefore)
+        assertEquals(1, f.holder.appState.events.size)
+        assertEquals(1, f.holder.appState.todos.size)
+        val afterFirst = f.storage.writes
+        assertEquals(0 to 0, f.holder.importCalendar(IcsImport(events = import.events, todos = import.todos)))
+        // Nothing was new, so nothing was serialised either.
+        assertEquals(afterFirst, f.storage.writes)
+    }
+
+    @Test
+    fun reimportingTheSameFileStillCollapsesOwnExportsAndDuplicates() {
+        val f = Fixture()
+        val first = Event(null, "Meeting", "2026-10-27", 540, 600, icsUid = "uid-a")
+        assertEquals(1, f.holder.importEvents(listOf(first, first.copy())))
+        assertEquals(1, f.holder.appState.events.size)
+        // An event created here is exported as "<id>@crko"; re-importing must not duplicate it.
+        val stored = f.holder.appState.events.single()
+        assertEquals(0, f.holder.importEvents(listOf(stored.copy(id = null, icsUid = "${stored.id}@crko"))))
+        assertEquals(1, f.holder.appState.events.size)
+    }
+
+    @Test
+    fun importingTwoChangesOnTheSameOccurrenceDateKeepsBoth() {
+        val text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n" +
+            "BEGIN:VEVENT\r\nUID:twice\r\nSUMMARY:Series\r\nDTSTART:20261027T090000\r\n" +
+            "DTEND:20261027T100000\r\nRRULE:FREQ=DAILY;COUNT=5\r\nEND:VEVENT\r\n" +
+            "BEGIN:VEVENT\r\nUID:twice\r\nRECURRENCE-ID:20261029T090000\r\nDTSTART:20261029T110000\r\n" +
+            "DTEND:20261029T120000\r\nSUMMARY:First change\r\nEND:VEVENT\r\n" +
+            "BEGIN:VEVENT\r\nUID:twice\r\nRECURRENCE-ID:20261029T130000\r\nDTSTART:20261029T150000\r\n" +
+            "DTEND:20261029T160000\r\nSUMMARY:Second change\r\nEND:VEVENT\r\n" +
+            "END:VCALENDAR\r\n"
+        val parsed = com.crko.domain.importCalendar(text, TimeZone.UTC, "Untitled")
+        val f = Fixture()
+        val (events, _) = f.holder.importCalendar(parsed)
+        // Both changes share one occurrence date, so identical storage keys dropped the second one.
+        assertEquals(3, events)
+        assertEquals(
+            listOf("First change", "Second change"),
+            f.holder.appState.events.filter { it.recurrenceId != null }.map { it.title },
+        )
     }
 }

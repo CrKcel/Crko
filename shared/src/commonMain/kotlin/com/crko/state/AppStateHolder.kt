@@ -62,6 +62,12 @@ sealed interface AppMessage {
     data object ImportFailed : AppMessage
     data object Exported : AppMessage
     data object ExportFailed : AppMessage
+
+    /**
+     * Stored data could not be read completely. [droppedRecords] is zero when nothing at all could
+     * be parsed; the damaged payload itself was kept by the storage.
+     */
+    data class StorageRecovered(val droppedRecords: Int) : AppMessage
 }
 
 enum class PaletteSetting { Monet, Monochrome, Custom }
@@ -121,6 +127,10 @@ class AppStateHolder(
             appState = rebased
             storage.saveState(rebased)
         }
+        // A payload that could only be read partially used to look like an empty calendar with no
+        // explanation; the damaged copy is kept by the storage, so say what happened.
+        val damage = storage.loadDamage()
+        if (!damage.isEmpty) notify(AppMessage.StorageRecovered(damage.droppedRecords))
     }
 
     fun refreshToday() {
@@ -491,43 +501,50 @@ class AppStateHolder(
      * same file can be imported twice. Returns how many events were actually added.
      */
     fun importEvents(events: List<Event>): Int {
-        if (events.isEmpty()) return 0
-        val knownUids = appState.events.mapNotNull { it.icsUid?.takeIf(String::isNotBlank) }.toMutableSet()
-        val knownIds = appState.events.mapNotNull { it.id }.toSet()
-        val added = mutableListOf<Event>()
-        events.forEach { event ->
-            val uid = event.icsUid?.takeIf { it.isNotBlank() }
-            if (uid != null) {
-                if (!knownUids.add(uid)) return@forEach
-                // Exports of events created in this app use "<id>@crko" or "<id>@crko#override-...".
-                val base = uid.substringBefore('#')
-                if (base.endsWith("@crko") && base.removeSuffix("@crko") in knownIds) return@forEach
-            }
-            added += event.copy(id = idProvider())
-        }
+        val added = newEvents(events)
         if (added.isNotEmpty()) persist(appState.copy(events = appState.events + added))
         return added.size
     }
 
     /** Appends todos from an ICS file, deduplicating by UID. */
     fun importTodos(todos: List<Todo>): Int {
-        if (todos.isEmpty()) return 0
-        val knownUids = appState.todos.mapNotNull { it.icsUid?.takeIf(String::isNotBlank) }.toMutableSet()
-        val knownIds = appState.todos.map { it.id }.toSet()
-        val added = todos.filter { todo ->
-            val uid = todo.icsUid?.takeIf { it.isNotBlank() } ?: return@filter true
-            if (!knownUids.add(uid)) return@filter false
-            val base = uid.substringBefore('#').removeSuffix("@crko")
-            !(uid.substringBefore('#').endsWith("@crko") && base in knownIds)
-        }.map { it.copy(id = idProvider()) }
+        val added = newTodos(todos)
         if (added.isNotEmpty()) persist(appState.copy(todos = appState.todos + added))
         return added.size
     }
 
+    /**
+     * Imports both halves of a file in a single write: two separate writes could leave a stored
+     * calendar with the events of a half-finished import, and serialised the whole state twice.
+     */
     fun importCalendar(import: IcsImport): Pair<Int, Int> {
-        val events = importEvents(import.events)
-        val todos = importTodos(import.todos)
-        return events to todos
+        if (import.events.isEmpty() && import.todos.isEmpty()) return 0 to 0
+        val addedEvents = newEvents(import.events)
+        val addedTodos = newTodos(import.todos)
+        if (addedEvents.isEmpty() && addedTodos.isEmpty()) return 0 to 0
+        persist(
+            appState.copy(
+                events = appState.events + addedEvents,
+                todos = appState.todos + addedTodos,
+            ),
+        )
+        return addedEvents.size to addedTodos.size
+    }
+
+    private fun newEvents(events: List<Event>): List<Event> {
+        val knownUids = appState.events.mapNotNull { it.icsUid?.takeIf(String::isNotBlank) }.toMutableSet()
+        val knownIds = appState.events.mapNotNull { it.id }.toSet()
+        return events
+            .filterNot { isAlreadyStored(it.icsUid, knownUids, knownIds) }
+            .map { it.copy(id = idProvider()) }
+    }
+
+    private fun newTodos(todos: List<Todo>): List<Todo> {
+        val knownUids = appState.todos.mapNotNull { it.icsUid?.takeIf(String::isNotBlank) }.toMutableSet()
+        val knownIds = appState.todos.map { it.id }.toSet()
+        return todos
+            .filterNot { isAlreadyStored(it.icsUid, knownUids, knownIds) }
+            .map { it.copy(id = idProvider()) }
     }
 
     /**
@@ -700,6 +717,18 @@ class AppStateHolder(
         appState = next
         storage.saveState(next)
     }
+}
+
+/**
+ * Whether an imported record is already stored, either under the same `icsUid` or as one of this
+ * app's own exports (`<id>@crko`, optionally suffixed with `#override-...`). [knownUids] grows as it
+ * is consulted, so records repeated inside one file are collapsed the same way.
+ */
+private fun isAlreadyStored(uid: String?, knownUids: MutableSet<String>, knownIds: Set<String>): Boolean {
+    val key = uid?.takeIf { it.isNotBlank() } ?: return false
+    if (!knownUids.add(key)) return true
+    val base = key.substringBefore('#')
+    return base.endsWith("@crko") && base.removeSuffix("@crko") in knownIds
 }
 
 private fun shiftDateText(text: String, days: Int): String? =

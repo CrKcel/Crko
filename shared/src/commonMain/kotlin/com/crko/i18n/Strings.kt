@@ -150,6 +150,7 @@ interface Strings {
     val exported: String
     fun importedItems(events: Int, todos: Int): String
     fun importWarning(warning: IcsWarning): String
+    fun storageRecovered(droppedRecords: Int): String
     val untitledEvent: String
 
     val language: String
@@ -304,9 +305,17 @@ object ZhStrings : Strings {
     override fun importWarning(warning: IcsWarning): String = when (warning) {
         IcsWarning.UnresolvedTimeZone -> "部分日程的时区无法识别，已按本地时间导入"
         IcsWarning.InvalidValue -> "部分日期或时间格式无效，已跳过"
-        IcsWarning.UnsupportedRecurrence -> "部分重复规则暂不支持，只保留了首次日程"
+        IcsWarning.UnsupportedRecurrence -> "部分重复规则暂不支持，已简化这些日程"
         IcsWarning.MultipleRrules -> "单个日程包含多条重复规则，只使用了第一条"
+        IcsWarning.MissingStart -> "部分日程没有可用的开始时间，已跳过"
+        IcsWarning.AmbiguousRecurrenceId -> "同一天有多次重复改动无法区分，已按独立日程保留"
     }
+    override fun storageRecovered(droppedRecords: Int): String =
+        if (droppedRecords > 0) {
+            "本地日程数据损坏，已尽量恢复，$droppedRecords 条记录无法读取（原始文件已备份）"
+        } else {
+            "本地日程数据无法读取，已备份原始文件以便恢复"
+        }
     override val untitledEvent = "无标题日程"
     override val language = "语言"
     override val languageSystem = "跟随系统"
@@ -465,9 +474,17 @@ object EnStrings : Strings {
     override fun importWarning(warning: IcsWarning): String = when (warning) {
         IcsWarning.UnresolvedTimeZone -> "Some time zones were unknown; those events use local time"
         IcsWarning.InvalidValue -> "Some dates or times were invalid and were skipped"
-        IcsWarning.UnsupportedRecurrence -> "Some recurrence rules are unsupported; only the first event was kept"
+        IcsWarning.UnsupportedRecurrence -> "Some recurrence rules are unsupported; those events were simplified"
         IcsWarning.MultipleRrules -> "An event had several recurrence rules; only the first was used"
+        IcsWarning.MissingStart -> "Some events had no usable start date and were skipped"
+        IcsWarning.AmbiguousRecurrenceId -> "Several changes shared one occurrence date; they are kept as separate events"
     }
+    override fun storageRecovered(droppedRecords: Int): String =
+        if (droppedRecords > 0) {
+            "Stored calendar data was damaged; $droppedRecords records could not be read. The original file was kept as a backup."
+        } else {
+            "Stored calendar data could not be read. The original file was kept as a backup."
+        }
     override val untitledEvent = "Untitled event"
     override val language = "Language"
     override val languageSystem = "System"

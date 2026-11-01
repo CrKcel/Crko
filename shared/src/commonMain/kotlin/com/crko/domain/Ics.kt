@@ -26,6 +26,12 @@ enum class IcsWarning {
     InvalidValue,
     UnsupportedRecurrence,
     MultipleRrules,
+
+    /** A VEVENT had no usable `DTSTART`, so nothing could be placed on the calendar. */
+    MissingStart,
+
+    /** Several exceptions shared one occurrence date, which the single-start model cannot tell apart. */
+    AmbiguousRecurrenceId,
 }
 
 data class IcsImport(
@@ -60,7 +66,9 @@ fun exportCalendar(
         val id = event.timeZoneId ?: return@forEach
         if (id.equals("UTC", ignoreCase = true) || id in zones) return@forEach
         val definition = event.timeZoneDefinition?.takeIf { it.isNotBlank() } ?: return@forEach
-        zones[id] = normalizeComponent(definition)
+        // The block has to declare the very id the properties reference: import normalises away a
+        // leading "/" (a Microsoft convention), so the verbatim text can differ from [id].
+        zones[id] = rewriteDeclaredZoneId(normalizeComponent(definition), id)
     }
     zones.forEach { (_, definition) ->
         definition.trimEnd().split(Regex("\\r?\\n")).forEach { line(it) }
@@ -304,7 +312,9 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     event.created?.let { if (it.isNotBlank()) line("CREATED:${formatUtc(parseInstant(it) ?: now)}") }
     event.lastModified?.let { if (it.isNotBlank()) line("LAST-MODIFIED:${formatUtc(parseInstant(it) ?: now)}") }
     if (event.sequence > 0 || event.lastModified != null) line("SEQUENCE:${event.sequence.coerceAtLeast(0)}")
-    if (!event.thisAndFuture) {
+    // A RECURRENCE-ID is only meaningful inside the file that carries its master series, so an
+    // exception whose master is absent is exported as a plain event instead of a dangling one.
+    if (!event.thisAndFuture && series != null) {
         event.recurrenceId?.let { recurrenceIdDate ->
             // The value type follows the master series' DTSTART, not the exception's own DTSTART.
             if (series?.allDay ?: event.allDay) {
@@ -339,8 +349,8 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     if (event.categories.isNotEmpty()) {
         line("CATEGORIES:${event.categories.joinToString(",") { escapeText(it) }}")
     }
-    if (event.url.isNotBlank()) line("URL:${escapeText(event.url)}")
-    if (!event.geo.isNullOrBlank()) line("GEO:${event.geo}")
+    if (event.url.isNotBlank()) line("URL:${sanitizeUriValue(event.url)}")
+    if (!event.geo.isNullOrBlank()) line("GEO:${sanitizeUriValue(event.geo)}")
     if (event.eventClass != null) line("CLASS:${event.eventClass.name.uppercase()}")
     if (event.status != EventStatus.Confirmed) line("STATUS:${event.status.name.uppercase()}")
     if (event.transparency == EventTransparency.Transparent) line("TRANSP:TRANSPARENT")
@@ -349,12 +359,12 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     if (!organizerRaw.isNullOrBlank()) {
         line(organizerRaw)
     } else {
-        event.organizer?.let { if (it.isNotBlank()) line("ORGANIZER:${escapeText(it)}") }
+        event.organizer?.let { if (it.isNotBlank()) line("ORGANIZER:${sanitizeUriValue(it)}") }
     }
     if (event.attendeeRaw.isNotEmpty()) {
         event.attendeeRaw.forEach { if (it.isNotBlank()) line(it) }
     } else {
-        event.attendees.forEach { if (it.isNotBlank()) line("ATTENDEE:${escapeText(it)}") }
+        event.attendees.forEach { if (it.isNotBlank()) line("ATTENDEE:${sanitizeUriValue(it)}") }
     }
 
     event.repeat?.let { rule ->
@@ -390,6 +400,12 @@ private fun StringBuilder.appendTimedStart(property: String, event: Event, dateT
         else -> event.sourceEnd
     }
     val zone = event.timeZoneId
+    // A series must not mix an absolute DTSTART with a floating DTEND (RFC 5545 forbids it), so a
+    // missing end source is written in the zone the start already uses.
+    val startUsesTzid = zone != null &&
+        !zone.equals("UTC", ignoreCase = true) &&
+        event.sourceStart != null &&
+        !event.sourceStart.endsWith("Z", ignoreCase = true)
     when {
         sourceValue != null && sourceValue.endsWith("Z", ignoreCase = true) ->
             line("$property:$sourceValue")
@@ -397,6 +413,8 @@ private fun StringBuilder.appendTimedStart(property: String, event: Event, dateT
             line("$property;TZID=$zone:$sourceValue")
         sourceValue != null ->
             line("$property:$sourceValue")
+        startUsesTzid ->
+            line("$property;TZID=$zone:${formatDateTime(LocalDate.parse(dateText), minutes, seconds)}")
         else -> line("$property:${formatDateTime(LocalDate.parse(dateText), minutes, seconds)}")
     }
 }
@@ -506,11 +524,16 @@ private fun ruleValue(rule: RepeatRule, event: Event): String = buildString {
     if (rule.interval > 1) append(";INTERVAL=${rule.interval}")
     if (rule.count != null && rule.count > 0) append(";COUNT=${rule.count}")
     else rule.until?.let { until -> formatUntil(until, event)?.let { append(";UNTIL=$it") } }
+    // RFC 5545 only gives an ordinal in BYDAY a meaning for MONTHLY and YEARLY rules.
+    val ordinalsAllowed = rule.frequency == RepeatFrequency.Monthly || rule.frequency == RepeatFrequency.Yearly
     val days = buildList {
         rule.weekdays.filter { it in 0..6 }.distinct().sorted().forEach { add(weekdayCodes[it]) }
-        rule.byDay.forEach { entry -> add("${entry.ordinal}${weekdayCodes[entry.weekday.coerceIn(0, 6)]}") }
+        rule.byDay.forEach { entry ->
+            val code = weekdayCodes[entry.weekday.coerceIn(0, 6)]
+            add(if (ordinalsAllowed) "${entry.ordinal}$code" else code)
+        }
     }
-    if (days.isNotEmpty()) append(";BYDAY=${days.joinToString(",")}")
+    if (days.isNotEmpty()) append(";BYDAY=${days.distinct().joinToString(",")}")
     if (rule.byMonthDay.isNotEmpty()) append(";BYMONTHDAY=${rule.byMonthDay.joinToString(",")}")
     if (rule.byMonth.isNotEmpty()) append(";BYMONTH=${rule.byMonth.joinToString(",")}")
     if (rule.bySetPos.isNotEmpty()) append(";BYSETPOS=${rule.bySetPos.joinToString(",")}")
@@ -562,6 +585,22 @@ private class IcsComponent(val name: String, val properties: MutableList<Content
 private fun normalizeComponent(text: String): String =
     text.replace("\r\n", "\n").replace('\r', '\n').trimEnd().split('\n').joinToString("\n")
 
+/**
+ * Rewrites the `TZID` a `VTIMEZONE` block declares to [id], so a `TZID=<id>` property reference in
+ * the same exported file always resolves. Import strips a leading "/" from both sides, which would
+ * otherwise leave the reference dangling for zones named like `/Europe/Amsterdam`.
+ */
+private fun rewriteDeclaredZoneId(text: String, id: String): String {
+    val lines = text.split('\n')
+    val index = lines.indexOfFirst { it.startsWith("TZID", ignoreCase = true) }
+    if (index < 0) return text
+    val colon = lines[index].indexOf(':')
+    if (colon < 0) return text
+    val rebuilt = lines.toMutableList()
+    rebuilt[index] = lines[index].substring(0, colon) + ":" + id
+    return rebuilt.joinToString("\n")
+}
+
 private fun parseComponents(text: String): List<IcsComponent> {
     val roots = mutableListOf<IcsComponent>()
     val stack = ArrayDeque<IcsComponent>()
@@ -573,7 +612,12 @@ private fun parseComponents(text: String): List<IcsComponent> {
                 if (stack.isEmpty()) roots += component else stack.last().children += component
                 stack.addLast(component)
             }
-            "END" -> if (stack.isNotEmpty()) stack.removeLast()
+            "END" -> {
+                // Close only a component whose name matches: a stray or mismatched END must not pop
+                // the enclosing VCALENDAR, which would drop every event that follows it.
+                val closing = parsed.value.trim().uppercase()
+                if (stack.lastOrNull()?.name == closing) stack.removeLast()
+            }
             else -> stack.lastOrNull()?.properties?.add(parsed)
         }
     }
@@ -724,6 +768,8 @@ private data class RawEvent(
     val created: String? = null,
     val lastModified: String? = null,
     val sequence: Int = 0,
+    /** `DTSTAMP` of the copy, used to tell the newest copy of a UID apart from its stale ones. */
+    val dtStamp: String? = null,
     val alarms: List<RawAlarm> = emptyList(),
     val timeZoneDefinition: String? = null,
     val extraProperties: List<String> = emptyList(),
@@ -763,6 +809,7 @@ private fun readEvent(
     var created: String? = null
     var lastModified: String? = null
     var sequence = 0
+    var dtStamp: String? = null
     val extra = mutableListOf<String>()
     var timeZoneDefinition: String? = null
 
@@ -811,7 +858,8 @@ private fun readEvent(
             "CREATED" -> created = parseIcsInstant(line.value) ?: line.value.trim()
             "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
             "SEQUENCE" -> sequence = line.value.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
-            "DTSTAMP", "PRODID", "VERSION", "CALSCALE", "METHOD", "X-WR-CALNAME" -> Unit
+            "DTSTAMP" -> dtStamp = parseIcsInstant(line.value) ?: line.value.trim()
+            "PRODID", "VERSION", "CALSCALE", "METHOD", "X-WR-CALNAME" -> Unit
             else -> extra += line.raw
         }
     }
@@ -849,6 +897,7 @@ private fun readEvent(
         created = created,
         lastModified = lastModified,
         sequence = sequence,
+        dtStamp = dtStamp,
         alarms = alarms,
         timeZoneDefinition = timeZoneDefinition,
         extraProperties = extra,
@@ -1108,6 +1157,17 @@ private fun LocalDateTime.plusMinutes(minutes: Int): LocalDateTime {
     return LocalDateTime(LocalDate.fromEpochDays(day), LocalTime(minuteOfDay / 60, minuteOfDay % 60))
 }
 
+/**
+ * Copies of one UID ranked from stale to newest: `SEQUENCE` is the authoritative counter for a UID,
+ * then `DTSTAMP`, then `LAST-MODIFIED`. Ties keep the earlier copy, so a file without any of them
+ * still imports deterministically.
+ */
+private val masterCopyComparator = compareBy<RawEvent>(
+    { it.sequence },
+    { parseInstant(it.dtStamp)?.epochSeconds ?: Long.MIN_VALUE },
+    { parseInstant(it.lastModified)?.epochSeconds ?: Long.MIN_VALUE },
+)
+
 private fun mapSeries(
     uid: String,
     group: List<RawEvent>,
@@ -1116,7 +1176,10 @@ private fun mapSeries(
     zones: Map<String, CustomZone>,
     warnings: MutableSet<IcsWarning>,
 ): List<Event> {
-    val base = group.firstOrNull { it.recurrenceId == null }
+    // Real feeds do carry several master copies for one UID (an updated or cancelled copy next to
+    // the live one). Letting the newest copy govern, instead of the first line in the file, is what
+    // decides whether the user's event survives the import.
+    val base = group.filter { it.recurrenceId == null }.maxWithOrNull(masterCopyComparator)
     if (base == null) {
         return group.mapNotNull { override ->
             mapSingle(override, deviceZone, untitledTitle, zones, warnings)?.let { event ->
@@ -1147,6 +1210,8 @@ private fun mapSeries(
     val oldExclusions = mutableListOf<String>()
     val futureExclusions = mutableListOf<String>()
     val normalOverrides = mutableListOf<Event>()
+    val usedOverrideUids = mutableSetOf<String>()
+    var ambiguousOverrides = false
     var futureSeries: Event? = null
 
     overrides.forEach { override ->
@@ -1162,7 +1227,13 @@ private fun mapSeries(
             return@forEach
         }
         val isSplit = override.recurrenceRange == "THISANDFUTURE" && rid == splitDate
-        val overrideRepeat = mapRule(override.rule, override.start ?: override.recurrenceId, deviceZone, override.rDates)
+        val overrideRepeat = mapRule(
+            override.rule,
+            override.start ?: override.recurrenceId,
+            deviceZone,
+            override.rDates,
+            warnings,
+        )
         val mappedOverride = mapSingle(
             override,
             deviceZone,
@@ -1206,16 +1277,24 @@ private fun mapSeries(
             }
         } else {
             val targetUid = if (afterSplit && futureUid != null) futureUid else uid
+            // `recurrenceId` is a date, so a series with more than one start per day produces two
+            // exceptions with the same storage key; without a distinct key the second one would be
+            // dropped by the importer's de-duplication.
+            val baseUid = "$targetUid#override-$ridText"
+            val overrideUid = nextFreeUid(usedOverrideUids, baseUid, occurrenceTimeKey(override.recurrenceId ?: override.start))
+            if (overrideUid != baseUid) ambiguousOverrides = true
             normalOverrides += mappedOverride.copy(
                 repeat = null,
                 seriesUid = targetUid,
                 recurrenceId = ridText,
                 thisAndFuture = false,
-                icsUid = "$targetUid#override-$ridText",
+                icsUid = overrideUid,
             )
             if (afterSplit) futureExclusions += ridText else oldExclusions += ridText
         }
     }
+
+    if (ambiguousOverrides) warnings += IcsWarning.AmbiguousRecurrenceId
 
     val seriesEnd = listOfNotNull(
         splitDate?.plusDays(-1),
@@ -1273,6 +1352,30 @@ private fun mapSeries(
     return mapped.filterNot { it.status == EventStatus.Cancelled }
 }
 
+/**
+ * Storage key for an exception. The plain date key is kept whenever it is free, so data stored by
+ * earlier versions still matches on re-import; only a real collision gets a suffix.
+ */
+private fun nextFreeUid(used: MutableSet<String>, base: String, timeKey: String?): String {
+    if (used.add(base)) return base
+    val withTime = if (timeKey == null) base else "$base-T$timeKey"
+    if (used.add(withTime)) return withTime
+    var index = 1
+    while (true) {
+        val candidate = "$withTime-$index"
+        if (used.add(candidate)) return candidate
+        index++
+    }
+}
+
+/** `HHmm` of an occurrence start, used to separate exceptions that share one calendar date. */
+private fun occurrenceTimeKey(time: IcsTime?): String? = when (time) {
+    is IcsTime.DateTime -> time.value.time.let {
+        it.hour.toString().padStart(2, '0') + it.minute.toString().padStart(2, '0')
+    }
+    else -> null
+}
+
 /** Occurrences of [event]'s RRULE before [before], ignoring EXDATE and RDATE; used for COUNT splits. */
 private fun countOccurrencesBefore(event: Event, before: LocalDate): Int {
     val rule = event.repeat ?: return 0
@@ -1296,9 +1399,14 @@ private fun mapSingle(
     untitledTitle: String,
     zones: Map<String, CustomZone>,
     warnings: MutableSet<IcsWarning>,
-    repeat: RepeatRule? = mapRule(raw.rule, raw.start, deviceZone, raw.rDates),
+    repeat: RepeatRule? = mapRule(raw.rule, raw.start, deviceZone, raw.rDates, warnings),
 ): Event? {
-    val start = raw.start ?: raw.recurrenceId ?: return null
+    val start = raw.start ?: raw.recurrenceId
+    if (start == null) {
+        // Saying only "invalid value" left the user with no way to find the record that vanished.
+        warnings += IcsWarning.MissingStart
+        return null
+    }
     val title = raw.summary.ifBlank { untitledTitle }
     val uid = raw.uid
     val allDay = start is IcsTime.AllDay
@@ -1434,6 +1542,7 @@ private fun mapRule(
     start: IcsTime?,
     deviceZone: TimeZone,
     rDates: List<IcsTime>,
+    warnings: MutableSet<IcsWarning>,
 ): RepeatRule? {
     if (raw == null) return null
     val anchor = start?.localDate(deviceZone) ?: LocalDate(1970, 1, 1)
@@ -1449,8 +1558,20 @@ private fun mapRule(
         else -> return null
     }
     val weekdays = raw.byDay.filter { it.first == 0 }.map { it.second }.distinct().sorted()
-    val ordinals = raw.byDay.filter { it.first != 0 }
-        .map { OrdinalWeekday(it.first, it.second) }
+    val ordinalEntries = raw.byDay.filter { it.first != 0 }.map { OrdinalWeekday(it.first, it.second) }
+    // Only MONTHLY/YEARLY can carry an ordinal; for DAILY/WEEKLY the app ignores it and RFC 5545
+    // forbids writing it back, so it is dropped here instead of returning in a later export.
+    val ordinals = when (frequency) {
+        RepeatFrequency.Monthly, RepeatFrequency.Yearly -> ordinalEntries
+        else -> {
+            if (ordinalEntries.isNotEmpty()) warnings += IcsWarning.UnsupportedRecurrence
+            emptyList()
+        }
+    }
+    // BYHOUR/BYMINUTE would put several starts on one day, which the single-start model cannot hold.
+    if (raw.byHour.isNotEmpty() || raw.byMinute.isNotEmpty()) {
+        warnings += IcsWarning.UnsupportedRecurrence
+    }
     val until = raw.until?.let { time ->
         when (time) {
             is IcsTime.AllDay -> time.date.toString()
@@ -1818,6 +1939,17 @@ private fun foldLine(line: String): String {
         index += codePoints
     }
     return result.toString()
+}
+
+/**
+ * `url`, `caladdress` and `geo` are not TEXT values, so `,`, `;` and `\` have to stay literal;
+ * escaping them breaks links in every client that reads the file. Only control characters are
+ * removed, because those would inject additional content lines into the exported calendar.
+ */
+private fun sanitizeUriValue(value: String): String = buildString(value.length) {
+    value.forEach { ch ->
+        if (ch.code >= 0x20 && ch.code != 0x7F) append(ch)
+    }
 }
 
 private fun escapeText(value: String): String = buildString(value.length) {

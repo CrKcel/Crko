@@ -1073,4 +1073,332 @@ class IcsTest {
         val exported = exportIcs(listOf(event), now)
         assertTrue(exported.contains("UNTIL=20261027T090000Z\r\n"), exported)
     }
+
+    @Test
+    fun exportedTimezoneDeclarationMatchesTheIdThePropertiesReference() {
+        val text = calendar(
+            """
+            BEGIN:VTIMEZONE
+            TZID:/MSYSZ1-2
+            BEGIN:STANDARD
+            DTSTART:19700101T030000
+            TZOFFSETFROM:+0200
+            TZOFFSETTO:+0100
+            END:STANDARD
+            END:VTIMEZONE
+            BEGIN:VEVENT
+            UID:slashed-zone
+            SUMMARY:Slashed
+            DTSTART;TZID=/MSYSZ1-2:20261027T090000
+            DTEND;TZID=/MSYSZ1-2:20261027T100000
+            END:VEVENT
+            """,
+        )
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals("MSYSZ1-2", event.timeZoneId)
+        val exported = exportIcs(listOf(event), now)
+        // The block used to keep its leading slash while the property lost it, leaving a TZID
+        // reference nothing in the file could resolve.
+        assertTrue(exported.contains("TZID:MSYSZ1-2\r\n"), exported)
+        assertTrue(exported.contains("DTSTART;TZID=MSYSZ1-2:20261027T090000\r\n"), exported)
+        val back = importCalendar(exported, utc, "Untitled")
+        assertFalse(IcsWarning.UnresolvedTimeZone in back.warnings, back.warnings.toString())
+        assertEquals(event.startMinutes, back.events.single().startMinutes)
+    }
+
+    @Test
+    fun uriValuedPropertiesKeepCommasAndSemicolonsLiteral() {
+        val event = baseEvent.copy(
+            url = "https://example.com/d?team=a,b;ref=1",
+            organizer = "mailto:host@example.com?subject=A;B",
+            attendees = listOf("mailto:guest@example.com?opt=1,2"),
+            geo = "37.386013;-122.082932",
+        )
+        val exported = exportIcs(listOf(event), now)
+        assertTrue(exported.contains("URL:https://example.com/d?team=a,b;ref=1\r\n"), exported)
+        assertTrue(exported.contains("ORGANIZER:mailto:host@example.com?subject=A;B\r\n"), exported)
+        assertTrue(exported.contains("ATTENDEE:mailto:guest@example.com?opt=1,2\r\n"), exported)
+        assertTrue(exported.contains("GEO:37.386013;-122.082932\r\n"), exported)
+        // TEXT properties still escape, so the two must not be confused.
+        assertTrue(exported.contains("SUMMARY:Team sync\r\n"), exported)
+    }
+
+    @Test
+    fun controlCharactersAreStrippedFromUriValues() {
+        val exported = exportIcs(listOf(baseEvent.copy(url = "https://e.co/a\r\nEVIL:yes")), now)
+        // Removing CR/LF is what keeps the value from becoming an extra content line.
+        assertFalse(exported.split("\r\n").any { it == "EVIL:yes" }, exported)
+        assertEquals("URL:https://e.co/aEVIL:yes", exported.split("\r\n").first { it.startsWith("URL:") })
+    }
+
+    @Test
+    fun previouslyEscapedUrlsStillImportUnescaped() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:old-escape
+            SUMMARY:Old
+            DTSTART:20261027T090000
+            URL:https://example.com/a\,b
+            END:VEVENT
+            """,
+        )
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals("https://example.com/a,b", event.url)
+    }
+
+    @Test
+    fun ordinalBydayIsDroppedForWeeklyRulesWithAWarning() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:weekly-ordinal
+            SUMMARY:Weekly ordinal
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            RRULE:FREQ=WEEKLY;BYDAY=MO,2TU
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        val event = imported.events.single()
+        assertTrue(IcsWarning.UnsupportedRecurrence in imported.warnings, imported.warnings.toString())
+        assertEquals(0, event.repeat?.byDay?.size)
+        val exported = exportIcs(listOf(event), now)
+        // RFC 5545 gives an ordinal no meaning for WEEKLY, and other clients reject the rule.
+        assertTrue(exported.contains("RRULE:FREQ=WEEKLY;BYDAY=MO\r\n"), exported)
+    }
+
+    @Test
+    fun monthlyOrdinalBydayStillRoundTrips() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:monthly-ordinal
+            SUMMARY:Last friday
+            DTSTART:20261030T090000
+            DTEND:20261030T100000
+            RRULE:FREQ=MONTHLY;BYDAY=-1FR
+            END:VEVENT
+            """,
+        )
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals(listOf(com.crko.domain.OrdinalWeekday(-1, 4)), event.repeat?.byDay)
+        val exported = exportIcs(listOf(event), now)
+        assertTrue(exported.contains("RRULE:FREQ=MONTHLY;BYDAY=-1FR\r\n"), exported)
+    }
+
+    @Test
+    fun importSynthesizesAnEndSourceSoTheZonesNeverMix() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:mixed-zone
+            SUMMARY:Mixed
+            DTSTART;TZID=Europe/Berlin:20261027T090000
+            DTEND:20261027T100000
+            END:VEVENT
+            """,
+        )
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals("Europe/Berlin", event.timeZoneId)
+        // Import derives the end text from the duration, so an absolute start is never paired with
+        // a floating end on the way out.
+        assertEquals("20261027T100000", event.sourceEnd)
+        assertTrue(exportIcs(listOf(event), now).contains("DTEND;TZID=Europe/Berlin:20261027T100000\r\n"))
+    }
+
+    @Test
+    fun zoneAwareEndIsWrittenWhenStoredDataHasNoEndSource() {
+        // Reachable through the tolerant state decoder, which can restore a record whose end text is
+        // missing; RFC 5545 forbids mixing an absolute DTSTART with a floating DTEND.
+        val event = baseEvent.copy(sourceStart = "20261027T090000", timeZoneId = "Europe/Berlin")
+        val exported = exportIcs(listOf(event), now)
+        assertTrue(exported.contains("DTSTART;TZID=Europe/Berlin:20261027T090000\r\n"), exported)
+        assertTrue(exported.contains("DTEND;TZID=Europe/Berlin:20261027T100000\r\n"), exported)
+        assertFalse(exported.contains("DTEND:20261027T100000\r\n"), exported)
+    }
+
+    @Test
+    fun exceptionWithoutItsMasterIsExportedAsAStandaloneEvent() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:orphan
+            RECURRENCE-ID:20261029T090000
+            DTSTART:20261029T110000
+            DTEND:20261029T120000
+            SUMMARY:Orphan
+            END:VEVENT
+            """,
+        )
+        val events = importIcs(text, utc, "Untitled")
+        assertEquals(1, events.size)
+        val exported = exportIcs(events, now)
+        // The referenced series is not in this file, so the id would dangle for every receiver.
+        assertFalse(exported.contains("RECURRENCE-ID"), exported)
+        assertTrue(exported.contains("DTSTART:20261029T110000\r\n"), exported)
+    }
+
+    @Test
+    fun aStrayEndLineDoesNotDiscardTheEventsAfterIt() {
+        val text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VEVENT\r\n" +
+            "BEGIN:VEVENT\r\nUID:after-stray\r\nSUMMARY:Kept\r\nDTSTART:20261027T090000\r\nEND:VEVENT\r\n" +
+            "END:VCALENDAR\r\n"
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals("Kept", event.title)
+    }
+
+    @Test
+    fun theNewestCopyOfADuplicatedUidWinsWhicheverOrderTheFileUses() {
+        val older = "BEGIN:VEVENT\r\nUID:dup\r\nDTSTAMP:20261001T000000Z\r\nSEQUENCE:1\r\n" +
+            "DTSTART:20261027T090000\r\nSUMMARY:Stale\r\nEND:VEVENT\r\n"
+        val newer = "BEGIN:VEVENT\r\nUID:dup\r\nDTSTAMP:20261020T000000Z\r\nSEQUENCE:4\r\n" +
+            "DTSTART:20261028T090000\r\nSUMMARY:Current\r\nEND:VEVENT\r\n"
+        val first = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n$older$newer" +
+            "BEGIN:VEVENT\r\nUID:dup\r\nRECURRENCE-ID:20261030T090000\r\nDTSTART:20261030T110000\r\nSUMMARY:Moved\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        val last = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n$newer$older" +
+            "BEGIN:VEVENT\r\nUID:dup\r\nRECURRENCE-ID:20261030T090000\r\nDTSTART:20261030T110000\r\nSUMMARY:Moved\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        for (text in listOf(first, last)) {
+            val events = importIcs(text, utc, "Untitled")
+            val master = events.first { it.recurrenceId == null }
+            assertEquals("Current", master.title, text)
+            assertEquals("2026-10-28", master.date, text)
+            assertEquals(4, master.sequence, text)
+            // The stale copy must not leak in as an extra event or an exception.
+            assertEquals(2, events.size, text)
+        }
+    }
+
+    @Test
+    fun aStaleCancelledCopyDoesNotWipeTheLiveSeries() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:cancel-order
+            DTSTAMP:20261001T000000Z
+            SEQUENCE:1
+            STATUS:CANCELLED
+            DTSTART:20261027T090000
+            SUMMARY:Dead copy
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:cancel-order
+            DTSTAMP:20261020T000000Z
+            SEQUENCE:2
+            STATUS:CONFIRMED
+            DTSTART:20261027T090000
+            SUMMARY:Live
+            END:VEVENT
+            """,
+        )
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals("Live", event.title)
+    }
+
+    @Test
+    fun theNewestCancelledCopyStillRemovesTheSeries() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:cancel-last
+            DTSTAMP:20261001T000000Z
+            SEQUENCE:1
+            STATUS:CONFIRMED
+            DTSTART:20261027T090000
+            SUMMARY:Live
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:cancel-last
+            DTSTAMP:20261020T000000Z
+            SEQUENCE:5
+            STATUS:CANCELLED
+            DTSTART:20261027T090000
+            SUMMARY:Cancelled for real
+            END:VEVENT
+            """,
+        )
+        assertTrue(importIcs(text, utc, "Untitled").isEmpty())
+    }
+
+    @Test
+    fun twoChangesOnTheSameOccurrenceDateKeepDistinctStorageKeys() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:twice-daily
+            SUMMARY:Series
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            RRULE:FREQ=DAILY;COUNT=5
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:twice-daily
+            RECURRENCE-ID:20261029T090000
+            DTSTART:20261029T110000
+            DTEND:20261029T120000
+            SUMMARY:LaterA
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:twice-daily
+            RECURRENCE-ID:20261029T130000
+            DTSTART:20261029T150000
+            DTEND:20261029T160000
+            SUMMARY:LaterB
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        val events = imported.events
+        assertEquals(3, events.size)
+        // Both exceptions collapse onto one date, so the keys have to differ or the importer's
+        // de-duplication drops the second record.
+        val keys = events.map { it.icsUid }
+        assertEquals(keys.size, keys.distinct().size, keys.toString())
+        assertTrue(IcsWarning.AmbiguousRecurrenceId in imported.warnings, imported.warnings.toString())
+        // The first key stays in the historic shape so already stored data keeps matching on re-import.
+        assertEquals("twice-daily#override-2026-10-29", events[1].icsUid)
+        assertEquals("twice-daily#override-2026-10-29-T1300", events[2].icsUid)
+        val reparsed = importCalendar(exportIcs(events, now), utc, "Untitled")
+        assertEquals(3, reparsed.events.size)
+    }
+
+    @Test
+    fun eventsWithoutAUsableStartAreReported() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:hyphen
+            SUMMARY:Hyphenated
+            DTSTART;VALUE=DATE:2026-10-27
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:no-start
+            SUMMARY:No start at all
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        assertTrue(imported.events.isEmpty())
+        assertTrue(IcsWarning.MissingStart in imported.warnings, imported.warnings.toString())
+    }
+
+    @Test
+    fun byHourAndByMinuteAreReportedAsUnsupported() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:twice-a-day
+            SUMMARY:Rounds
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            RRULE:FREQ=DAILY;COUNT=4;BYHOUR=9,17
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        // The engine keeps one start per day, so the second round of every day would silently vanish.
+        assertTrue(IcsWarning.UnsupportedRecurrence in imported.warnings, imported.warnings.toString())
+        assertEquals(listOf(9, 17), imported.events.single().repeat?.byHour)
+    }
 }

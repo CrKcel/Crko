@@ -6,6 +6,8 @@ import com.crko.domain.Event
 import com.crko.domain.OrdinalWeekday
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
+import com.crko.domain.matchesRule
+import com.crko.domain.occurrenceOrdinal
 import com.crko.domain.occurrenceStartOn
 import com.crko.domain.occursOn
 import com.crko.domain.plusDays
@@ -409,5 +411,58 @@ class RecurrenceTest {
         )
         assertEquals(state, decoded)
         assertFalse(decoded.events.single().occursOn(anchor.plusDays(2)))
+    }
+
+    @Test
+    fun weeklyOrdinalMatchesABruteForceCount() {
+        val rules = listOf(
+            RepeatRule(RepeatFrequency.Weekly),
+            RepeatRule(RepeatFrequency.Weekly, interval = 2),
+            RepeatRule(RepeatFrequency.Custom, weekdays = listOf(0, 2, 4)),
+            RepeatRule(RepeatFrequency.Custom, weekdays = listOf(0, 2, 4), interval = 2),
+            RepeatRule(RepeatFrequency.Custom, weekdays = listOf(5, 6), interval = 4),
+            RepeatRule(RepeatFrequency.Weekly, weekStart = 2, interval = 2),
+            RepeatRule(RepeatFrequency.Custom, weekdays = listOf(1), weekStart = 4, interval = 3),
+            // Non-uniform weekly rules must keep using the scan, with the same answers.
+            RepeatRule(RepeatFrequency.Weekly, interval = 2, byMonth = listOf(1, 2)),
+            RepeatRule(RepeatFrequency.Custom, weekdays = listOf(0, 4), bySetPos = listOf(-1)),
+            RepeatRule(RepeatFrequency.Daily),
+            RepeatRule(RepeatFrequency.Daily, interval = 3, weekdays = listOf(0, 2)),
+            RepeatRule(RepeatFrequency.Monthly, byDay = listOf(OrdinalWeekday(-1, 4))),
+        )
+        for (rule in rules) {
+            // A decades-old anchor is exactly the case the old week-by-week scan made expensive.
+            for (start in listOf(anchor, LocalDate(1971, 3, 15), LocalDate(2000, 3, 1))) {
+                var day = start
+                while (day <= start.plusDays(RANGE_DAYS)) {
+                    assertEquals(
+                        oracleOrdinal(rule, start, day),
+                        occurrenceOrdinal(rule, start, day, null),
+                        "$rule from $start on $day",
+                    )
+                    day = day.plusDays(1)
+                }
+            }
+        }
+    }
+
+    /** Independent definition: DTSTART is occurrence one, then every matching day in order. */
+    private fun oracleOrdinal(rule: RepeatRule, anchor: LocalDate, date: LocalDate): Int? {
+        if (date < anchor) return null
+        if (date == anchor) return 1
+        var count = 1
+        var cursor = anchor.plusDays(1)
+        while (cursor <= date) {
+            val matches = matchesRule(rule, anchor, cursor)
+            if (matches) count++
+            if (cursor == date) return if (matches) count else null
+            cursor = cursor.plusDays(1)
+        }
+        return null
+    }
+
+    private companion object {
+        /** Days after the anchor that every rule shape is checked over. */
+        const val RANGE_DAYS = 90
     }
 }

@@ -103,6 +103,7 @@ fun CrkoApp(state: AppStateHolder) {
                 AppMessage.ImportFailed -> currentStrings.importFailed
                 AppMessage.Exported -> currentStrings.exported
                 AppMessage.ExportFailed -> currentStrings.exportFailed
+                is AppMessage.StorageRecovered -> currentStrings.storageRecovered(message.droppedRecords)
             }
             snackbar.showSnackbar(text)
         }

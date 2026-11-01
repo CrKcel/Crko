@@ -14,8 +14,10 @@ import platform.CoreGraphics.CGRectGetMidY
 import platform.CoreGraphics.CGRectMake
 import platform.Foundation.NSData
 import platform.Foundation.NSFileManager
+import platform.Foundation.NSNumber
 import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.NSURL
+import platform.Foundation.NSURLFileSizeKey
 import platform.Foundation.create
 import platform.Foundation.dataWithContentsOfURL
 import platform.Foundation.getBytes
@@ -104,10 +106,18 @@ private class ImportDelegate(
         }
         val scoped = url.startAccessingSecurityScopedResource()
         try {
+            // The limit has to be applied before reading: loading the file first made the check
+            // useless and let an oversized file exhaust memory instead of reporting an error.
+            val declaredSize = fileSizeBytes(url)
+            if (declaredSize != null && declaredSize > MaxImportBytes) {
+                onError()
+                return
+            }
             val data = NSData.dataWithContentsOfURL(url)
                 ?: error("Unable to read the selected file")
             check(data.length <= MaxImportBytes.toULong()) { "Calendar file is too large" }
-            onPicked(data.toByteArray().decodeToString())
+            // An undecodable file is rejected rather than imported with replacement characters.
+            onPicked(decodeCalendarBytes(data.toByteArray()) ?: error("Calendar file is not valid UTF-8"))
         } catch (_: Throwable) {
             onError()
         } finally {
@@ -119,6 +129,16 @@ private class ImportDelegate(
         onFinished()
     }
 }
+
+/**
+ * Size of the file behind [url] in bytes, or null when the provider does not say. Asking first is
+ * what keeps an oversized file from being loaded into memory only to be rejected afterwards.
+ */
+private fun fileSizeBytes(url: NSURL): Long? = runCatching {
+    @Suppress("UNCHECKED_CAST")
+    val values = url.resourceValuesForKeys(listOf(NSURLFileSizeKey), error = null) as? Map<Any?, Any?>
+    (values?.get(NSURLFileSizeKey) as? NSNumber)?.longLongValue
+}.getOrNull()
 
 private fun ByteArray.toNSData(): NSData =
     if (isEmpty()) {

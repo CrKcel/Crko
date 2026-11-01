@@ -354,6 +354,14 @@ private fun countDailyMatches(
     return null
 }
 
+/**
+ * A weekly rule that selects the same set of weekdays in every matching week. Only `BYDAY` without
+ * ordinals leaves the per-week count constant, which is what makes the ordinal computable directly.
+ */
+private fun weeklyRuleIsUniform(rule: RepeatRule): Boolean =
+    rule.byMonth.isEmpty() && rule.byMonthDay.isEmpty() && rule.byYearDay.isEmpty() &&
+        rule.bySetPos.isEmpty() && rule.byDay.all { it.ordinal == 0 }
+
 private fun weeklyOrdinal(
     rule: RepeatRule,
     anchor: LocalDate,
@@ -366,6 +374,25 @@ private fun weeklyOrdinal(
     val targetWeek = date.weekStart(weekStart)
     val weekDiff = ((targetWeek.toEpochDays() - anchorWeek.toEpochDays()) / 7).toInt()
     if (weekDiff < 0 || weekDiff % interval != 0) return null
+    if (weeklyRuleIsUniform(rule)) {
+        // Counting week by week from a decades-old anchor is the hot path of the month grid, so the
+        // position is computed instead: whole matching weeks in between contribute a constant count.
+        val weekdays = plainWeekdays(rule).ifEmpty { setOf(anchor.mondayIndex) }
+        val perWeek = weekdays.size
+        val position = (0 until 7)
+            .map { targetWeek.plusDays(it) }
+            .filter { it.mondayIndex in weekdays }
+            .filter { weekDiff != 0 || it > anchor }
+            .indexOf(date)
+        if (position < 0) return null
+        val anchorWeekCount = (0 until 7)
+            .map { anchorWeek.plusDays(it) }
+            .count { it.mondayIndex in weekdays && it > anchor }
+        val weeksBefore = weekDiff / interval - 1
+        val before = if (weekDiff == 0) 0 else anchorWeekCount + weeksBefore * perWeek
+        // DTSTART itself is occurrence one, then the earlier candidates, then the position in this week.
+        return 1 + before + position + 1
+    }
     // DTSTART counts as occurrence one even when it misses the BY* filters.
     var count = 1
     var weekIndex = 0
