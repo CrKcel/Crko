@@ -9,7 +9,7 @@ import com.crko.storage.StateStorage
 import com.crko.storage.decodeStateWithReport
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
-import com.crko.ui.transfer.decodeCalendarBytes
+import com.crko.domain.decodeCalendarBytes
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull

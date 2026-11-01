@@ -120,6 +120,24 @@ internal fun byteOrderCharset(bytes: ByteArray): String? = when {
     else -> null
 }
 
+private const val decodedByteOrderMark = '\uFEFF'
+
+/**
+ * Decodes calendar bytes with the best evidence available: a `CHARSET=` the file declares itself,
+ * then UTF-8, then the double-byte and single-byte encodings older exporters used. A candidate that
+ * needed replacement characters is lossy and gets the next try, so a platform whose decoder is
+ * forgiving does not silently import garbage in place of the charset that reads it cleanly. Null
+ * when no candidate produced readable text at all.
+ */
+fun decodeCalendarBytes(bytes: ByteArray): String? {
+    val text = calendarCharsetCandidates(bytes)
+        .mapNotNull { charset -> decodeBytesWithCharset(bytes, charset) }
+        .firstOrNull { !it.contains(replacementCharacter) }
+        ?: return null
+    // A byte order mark is produced by real exporters but is not part of the first content line.
+    return if (text.isNotEmpty() && text[0] == decodedByteOrderMark) text.substring(1) else text
+}
+
 /**
  * Decodes vCalendar 1.0 `ENCODING=QUOTED-PRINTABLE` values. Escaped octets are collected as bytes
  * and decoded with the declared charset, so a GBK export does not turn into replacement characters.

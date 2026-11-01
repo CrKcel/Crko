@@ -413,6 +413,10 @@ data class AppState(
     val events: List<Event> = emptyList(),
     val todos: List<Todo> = emptyList(),
     val journals: List<Journal> = emptyList(),
+    /** Subscribed remote calendars; a sync merges their records into the lists above. */
+    val subscriptions: List<CalendarSubscription> = emptyList(),
+    /** Busy periods imported from `VFREEBUSY` components, kept for free/busy queries. */
+    val busyPeriods: List<BusyInterval> = emptyList(),
 )
 
 val AppJson: Json = Json {

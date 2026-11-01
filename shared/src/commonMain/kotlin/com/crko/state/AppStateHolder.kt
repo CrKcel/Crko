@@ -6,22 +6,35 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.crko.domain.AppState
 import com.crko.domain.Attachment
+import com.crko.domain.BusyInterval
+import com.crko.domain.CalendarSubscription
 import com.crko.domain.Event
 import com.crko.domain.EventStatus
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsImportFailure
 import com.crko.domain.IcsWarning
 import com.crko.domain.IcsWarningDetail
+import com.crko.domain.ItipDecision
+import com.crko.domain.ItipMethod
+import com.crko.domain.IcsPartStat
 import com.crko.domain.Journal
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.PersistedSettings
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
+import com.crko.domain.SubscriptionFailure
+import com.crko.domain.SubscriptionFetch
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
+import com.crko.domain.applyingReply
 import com.crko.domain.daysTo
+import com.crko.domain.fetchSubscription
+import com.crko.domain.importCalendarLines
+import com.crko.domain.itipDecision
+import com.crko.domain.itipReply
 import com.crko.domain.localDate
+import com.crko.domain.mergeBusyPeriods
 import com.crko.domain.normalizedForZone
 import com.crko.domain.occurrenceStartOn
 import com.crko.domain.nextOccurrenceDate
@@ -32,7 +45,9 @@ import com.crko.domain.parseRepeatUntil
 import com.crko.domain.parseStoredDate
 import com.crko.domain.plusDays
 import com.crko.domain.safeAttachmentFileName
+import com.crko.domain.resolveSubscriptionUrl
 import com.crko.domain.today
+import com.crko.domain.unfold
 import com.crko.i18n.AppLanguage
 import com.crko.i18n.Strings
 import com.crko.i18n.languageFromTag
@@ -42,18 +57,23 @@ import com.crko.i18n.stringsFor
 import com.crko.storage.AppAttachmentStore
 import com.crko.storage.AppStorage
 import com.crko.storage.StateStorage
+import com.crko.storage.SubscriptionHttp
 import com.crko.storage.newId
 import com.crko.storage.systemLocaleTag
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
+import kotlin.time.Instant
 
 enum class DarkModeSetting { System, Light, Dark }
 
@@ -75,6 +95,21 @@ sealed interface AppMessage {
     data class ImportFailed(val failure: IcsImportFailure) : AppMessage
     data object Exported : AppMessage
     data object ExportFailed : AppMessage
+
+    /** An attendee answered an invitation; [partStat] is the answer. */
+    data class ItipReplyProcessed(val attendee: String, val partStat: IcsPartStat) : AppMessage
+
+    /** A `REPLY` named no record this calendar knows (or an older revision than the stored one). */
+    data class ItipReplyUnknown(val attendee: String) : AppMessage
+    data class SubscriptionSynced(
+        val name: String,
+        val events: Int,
+        val todos: Int = 0,
+        val removed: Int = 0,
+    ) : AppMessage
+
+    data class SubscriptionUnchanged(val name: String) : AppMessage
+    data class SubscriptionFailed(val name: String, val failure: SubscriptionFailure) : AppMessage
 
     /**
      * Stored data could not be read completely. [droppedRecords] is zero when nothing at all could
@@ -116,6 +151,16 @@ class AppStateHolder(
      * default so tests never touch platform notification centers.
      */
     private val reminders: ReminderScheduler? = null,
+    /**
+     * HTTP sender for calendar subscriptions, wired by the composition root. Null by default so
+     * tests can inject a fake or run without any network access.
+     */
+    private val subscriptionHttp: SubscriptionHttp? = null,
+    /**
+     * Dispatcher that parses fetched feeds off the caller. Injectable so tests keep every step on
+     * the test scheduler instead of racing the real default dispatcher.
+     */
+    private val parseDispatcher: CoroutineDispatcher? = null,
 ) {
     var appState: AppState by mutableStateOf(storage.loadState())
         private set
@@ -572,21 +617,26 @@ class AppStateHolder(
     }
 
     /**
-     * Imports everything one file contained in a single write: two separate writes could leave a
-     * stored calendar with the events of a half-finished import, and serialised the whole state
-     * twice. [source] is the picked file's name; records keep it, so a later import of the same
-     * source can tell "removed upstream" apart from a partial export.
+     * Merges everything one calendar message contained in a single write: two separate writes could
+     * leave a stored calendar with the events of a half-finished import, and serialised the whole
+     * state twice. [source] is the picked file's name; records keep it, so a later import of the
+     * same source can tell "removed upstream" apart from a partial export.
+     *
+     * A calendar that carries an iTIP `METHOD` is not a plain snapshot: a `REPLY` only updates the
+     * answering attendee's status and a `CANCEL` must carry a `SEQUENCE` at least as new as the
+     * stored copy before it may remove anything.
      */
     fun importCalendar(import: IcsImport, source: String? = null): ImportOutcome {
+        if (import.method == ItipMethod.Reply) return applyItipReply(import)
         val hasContent = import.events.isNotEmpty() || import.todos.isNotEmpty() ||
-            import.journals.isNotEmpty() || import.cancelledUids.isNotEmpty()
+            import.journals.isNotEmpty() || import.cancelledUids.isNotEmpty() || import.freeBusy.isNotEmpty()
         if (!hasContent && source.isNullOrBlank()) return ImportOutcome()
         val sourceName = source?.takeIf { it.isNotBlank() }
         // Removal of records that no longer appear is scoped per kind: a file that carries no todo
         // at all (or none but cancellations) says nothing about the user's todos.
         val events = mergeEvents(
             incoming = import.events.map(::withStoredAttachments),
-            cancelledUids = import.cancelledUids,
+            cancelledUids = gatedCancellations(import),
             source = sourceName,
             removeVanished = sourceName != null &&
                 (import.events.isNotEmpty() || import.cancelledUids.isNotEmpty()),
@@ -607,19 +657,61 @@ class AppStateHolder(
             journals = journals.changed,
             removed = events.removed + todos.removed + journals.removed,
         )
-        if (outcome.isEmpty) return outcome
+        if (outcome.isEmpty && import.freeBusy.isEmpty()) return outcome
         val changed = events.items != appState.events || todos.items != appState.todos ||
-            journals.items != appState.journals
+            journals.items != appState.journals || import.freeBusy.isNotEmpty()
         if (changed) {
             persist(
                 appState.copy(
                     events = events.items,
                     todos = todos.items,
                     journals = journals.items,
+                    busyPeriods = mergeBusyPeriods(appState.busyPeriods, import.freeBusy, clock.now()),
                 ),
             )
         }
         return outcome
+    }
+
+    /**
+     * Applies an imported `METHOD:REPLY`: the replying attendee's `PARTSTAT` is written onto the
+     * stored record the reply refers to. The whole outcome is one attendee status, so there is no
+     * record preview for this method.
+     */
+    private fun applyItipReply(import: IcsImport): ImportOutcome {
+        val reply = import.itipReply() ?: return ImportOutcome()
+        val target = appState.events.firstOrNull { event ->
+            if (reply.recurrenceId != null) {
+                event.seriesUid == reply.uid && event.recurrenceId == reply.recurrenceId
+            } else {
+                event.uid == reply.uid && event.recurrenceId == null
+            }
+        }
+        if (target == null) {
+            notify(AppMessage.ItipReplyUnknown(reply.attendee.displayName))
+            return ImportOutcome()
+        }
+        // A reply that answers an older revision than the stored copy must not overwrite a newer
+        // state; messages without a sequence are always allowed (mainstream senders omit it).
+        if (itipDecision(reply.sequence, target.sequence) == ItipDecision.Stale) {
+            notify(AppMessage.ItipReplyUnknown(reply.attendee.displayName))
+            return ImportOutcome()
+        }
+        val result = appState.events.applyingReply(reply, clock.now())
+        if (!result.applied) return ImportOutcome()
+        persist(appState.copy(events = result.events))
+        notify(AppMessage.ItipReplyProcessed(reply.attendee.displayName, reply.attendee.partStat))
+        return ImportOutcome(events = 1)
+    }
+
+    /**
+     * The cancellations [import] may apply: one whose `SEQUENCE` is older than every stored copy of
+     * that UID is stale and must not remove the newer record (RFC 5546 conflict resolution).
+     */
+    private fun gatedCancellations(import: IcsImport): Set<String> = import.cancelledUids.filterTo(mutableSetOf()) { uid ->
+        val incoming = import.cancelled.firstOrNull { it.uid == uid }?.sequence ?: 0
+        val stored = appState.events.filter { matchesUid(it, uid) }.maxOfOrNull { it.sequence } ?: 0
+        incoming >= stored
     }
 
     private class MergeResult<T>(val items: List<T>, val changed: Int, val removed: Int)
@@ -868,6 +960,193 @@ class AppStateHolder(
 
     fun deleteTodo(id: String) {
         persist(appState.copy(todos = appState.todos.filterNot { it.id == id }))
+    }
+
+    // ----- subscriptions -----
+
+    /** Prefix marking records that came from a subscription instead of an imported file. */
+    private fun subscriptionSource(subscription: CalendarSubscription) = "sub:${subscription.id}"
+
+    /**
+     * Adds a subscription for [url]. Null when the URL has no scheme the app can fetch, so the
+     * caller can point at the field instead of storing something that can never sync.
+     */
+    fun addSubscription(name: String, url: String): CalendarSubscription? {
+        val resolved = resolveSubscriptionUrl(url) ?: return null
+        val fallbackName = resolved.substringAfter("://").substringBefore('/')
+            .ifBlank { resolved }.takeIf { it.isNotBlank() } ?: resolved
+        val subscription = CalendarSubscription(
+            id = idProvider(),
+            name = name.trim().ifBlank { fallbackName },
+            url = url.trim(),
+        )
+        persist(appState.copy(subscriptions = appState.subscriptions + subscription))
+        return subscription
+    }
+
+    fun removeSubscription(id: String) {
+        persist(appState.copy(subscriptions = appState.subscriptions.filterNot { it.id == id }))
+    }
+
+    private fun updateSubscription(id: String, transform: (CalendarSubscription) -> CalendarSubscription) {
+        if (appState.subscriptions.none { it.id == id }) return
+        persist(appState.copy(subscriptions = appState.subscriptions.map { if (it.id == id) transform(it) else it }))
+    }
+
+    /** Subscriptions whose automatic refresh interval has elapsed at [now]. */
+    fun subscriptionsDue(now: Instant = clock.now()): List<CalendarSubscription> =
+        appState.subscriptions.filter { subscription ->
+            if (!subscription.enabled || subscription.refreshMinutes <= 0) return@filter false
+            val last = subscription.lastSync?.let(::parseInstantOrNull)?.epochSeconds ?: return@filter true
+            now.epochSeconds - last >= subscription.refreshMinutes * 60L
+        }
+
+    private val syncJobs = mutableMapOf<String, Job>()
+
+    /**
+     * Syncs one subscription through the platform HTTP bridge. A sync that is still running is not
+     * started again, and without a bridge the call does nothing.
+     */
+    fun syncSubscription(id: String) {
+        val subscription = appState.subscriptions.firstOrNull { it.id == id } ?: return
+        val http = subscriptionHttp ?: return
+        if (syncJobs[id]?.isActive == true) return
+        syncJobs[id] = scope.launch {
+            val fetch = runCatching { fetchSubscription(subscription, http) }
+                .getOrElse { SubscriptionFetch.Failed(SubscriptionFailure.Unreachable) }
+            applySubscriptionFetch(subscription, fetch, http)
+        }
+    }
+
+    /** Syncs every subscription whose refresh interval has elapsed. */
+    fun syncDueSubscriptions() {
+        subscriptionsDue().forEach { syncSubscription(it.id) }
+    }
+
+    /** Whether [id] currently has a sync running. */
+    fun isSyncing(id: String): Boolean = syncJobs[id]?.isActive == true
+
+    private suspend fun applySubscriptionFetch(
+        subscription: CalendarSubscription,
+        fetch: SubscriptionFetch,
+        http: SubscriptionHttp,
+    ) {
+        when (fetch) {
+            is SubscriptionFetch.Failed ->
+                notify(AppMessage.SubscriptionFailed(subscription.name, fetch.failure))
+            SubscriptionFetch.Unchanged -> {
+                updateSubscription(subscription.id) { it.copy(lastSync = clock.now().toString()) }
+                notify(AppMessage.SubscriptionUnchanged(subscription.name))
+            }
+            is SubscriptionFetch.Full -> {
+                val applied = applySubscriptionContent(subscription, fetch.text, removeVanished = true)
+                updateSubscription(subscription.id) {
+                    it.copy(
+                        lastSync = clock.now().toString(),
+                        etag = fetch.etag ?: it.etag,
+                        syncToken = fetch.syncToken ?: it.syncToken,
+                        caldav = it.caldav || fetch.syncToken != null,
+                        // A feed that publishes REFRESH-INTERVAL seeds its own auto-refresh.
+                        refreshMinutes = it.refreshMinutes.takeIf { minutes -> minutes > 0 }
+                            ?: applied.refreshMinutes
+                            ?: it.refreshMinutes,
+                    )
+                }
+                notify(
+                    AppMessage.SubscriptionSynced(
+                        subscription.name,
+                        applied.outcome.events,
+                        applied.outcome.todos,
+                        applied.outcome.removed,
+                    ),
+                )
+            }
+            is SubscriptionFetch.Changes -> {
+                val applied = applySubscriptionContent(subscription, fetch.text, removeVanished = false)
+                updateSubscription(subscription.id) {
+                    it.copy(lastSync = clock.now().toString(), syncToken = fetch.syncToken ?: it.syncToken)
+                }
+                if (fetch.deletions) {
+                    // An incremental report cannot name what vanished upstream; one full fetch
+                    // reconciles the local copy before the sync is called done.
+                    val full = runCatching {
+                        fetchSubscription(subscription.copy(caldav = true, syncToken = null), http)
+                    }.getOrElse { SubscriptionFetch.Failed(SubscriptionFailure.Unreachable) }
+                    if (full is SubscriptionFetch.Full && full.text.isNotBlank()) {
+                        applySubscriptionContent(subscription, full.text, removeVanished = true)
+                        updateSubscription(subscription.id) {
+                            it.copy(syncToken = full.syncToken ?: it.syncToken, lastSync = clock.now().toString())
+                        }
+                    }
+                }
+                notify(
+                    AppMessage.SubscriptionSynced(
+                        subscription.name,
+                        applied.outcome.events,
+                        applied.outcome.todos,
+                        applied.outcome.removed,
+                    ),
+                )
+            }
+        }
+    }
+
+    /** What applying one fetched feed changed, plus the refresh interval the feed publishes. */
+    private class SubscriptionApply(val outcome: ImportOutcome, val refreshMinutes: Int?)
+
+    /**
+     * Merges the records of one fetched feed into the stored calendar. A full feed may remove
+     * records that vanished upstream; an incremental one must not, because it only lists changes.
+     * Local edits survive: a record is replaced only when the feed carries a newer
+     * `SEQUENCE`/`DTSTAMP`.
+     */
+    private suspend fun applySubscriptionContent(
+        subscription: CalendarSubscription,
+        text: String,
+        removeVanished: Boolean,
+    ): SubscriptionApply {
+        if (text.isBlank()) return SubscriptionApply(ImportOutcome(), null)
+        val parsed = withContext(parseDispatcher ?: Dispatchers.Default) {
+            importCalendarLines(
+                unfold(text).asSequence(),
+                TimeZone.currentSystemDefault(),
+                strings.untitledEvent,
+            )
+        }
+        val source = subscriptionSource(subscription)
+        val events = mergeEvents(
+            incoming = parsed.events.map(::withStoredAttachments),
+            cancelledUids = gatedCancellations(parsed),
+            source = source,
+            removeVanished = removeVanished,
+        )
+        val todos = mergeTodos(
+            incoming = parsed.todos.map(::withStoredAttachments),
+            source = source,
+            removeVanished = removeVanished,
+        )
+        val journals = mergeJournals(
+            incoming = parsed.journals.map(::withStoredAttachments),
+            source = source,
+            removeVanished = removeVanished,
+        )
+        persist(
+            appState.copy(
+                events = events.items,
+                todos = todos.items,
+                journals = journals.items,
+                busyPeriods = mergeBusyPeriods(appState.busyPeriods, parsed.freeBusy, clock.now()),
+            ),
+        )
+        return SubscriptionApply(
+            outcome = ImportOutcome(
+                events = events.changed,
+                todos = todos.changed,
+                journals = journals.changed,
+                removed = events.removed + todos.removed + journals.removed,
+            ),
+            refreshMinutes = parsed.refreshMinutes,
+        )
     }
 
     // ----- statistics -----

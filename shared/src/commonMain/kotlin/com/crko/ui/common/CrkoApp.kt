@@ -32,6 +32,7 @@ import com.crko.domain.Event
 import com.crko.domain.IcsImportFailure
 import com.crko.domain.IcsWarning
 import com.crko.domain.IcsWarningDetail
+import com.crko.domain.ItipMethod
 import com.crko.domain.LocalClock
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.exportCalendar
@@ -96,6 +97,10 @@ fun CrkoApp(state: AppStateHolder) {
     val currentStrings by rememberUpdatedState(strings)
 
     LaunchedEffect(Unit) {
+        state.syncDueSubscriptions()
+    }
+
+    LaunchedEffect(Unit) {
         state.messages.collectLatest { message ->
             val text = when (message) {
                 AppMessage.Saved -> currentStrings.saved
@@ -114,6 +119,20 @@ fun CrkoApp(state: AppStateHolder) {
                 AppMessage.Exported -> currentStrings.exported
                 AppMessage.ExportFailed -> currentStrings.exportFailed
                 is AppMessage.StorageRecovered -> currentStrings.storageRecovered(message.droppedRecords)
+                is AppMessage.ItipReplyProcessed -> currentStrings.inviteReplyProcessed(
+                    message.attendee,
+                    message.partStat,
+                )
+                is AppMessage.ItipReplyUnknown -> currentStrings.inviteReplyUnknown(message.attendee)
+                is AppMessage.SubscriptionSynced -> currentStrings.subscriptionSynced(
+                    message.name,
+                    message.events,
+                    message.todos,
+                    message.removed,
+                )
+                is AppMessage.SubscriptionUnchanged -> currentStrings.subscriptionUnchanged(message.name)
+                is AppMessage.SubscriptionFailed ->
+                    currentStrings.subscriptionFailed(message.name, message.failure)
             }
             snackbar.showSnackbar(text)
         }
@@ -134,6 +153,12 @@ fun CrkoApp(state: AppStateHolder) {
                         val failure = (parsed.exceptionOrNull() as? CalendarReadException)?.failure
                             ?: IcsImportFailure.InvalidFormat
                         state.notify(AppMessage.ImportFailed(failure))
+                        return@launch
+                    }
+                    // An iTIP REPLY only flips one attendee's status; there is nothing to preview,
+                    // so the state holder applies it at once and reports the answer.
+                    if (imported.method == ItipMethod.Reply) {
+                        state.importCalendar(imported, fileName)
                         return@launch
                     }
                     val selection = importSelection(imported)

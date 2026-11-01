@@ -119,6 +119,17 @@ data class IcsImport(
      * removal as a choice instead of applying it behind the user's back.
      */
     val cancelled: List<CancelledIcsRecord> = emptyList(),
+    /** iTIP `METHOD` of the calendar; null for a plain snapshot without scheduling semantics. */
+    val method: ItipMethod? = null,
+    /** `X-WR-CALNAME` of the source calendar, unescaped; null when the file does not name itself. */
+    val calendarName: String? = null,
+    /**
+     * `REFRESH-INTERVAL` (or Google's `X-PUBLISHED-TTL`) in minutes; how often the publisher says a
+     * subscribed copy should be refreshed.
+     */
+    val refreshMinutes: Int? = null,
+    /** Busy periods of the `VFREEBUSY` components the file carried. */
+    val freeBusy: List<BusyInterval> = emptyList(),
 )
 
 /** A series whose newest master copy is `STATUS:CANCELLED`; importing it removes local records. */
@@ -126,6 +137,8 @@ data class CancelledIcsRecord(
     val uid: String,
     val summary: String,
     val line: Int? = null,
+    /** `SEQUENCE` of the cancelled copy, so a stale cancellation cannot remove a newer event. */
+    val sequence: Int = 0,
 )
 
 /** One warning occurrence, so the UI can say which record or line was affected. */
@@ -163,11 +176,13 @@ fun exportCalendar(
     now: Instant = Clock.System.now(),
     calendarName: String? = null,
     journals: List<Journal> = emptyList(),
+    method: ItipMethod? = null,
 ): String = buildString {
     line("BEGIN:VCALENDAR")
     line("VERSION:2.0")
     line("PRODID:-//Crko//Crko Calendar//EN")
     line("CALSCALE:GREGORIAN")
+    method?.let { line("METHOD:${it.wireName}") }
     if (!calendarName.isNullOrBlank()) line("X-WR-CALNAME:${escapeText(calendarName)}")
     // Preserved VTIMEZONE blocks are written back verbatim. Known IANA zones are not given a
     // synthetic fixed-offset definition: that would be wrong for series crossing a DST change,
@@ -214,6 +229,7 @@ internal fun importCalendarLines(
     val roots = parseComponents(lines)
     val calendars = roots.filter { it.name == "VCALENDAR" }
     val components = if (calendars.isEmpty()) roots else calendars.flatMap { it.children }
+    val calendarMeta = readCalendarMeta(calendars)
     val zones = mutableMapOf<String, CustomZone>()
     val zoneDefinitions = mutableMapOf<String, String>()
     components.filter { it.name == "VTIMEZONE" }.forEach { component ->
@@ -259,7 +275,12 @@ internal fun importCalendarLines(
         val newest = group.filter { it.recurrenceId == null }.maxWithOrNull(masterCopyComparator)
             ?: return@mapNotNull null
         if (!newest.isCancelled()) return@mapNotNull null
-        CancelledIcsRecord(uid = uid, summary = newest.summary, line = newest.lineNumber.takeIf { it > 0 })
+        CancelledIcsRecord(
+            uid = uid,
+            summary = newest.summary,
+            line = newest.lineNumber.takeIf { it > 0 },
+            sequence = newest.sequence,
+        )
     }
     val cancelledUids = cancelled.mapTo(mutableSetOf()) { it.uid }
 
@@ -269,6 +290,9 @@ internal fun importCalendarLines(
     val journals = components
         .filter { it.name == "VJOURNAL" }
         .mapNotNull { readJournal(it, timeZone, zones, floatingZone, details) }
+    val freeBusy = components.filter { it.name == "VFREEBUSY" }.flatMap { component ->
+        readFreeBusy(component, zones, floatingZone, details)
+    }
     val allWarnings = linkedSetOf<IcsWarning>().apply {
         addAll(warnings)
         details.forEach { add(it.warning) }
@@ -281,7 +305,41 @@ internal fun importCalendarLines(
         warningDetails = details.asWarningDetails(),
         cancelledUids = cancelledUids,
         cancelled = cancelled,
+        method = calendarMeta.method,
+        calendarName = calendarMeta.name,
+        refreshMinutes = calendarMeta.refreshMinutes,
+        freeBusy = freeBusy,
     )
+}
+
+/** Calendar-level properties of a `VCALENDAR` that are not tied to one record. */
+private data class CalendarMeta(
+    val method: ItipMethod? = null,
+    val name: String? = null,
+    val refreshMinutes: Int? = null,
+)
+
+/**
+ * Reads `METHOD`, `X-WR-CALNAME` and the published refresh interval from the calendar components.
+ * The first calendar that carries a value wins, so a bundle of calendars still parses sensibly.
+ */
+private fun readCalendarMeta(calendars: List<IcsComponent>): CalendarMeta {
+    var method: ItipMethod? = null
+    var name: String? = null
+    var refreshMinutes: Int? = null
+    calendars.forEach { calendar ->
+        calendar.properties.forEach { line ->
+            when (line.name) {
+                "METHOD" -> method = ItipMethod.parse(line.value) ?: method
+                "X-WR-CALNAME" -> name = unescapeText(line.value).trim().takeIf { it.isNotEmpty() } ?: name
+                "REFRESH-INTERVAL", "X-PUBLISHED-TTL" -> {
+                    val minutes = parseDurationMinutes(line.value)?.takeIf { it > 0 }
+                    if (minutes != null) refreshMinutes = minutes
+                }
+            }
+        }
+    }
+    return CalendarMeta(method, name, refreshMinutes)
 }
 
 /** Total number of records a message may point at; beyond that the summary stays honest anyway. */
@@ -324,6 +382,84 @@ fun importIcs(
     timeZone: TimeZone = TimeZone.currentSystemDefault(),
     untitledTitle: String,
 ): List<Event> = importCalendar(text, timeZone, untitledTitle).events
+
+/**
+ * iTIP message that proposes or updates [events] (`METHOD:REQUEST`). Receivers decide by `UID` and
+ * `SEQUENCE` whether the proposal replaces their copy, so every record keeps its full content.
+ */
+fun exportItipRequest(
+    events: List<Event>,
+    now: Instant = Clock.System.now(),
+    calendarName: String? = null,
+): String = exportCalendar(events = events, now = now, calendarName = calendarName, method = ItipMethod.Request)
+
+/**
+ * iTIP message that withdraws [events] (`METHOD:CANCEL`): every copy is written with
+ * `STATUS:CANCELLED` and a bumped `SEQUENCE`, so receivers drop or hide their local records.
+ */
+fun exportItipCancel(
+    events: List<Event>,
+    now: Instant = Clock.System.now(),
+): String = exportCalendar(
+    events = events.map { it.copy(status = EventStatus.Cancelled) },
+    now = now,
+    method = ItipMethod.Cancel,
+)
+
+/**
+ * iTIP `REPLY` for [attendee]'s answer to [event] (RFC 5546 §3.2.3). The message carries the bare
+ * scheduling facts — `UID`, `DTSTAMP`, `SEQUENCE`, `ORGANIZER`, the replying `ATTENDEE` with its
+ * new `PARTSTAT`, and `RECURRENCE-ID` for an instance — so the organizer can merge it even when the
+ * reply arrives without the full event body.
+ */
+fun exportItipReply(
+    event: Event,
+    attendee: IcsAttendee,
+    now: Instant = Clock.System.now(),
+): String = buildString {
+    line("BEGIN:VCALENDAR")
+    line("VERSION:2.0")
+    line("PRODID:-//Crko//Crko Calendar//EN")
+    line("CALSCALE:GREGORIAN")
+    line("METHOD:REPLY")
+    line("BEGIN:VEVENT")
+    val uid = event.seriesUid ?: event.uid ?: "crko-reply@local"
+    line("UID:${escapeText(uid)}")
+    line("DTSTAMP:${formatUtc(parseInstant(event.dtStamp) ?: now)}")
+    if (event.sequence > 0) line("SEQUENCE:${event.sequence}")
+    val organizerRaw = event.organizerRaw
+    if (!organizerRaw.isNullOrBlank()) {
+        line(organizerRaw)
+    } else {
+        event.organizer?.let { if (it.isNotBlank()) line("ORGANIZER:${sanitizeUriValue(it)}") }
+    }
+    line(attendee.toLine())
+    if (event.recurrenceId != null) {
+        if (event.allDay) {
+            parseDateText(event.recurrenceId)?.let { line("RECURRENCE-ID;VALUE=DATE:${formatDate(it)}") }
+        } else {
+            val zoneParam = event.timeZoneId
+                ?.takeIf { it.isNotBlank() && !it.equals("UTC", ignoreCase = true) }
+                ?.let { id -> if (event.sourceStart?.endsWith("Z", ignoreCase = true) == true) "" else ";TZID=$id" }
+                .orEmpty()
+            val value = buildRecurrenceValue(
+                event.recurrenceId.orEmpty(),
+                event.startMinutes,
+                event.startSeconds,
+                event.sourceStart,
+                event.timeZoneId,
+            )
+            line("RECURRENCE-ID$zoneParam:$value")
+        }
+    }
+    if (event.allDay) {
+        line("DTSTART;VALUE=DATE:${formatDate(event.day)}")
+    } else {
+        appendTimedStart("DTSTART", event, event.date, event.startMinutes, event.startSeconds)
+    }
+    line("END:VEVENT")
+    line("END:VCALENDAR")
+}
 
 /**
  * Recomputes locally stored wall-clock fields from the preserved ICS source when the device zone
@@ -1019,7 +1155,7 @@ internal class IcsUnfolder {
     }
 }
 
-private fun parseContentLine(unfolded: UnfoldedLine): ContentLine? {
+internal fun parseContentLine(unfolded: UnfoldedLine): ContentLine? {
     val line = unfolded.text
     var colon = -1
     var quoted = false
@@ -2701,8 +2837,48 @@ private fun readJournal(
     )
 }
 
-private fun StringBuilder.appendJournal(journal: Journal, index: Int, now: Instant) {
-    line("BEGIN:VJOURNAL")
+/**
+ * Reads the busy periods of one `VFREEBUSY` component. Only `FREEBUSY` lines matter for a
+ * free/busy query; the component's `UID`/`DTSTAMP`/`URL` metadata has no meaning once the periods
+ * are in the app's hands.
+ */
+private fun readFreeBusy(
+    component: IcsComponent,
+    zones: Map<String, CustomZone>,
+    floatingZone: IcsZone?,
+    details: MutableList<IcsWarningDetail>,
+): List<BusyInterval> {
+    val warnings = linkedSetOf<IcsWarning>()
+    val intervals = mutableListOf<BusyInterval>()
+    component.properties.forEach { line ->
+        if (line.name != "FREEBUSY") return@forEach
+        val type = busyTypeOf(line.params["FBTYPE"])
+        splitList(line.value).forEach { value ->
+            val period = parsePeriod(
+                ContentLine(line.name, line.params, value, line.raw),
+                value,
+                zones,
+                warnings,
+                floatingZone,
+            ) as? IcsTime.DateTime ?: return@forEach
+            val minutes = period.periodMinutes ?: return@forEach
+            val startInstant = period.zone.toInstant(period.value)
+            intervals += BusyInterval.of(type, startInstant, startInstant + (minutes * 60).seconds)
+        }
+    }
+    warnings.forEach { details += warningDetail(it, component.lineNumber, null) }
+    return intervals
+}
+
+/** `FBTYPE` of a `FREEBUSY` property; anything unknown reads as plain busy time. */
+private fun busyTypeOf(value: String?): BusyType = when (value?.trim()?.uppercase()) {
+    "FREE" -> BusyType.Free
+    "BUSY-UNAVAILABLE" -> BusyType.BusyUnavailable
+    "BUSY-TENTATIVE" -> BusyType.Tentative
+    else -> BusyType.Busy
+}
+
+private fun StringBuilder.appendJournal(journal: Journal, index: Int, now: Instant) {    line("BEGIN:VJOURNAL")
     line("UID:${escapeText(journal.icsUid ?: "${journal.id}@crko")}")
     val stamp = parseInstant(journal.dtStamp) ?: parseInstant(journal.lastModified) ?: now
     line("DTSTAMP:${formatUtc(stamp)}")
@@ -2941,7 +3117,7 @@ private fun formatDateTime(date: LocalDate, minutes: Int, seconds: Int = 0): Str
 private fun formatTime(minutes: Int, seconds: Int = 0): String =
     "${(minutes / 60).toString().padStart(2, '0')}${(minutes % 60).toString().padStart(2, '0')}${seconds.coerceIn(0, 59).toString().padStart(2, '0')}"
 
-private fun formatUtc(instant: Instant): String {
+internal fun formatUtc(instant: Instant): String {
     val local = instant.toLocalDateTime(TimeZone.UTC)
     return buildString {
         append(local.date.year.toString().padStart(4, '0'))

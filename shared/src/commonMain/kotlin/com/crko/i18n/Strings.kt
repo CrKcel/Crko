@@ -1,7 +1,9 @@
 package com.crko.i18n
 
 import com.crko.domain.IcsImportFailure
+import com.crko.domain.IcsPartStat
 import com.crko.domain.IcsWarning
+import com.crko.domain.SubscriptionFailure
 import com.crko.domain.TodoPriority
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
@@ -177,6 +179,27 @@ interface Strings {
     val importSelectAll: String
     val importSelectNone: String
     val importConfirm: String
+
+    /** Calendar subscriptions (webcal/ICS feeds and CalDAV collections). */
+    val subscriptions: String
+    val subscriptionsHint: String
+    val subscriptionAdd: String
+    val subscriptionAddHint: String
+    val subscriptionName: String
+    val subscriptionUrl: String
+    val subscriptionUrlInvalid: String
+    val subscriptionSyncNow: String
+    val subscriptionNeverSynced: String
+    val subscriptionsEmpty: String
+    fun subscriptionLastSynced(at: String): String
+    fun subscriptionSynced(name: String, events: Int, todos: Int, removed: Int): String
+    fun subscriptionUnchanged(name: String): String
+    fun subscriptionFailed(name: String, failure: SubscriptionFailure): String
+
+    /** Name of a `PARTSTAT` for invitation feedback. */
+    fun partStatName(partStat: IcsPartStat): String
+    fun inviteReplyProcessed(attendee: String, partStat: IcsPartStat): String
+    fun inviteReplyUnknown(attendee: String): String
 
     val language: String
     val languageSystem: String
@@ -382,6 +405,46 @@ object ZhStrings : Strings {
     override val importSelectAll = "全选"
     override val importSelectNone = "全不选"
     override val importConfirm = "导入所选"
+    override val subscriptions = "日历订阅"
+    override val subscriptionsHint = "同步 webcal 订阅或 CalDAV 日历"
+    override val subscriptionAdd = "添加订阅"
+    override val subscriptionAddHint = "粘贴日历链接（webcal:// 或 https://）"
+    override val subscriptionName = "名称"
+    override val subscriptionUrl = "链接"
+    override val subscriptionUrlInvalid = "链接无效，需要 http(s) 或 webcal 开头的完整地址"
+    override val subscriptionSyncNow = "立即同步"
+    override val subscriptionNeverSynced = "尚未同步"
+    override val subscriptionsEmpty = "暂无订阅"
+    override fun subscriptionLastSynced(at: String) = "上次同步 $at"
+    override fun subscriptionSynced(name: String, events: Int, todos: Int, removed: Int): String {
+        val items = listOf(
+            events.takeIf { it > 0 }?.let { "$it 项日程" },
+            todos.takeIf { it > 0 }?.let { "$it 项待办" },
+        ).filterNotNull()
+        val changed = if (items.isEmpty()) "" else "，更新 " + items.joinToString("、")
+        val removedText = if (removed > 0) "，移除 $removed 条" else ""
+        return "「$name」已同步$changed$removedText"
+    }
+    override fun subscriptionUnchanged(name: String) = "「$name」没有更新"
+    override fun subscriptionFailed(name: String, failure: SubscriptionFailure): String = when (failure) {
+        SubscriptionFailure.Unreachable -> "「$name」同步失败：无法连接服务器"
+        SubscriptionFailure.Unauthorized -> "「$name」同步失败：服务器要求登录"
+        SubscriptionFailure.HttpError -> "「$name」同步失败：服务器返回错误"
+        SubscriptionFailure.NotCalendar -> "「$name」同步失败：地址不是日历"
+        SubscriptionFailure.TooLarge -> "「$name」同步失败：日历过大"
+    }
+    override fun partStatName(partStat: IcsPartStat): String = when (partStat) {
+        IcsPartStat.Accepted -> "已接受"
+        IcsPartStat.Declined -> "已拒绝"
+        IcsPartStat.Tentative -> "暂定参加"
+        IcsPartStat.Delegated -> "已委派"
+        IcsPartStat.Completed -> "已完成"
+        IcsPartStat.InProcess -> "进行中"
+        IcsPartStat.NeedsAction -> "待答复"
+    }
+    override fun inviteReplyProcessed(attendee: String, partStat: IcsPartStat) =
+        "$attendee ${partStatName(partStat)}邀请"
+    override fun inviteReplyUnknown(attendee: String) = "$attendee 的答复无法匹配本地日程"
     override val language = "语言"
     override val languageSystem = "跟随系统"
     override val languageChinese = "中文"
@@ -599,6 +662,46 @@ object EnStrings : Strings {
     override val importSelectAll = "Select all"
     override val importSelectNone = "Clear"
     override val importConfirm = "Import selected"
+    override val subscriptions = "Subscriptions"
+    override val subscriptionsHint = "Sync webcal feeds or CalDAV calendars"
+    override val subscriptionAdd = "Add subscription"
+    override val subscriptionAddHint = "Paste a calendar link (webcal:// or https://)"
+    override val subscriptionName = "Name"
+    override val subscriptionUrl = "URL"
+    override val subscriptionUrlInvalid = "Invalid URL. Use a full http(s) or webcal address."
+    override val subscriptionSyncNow = "Sync now"
+    override val subscriptionNeverSynced = "Never synced"
+    override val subscriptionsEmpty = "No subscriptions"
+    override fun subscriptionLastSynced(at: String) = "Last synced $at"
+    override fun subscriptionSynced(name: String, events: Int, todos: Int, removed: Int): String {
+        val items = listOf(
+            events.takeIf { it > 0 }?.let { if (it == 1) "1 event" else "$it events" },
+            todos.takeIf { it > 0 }?.let { if (it == 1) "1 todo" else "$it todos" },
+        ).filterNotNull()
+        val changed = if (items.isEmpty()) "" else ", updated ${items.joinToString(", ")}"
+        val removedText = if (removed > 0) ", removed $removed" else ""
+        return "\"$name\" synced$changed$removedText"
+    }
+    override fun subscriptionUnchanged(name: String) = "\"$name\" is up to date"
+    override fun subscriptionFailed(name: String, failure: SubscriptionFailure): String = when (failure) {
+        SubscriptionFailure.Unreachable -> "Could not sync \"$name\": the server is unreachable"
+        SubscriptionFailure.Unauthorized -> "Could not sync \"$name\": the server requires sign-in"
+        SubscriptionFailure.HttpError -> "Could not sync \"$name\": the server returned an error"
+        SubscriptionFailure.NotCalendar -> "Could not sync \"$name\": the address is not a calendar"
+        SubscriptionFailure.TooLarge -> "Could not sync \"$name\": the calendar is too large"
+    }
+    override fun partStatName(partStat: IcsPartStat): String = when (partStat) {
+        IcsPartStat.Accepted -> "accepted"
+        IcsPartStat.Declined -> "declined"
+        IcsPartStat.Tentative -> "tentatively accepted"
+        IcsPartStat.Delegated -> "delegated"
+        IcsPartStat.Completed -> "completed"
+        IcsPartStat.InProcess -> "in progress"
+        IcsPartStat.NeedsAction -> "needs action"
+    }
+    override fun inviteReplyProcessed(attendee: String, partStat: IcsPartStat) =
+        "$attendee ${partStatName(partStat)} the invitation"
+    override fun inviteReplyUnknown(attendee: String) = "$attendee's reply matched no local event"
     override val language = "Language"
     override val languageSystem = "System"
     override val languageChinese = "中文"

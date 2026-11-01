@@ -6,6 +6,7 @@ import com.crko.domain.IcsUnfolder
 import com.crko.domain.UnfoldedLine
 import com.crko.domain.byteOrderCharset
 import com.crko.domain.decodeBytesWithCharset
+import com.crko.domain.decodeCalendarBytes
 import com.crko.domain.importCalendarLines
 import com.crko.domain.unfold
 import kotlinx.datetime.TimeZone

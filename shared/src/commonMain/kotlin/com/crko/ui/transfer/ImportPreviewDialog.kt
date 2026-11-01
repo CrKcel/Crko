@@ -20,11 +20,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.state.ToggleableState
+import com.crko.domain.BusyInterval
 import com.crko.domain.CancelledIcsRecord
 import com.crko.domain.Event
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsWarning
 import com.crko.domain.IcsWarningDetail
+import com.crko.domain.ItipMethod
 import com.crko.domain.Journal
 import com.crko.domain.Todo
 import com.crko.i18n.Strings
@@ -49,7 +51,8 @@ internal data class ImportRow(
 /**
  * The records one parsed file carried, in the order the preview lists them: events, todos,
  * journals, then the removals a `STATUS:CANCELLED` master implies. [toIcsImport] keeps exactly the
- * rows the user checked.
+ * rows the user checked; calendar-level facts (method, name, refresh interval, busy periods) are
+ * not selectable and always travel with the import.
  */
 internal data class ImportSelection(
     val rows: List<ImportRow>,
@@ -59,6 +62,10 @@ internal data class ImportSelection(
     val cancelled: List<CancelledIcsRecord>,
     val warnings: List<IcsWarning>,
     val warningDetails: List<IcsWarningDetail>,
+    val method: ItipMethod? = null,
+    val calendarName: String? = null,
+    val refreshMinutes: Int? = null,
+    val freeBusy: List<BusyInterval> = emptyList(),
 )
 
 /** A parsed file waiting for the user's selection before anything touches the calendar. */
@@ -116,6 +123,10 @@ internal fun importSelection(imported: IcsImport): ImportSelection = ImportSelec
     cancelled = imported.cancelled,
     warnings = imported.warnings,
     warningDetails = imported.warningDetails,
+    method = imported.method,
+    calendarName = imported.calendarName,
+    refreshMinutes = imported.refreshMinutes,
+    freeBusy = imported.freeBusy,
 )
 
 /** The subset of [this] the user kept, as an [IcsImport] the state holder can apply. */
@@ -135,6 +146,10 @@ internal fun ImportSelection.toIcsImport(checked: List<Boolean>): IcsImport {
         cancelled = cancelled.filterIndexed { index, _ -> kept(journalsEnd + index) },
         warnings = warnings,
         warningDetails = warningDetails,
+        method = method,
+        calendarName = calendarName,
+        refreshMinutes = refreshMinutes,
+        freeBusy = freeBusy,
     )
 }
 

@@ -113,6 +113,14 @@ fun MoreTab(
                 )
             }
             Spacer(Modifier.height(20.dp))
+            LinkedCardTitle(
+                icon = AppIcons.Export,
+                iconTint = MiuixTheme.colorScheme.primary,
+                title = strings.subscriptions,
+            )
+            Spacer(Modifier.height(12.dp))
+            SubscriptionsSection(state = state, strings = strings)
+            Spacer(Modifier.height(20.dp))
             EntryCard(
                 icon = AppIcons.Settings,
                 iconTint = MiuixTheme.colorScheme.secondary,

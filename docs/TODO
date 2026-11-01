@@ -1,11 +1,3 @@
-## 日历互操作与同步
-
-- [ ] `METHOD` / iTIP 邀请流程（`REQUEST` / `REPLY` / `CANCEL`）。
-- [ ] `ORGANIZER` / `ATTENDEE` 的邀请、回复、`METHOD` 与 `SEQUENCE` 冲突解决。
-- [ ] 多日历 / 导入 `X-WR-CALNAME` / `REFRESH-INTERVAL`（当前没有日历容器模型）。
-- [ ] 日历订阅 / 同步（webcal、CalDAV、增量同步）。
-- [ ] `VFREEBUSY` 与忙闲查询。
-
 ## 待办（VTODO）
 
 - [ ] VTODO 的 `RELATED-TO` 子任务层级与界面。
