@@ -40,6 +40,7 @@ import com.crko.domain.weekDates
 import com.crko.i18n.Strings
 import com.crko.state.AppStateHolder
 import com.crko.ui.components.CardRowDivider
+import com.crko.ui.components.GlassNavigationBarDefaults
 import com.crko.ui.components.SurfaceCard
 import com.crko.ui.schedule.priorityColor
 import kotlinx.datetime.LocalDate
@@ -118,7 +119,7 @@ fun MoreTab(
                 title = strings.settings,
                 onClick = onOpenSettings,
             )
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(GlassNavigationBarDefaults.clearance() + 12.dp))
         }
     }
 }
