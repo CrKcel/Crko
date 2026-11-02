@@ -9,7 +9,7 @@ import com.crko.domain.AlarmRelated
 import com.crko.domain.AlarmTrigger
 import com.crko.domain.Attachment
 import com.crko.domain.BusyInterval
-import com.crko.domain.CalendarMetadata
+import com.crko.domain.Calendar
 import com.crko.domain.CalendarSubscription
 import com.crko.domain.CalendarTimeZone
 import com.crko.domain.Event
@@ -61,8 +61,12 @@ import com.crko.domain.recurrenceSlotDate
 import com.crko.domain.recurrenceSlotOn
 import com.crko.domain.registerIcsTimeZones
 import com.crko.domain.shiftedByWallDays
+import com.crko.domain.subscription
+import com.crko.domain.toCalendar
+import com.crko.domain.toSyncState
 import com.crko.domain.wallDate
 import com.crko.domain.withExclusion
+import com.crko.domain.withLocalCalendar
 import com.crko.domain.plusDays
 import com.crko.domain.safeAttachmentFileName
 import com.crko.domain.resolveSubscriptionUrl
@@ -189,7 +193,7 @@ class AppStateHolder(
      */
     private val parseDispatcher: CoroutineDispatcher? = null,
 ) {
-    var appState: AppState by mutableStateOf(storage.loadState())
+    var appState: AppState by mutableStateOf(storage.loadState().withLocalCalendar())
         private set
 
     var settings: PersistedSettings by mutableStateOf(storage.loadSettings())
@@ -236,6 +240,22 @@ class AppStateHolder(
         today = today(clock)
     }
 
+    /** Index of the calendar new local records go into; a payload always keeps at least one. */
+    private val localCalendarIndex: Int
+        get() = appState.calendars.indexOfFirst { it.isLocal }.takeIf { it >= 0 } ?: 0
+
+    /** Index of the calendar that owns the record selected by [contains]. */
+    private fun calendarIndexContaining(contains: (Calendar) -> Boolean): Int? =
+        appState.calendars.indexOfFirst(contains).takeIf { it >= 0 }
+
+    /** Replaces one calendar, leaving every other calendar's records untouched. */
+    private fun AppState.replacingCalendar(index: Int, transform: (Calendar) -> Calendar): AppState {
+        if (index !in calendars.indices) return this
+        val updated = calendars.toMutableList()
+        updated[index] = transform(updated[index])
+        return copy(calendars = updated)
+    }
+
     // ----- settings -----
 
     private fun updateSettings(transform: (PersistedSettings) -> PersistedSettings) {
@@ -275,15 +295,20 @@ class AppStateHolder(
         val validated = normalized
         val now = clock.now()
         if (validated.alarms.isNotEmpty()) ensureReminderPermission()
+        // An edit belongs to the calendar that owns the stored record; a new record goes local.
+        val calendarIndex = existing?.let { stored ->
+            calendarIndexContaining { calendar -> calendar.events.any { it.id == stored.id } }
+        } ?: localCalendarIndex
+        val storedEvents = appState.calendars[calendarIndex].events
         return when {
             scope == EditScope.ThisEvent && existing?.repeat != null -> {
-                saveThisOccurrence(existing, validated, occurrenceDate, now)
+                saveThisOccurrence(storedEvents, existing, validated, occurrenceDate, now, calendarIndex)
             }
             scope == EditScope.ThisAndFuture && existing?.repeat != null -> {
-                saveThisAndFuture(existing, validated, occurrenceDate, now)
+                saveThisAndFuture(storedEvents, existing, validated, occurrenceDate, now, calendarIndex)
             }
             existing?.repeat != null && occurrenceDate != null -> {
-                saveWholeSeries(existing, validated, occurrenceDate, now)
+                saveWholeSeries(storedEvents, existing, validated, occurrenceDate, now, calendarIndex)
             }
             else -> {
                 val saved = validated.copy(
@@ -293,21 +318,23 @@ class AppStateHolder(
                     sequence = (existing?.sequence ?: validated.sequence) + if (existing == null) 0 else 1,
                 )
                 val updated = if (existing != null) {
-                    appState.events.map { if (it.id == saved.id) saved else it }
+                    storedEvents.map { if (it.id == saved.id) saved else it }
                 } else {
-                    appState.events + saved
+                    storedEvents + saved
                 }
-                persist(appState.copy(events = updated))
+                persist(appState.replacingCalendar(calendarIndex) { it.copy(events = updated) })
                 WriteResult.Success
             }
         }
     }
 
     private fun saveWholeSeries(
+        storedEvents: List<Event>,
         series: Event,
         edited: Event,
         occurrenceDate: LocalDate,
         now: kotlin.time.Instant,
+        calendarIndex: Int,
     ): WriteResult {
         // The editor shows the occurrence's date, so the delta is relative to that occurrence.
         val shift = occurrenceDate.daysTo(edited.day)
@@ -338,7 +365,7 @@ class AppStateHolder(
         // shifts their dates and RECURRENCE-IDs with it, so they cannot collide with or become
         // detached from the moved series.
         val seriesUid = series.uid
-        val updated = appState.events.mapNotNull { current ->
+        val updated = storedEvents.mapNotNull { current ->
             val isException = seriesUid != null && current.icsUid == seriesUid && current.recurrenceId != null
             when {
                 current.id == series.id -> saved
@@ -351,21 +378,23 @@ class AppStateHolder(
                 else -> current
             }
         }
-        persist(appState.copy(events = updated))
+        persist(appState.replacingCalendar(calendarIndex) { it.copy(events = updated) })
         return WriteResult.Success
     }
 
     private fun saveThisOccurrence(
+        storedEvents: List<Event>,
         series: Event,
         edited: Event,
         occurrenceDate: LocalDate?,
         now: kotlin.time.Instant,
+        calendarIndex: Int,
     ): WriteResult {
         val occurrence = occurrenceDate ?: edited.day
         val seriesUid = series.uid
         // The full slot, not just its date, so two exceptions on one day stay distinguishable.
         val slot = series.recurrenceSlotOn(occurrence)
-        val existingOverride = appState.events.firstOrNull {
+        val existingOverride = storedEvents.firstOrNull {
             it.icsUid == seriesUid && it.recurrenceId == slot
         }
         // The editor starts on the occurrence date, so a different date is an intentional move.
@@ -391,7 +420,7 @@ class AppStateHolder(
             dtStamp = now.toString(),
             sequence = series.sequence + 1,
         )
-        val events = appState.events.map {
+        val events = storedEvents.map {
             when {
                 it.id == series.id -> updatedSeries
                 it.id == existingOverride?.id -> override
@@ -400,19 +429,21 @@ class AppStateHolder(
         }.let { list ->
             if (existingOverride == null) list + override else list
         }
-        persist(appState.copy(events = events))
+        persist(appState.replacingCalendar(calendarIndex) { it.copy(events = events) })
         return WriteResult.Success
     }
 
     private fun saveThisAndFuture(
+        storedEvents: List<Event>,
         series: Event,
         edited: Event,
         occurrenceDate: LocalDate?,
         now: kotlin.time.Instant,
+        calendarIndex: Int,
     ): WriteResult {
         val occurrence = occurrenceDate ?: edited.day
         if (occurrence <= series.day) {
-            return saveWholeSeries(series, edited, occurrence, now)
+            return saveWholeSeries(storedEvents, series, edited, occurrence, now, calendarIndex)
         }
         val previous = occurrence.plusDays(-1)
         // RDATEs and EXDATEs belong to whichever segment covers their slot. A value kept on the
@@ -459,7 +490,7 @@ class AppStateHolder(
             sequence = 0,
         )
         val newUid = newSeries.uid
-        val events = appState.events.mapNotNull { current ->
+        val events = storedEvents.mapNotNull { current ->
             val isException = current.icsUid == series.uid && current.recurrenceId != null
             when {
                 current.id == series.id -> oldSeries
@@ -475,14 +506,17 @@ class AppStateHolder(
                 else -> current
             }
         } + newSeries
-        persist(appState.copy(events = events))
+        persist(appState.replacingCalendar(calendarIndex) { it.copy(events = events) })
         return WriteResult.Success
     }
 
     /** Removes an event by id, without touching the rest of a series. */
     fun deleteEvent(id: String?) {
         if (id == null) return
-        persist(appState.copy(events = appState.events.filterNot { it.id == id }))
+        val index = calendarIndexContaining { calendar -> calendar.events.any { it.id == id } } ?: return
+        persist(appState.replacingCalendar(index) { calendar ->
+            calendar.copy(events = calendar.events.filterNot { it.id == id })
+        })
     }
 
     /**
@@ -494,7 +528,11 @@ class AppStateHolder(
         occurrenceDate: LocalDate? = null,
         scope: EditScope = EditScope.AllEvents,
     ) {
-        val stored = appState.events.firstOrNull { it.id == event.id } ?: event
+        val storedCalendarIndex = calendarIndexContaining { calendar ->
+            calendar.events.any { it.id == event.id }
+        } ?: localCalendarIndex
+        val storedEvents = appState.calendars[storedCalendarIndex].events
+        val stored = storedEvents.firstOrNull { it.id == event.id } ?: event
         // An exception's slot is its RECURRENCE-ID even when the record was moved to another day;
         // for a series the opened date has to resolve to the start of the occurrence covering it,
         // so deleting a multi-day occurrence from its second day still hits the right slot.
@@ -506,23 +544,23 @@ class AppStateHolder(
 
         // An exception is removed on its own; the master only gains its slot as an exclusion.
         if (storedSlot != null) {
-            val master = appState.events.firstOrNull {
+            val master = storedEvents.firstOrNull {
                 it.id != stored.id && it.icsUid == stored.icsUid && it.recurrenceId == null
             }
-            val updated = appState.events.filterNot { it.id == stored.id }.map { current ->
+            val updated = storedEvents.filterNot { it.id == stored.id }.map { current ->
                 if (master != null && current.id == master.id) {
                     current.copy(recurrence = current.recurrence.withExclusion(storedSlot))
                 } else {
                     current
                 }
             }
-            persist(appState.copy(events = updated))
+            persist(appState.replacingCalendar(storedCalendarIndex) { it.copy(events = updated) })
             return
         }
 
         // A one-off event is removed as is.
         if (stored.recurrence == null) {
-            appState.events.firstOrNull { it.id == stored.id }?.let { deleteEvent(it.id) }
+            deleteEvent(stored.id)
             return
         }
 
@@ -531,7 +569,7 @@ class AppStateHolder(
             seriesUid != null && current.icsUid == seriesUid && current.recurrenceId != null
         }
         val updated = when (scope) {
-            EditScope.ThisEvent -> appState.events
+            EditScope.ThisEvent -> storedEvents
                 .filterNot { current -> belongsToSeries(current) && current.recurrenceId == occurrenceSlot }
                 .map { current ->
                     if (current.id == stored.id) {
@@ -542,9 +580,9 @@ class AppStateHolder(
                 }
             EditScope.ThisAndFuture -> {
                 if (occurrence <= stored.day) {
-                    appState.events.filterNot { it.id == stored.id || belongsToSeries(it) }
+                    storedEvents.filterNot { it.id == stored.id || belongsToSeries(it) }
                 } else {
-                    appState.events.mapNotNull { current ->
+                    storedEvents.mapNotNull { current ->
                         when {
                             current.id == stored.id -> current.copy(
                                 recurrence = current.recurrence?.let { recurrence ->
@@ -565,9 +603,9 @@ class AppStateHolder(
                     }
                 }
             }
-            EditScope.AllEvents -> appState.events.filterNot { it.id == stored.id || belongsToSeries(it) }
+            EditScope.AllEvents -> storedEvents.filterNot { it.id == stored.id || belongsToSeries(it) }
         }
-        persist(appState.copy(events = updated))
+        persist(appState.replacingCalendar(storedCalendarIndex) { it.copy(events = updated) })
     }
 
     /**
@@ -575,18 +613,31 @@ class AppStateHolder(
      * `SEQUENCE`/`DTSTAMP`, so re-importing an updated file does not keep stale copies.
      */
     fun importEvents(events: List<Event>): Int {
-        val merged = mergeEvents(events.map(::withStoredAttachments), emptySet(), source = null, removeVanished = false)
-        if (merged.changed > 0 || merged.items != appState.events) {
-            persist(appState.copy(events = merged.items))
+        val index = localCalendarIndex
+        val merged = mergeEvents(
+            base = appState.calendars[index].events,
+            incoming = events.map(::withStoredAttachments),
+            cancelledUids = emptySet(),
+            source = null,
+            removeVanished = false,
+        )
+        if (merged.changed > 0 || merged.items != appState.calendars[index].events) {
+            persist(appState.replacingCalendar(index) { it.copy(events = merged.items) })
         }
         return merged.changed
     }
 
     /** Merges todos from an ICS file, updating known UIDs newer than the stored copy. */
     fun importTodos(todos: List<Todo>): Int {
-        val merged = mergeTodos(todos.map(::withStoredAttachments), source = null, removeVanished = false)
-        if (merged.changed > 0 || merged.items != appState.todos) {
-            persist(appState.copy(todos = merged.items))
+        val index = localCalendarIndex
+        val merged = mergeTodos(
+            base = appState.calendars[index].todos,
+            incoming = todos.map(::withStoredAttachments),
+            source = null,
+            removeVanished = false,
+        )
+        if (merged.changed > 0 || merged.items != appState.calendars[index].todos) {
+            persist(appState.replacingCalendar(index) { it.copy(todos = merged.items) })
         }
         return merged.changed
     }
@@ -601,7 +652,11 @@ class AppStateHolder(
      * answering attendee's status and a `CANCEL` must carry a `SEQUENCE` at least as new as the
      * stored copy before it may remove anything.
      */
-    fun importCalendar(import: IcsImport, source: String? = null): ImportOutcome {
+    fun importCalendar(
+        import: IcsImport,
+        source: String? = null,
+        calendarId: String? = null,
+    ): ImportOutcome {
         if (import.method == ItipMethod.Reply) return applyItipReply(import)
         val hasContent = import.events.isNotEmpty() || import.todos.isNotEmpty() ||
             import.journals.isNotEmpty() || import.cancelledUids.isNotEmpty() || import.freeBusy.isNotEmpty()
@@ -609,7 +664,10 @@ class AppStateHolder(
             import.timeZones.isNotEmpty()
         if (!hasContent && !hasCalendarMeta && source.isNullOrBlank()) return ImportOutcome()
         registerIcsTimeZones(import.timeZones)
-        val calendar = appState.calendar.withImport(import)
+        val calendarIndex = calendarId
+            ?.let { id -> appState.calendars.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
+            ?: localCalendarIndex
+        val baseCalendar = appState.calendars[calendarIndex]
         val sourceName = source?.takeIf { it.isNotBlank() }
         // The vanished-record pass compares against every UID the file describes, not against the
         // kept rows alone: unchecking a preview row skips that one update without deleting the
@@ -625,20 +683,23 @@ class AppStateHolder(
         // Removal of records that no longer appear is scoped per kind: a file that carries no todo
         // at all (or none but cancellations) says nothing about the user's todos.
         val events = mergeEvents(
+            base = baseCalendar.events,
             incoming = import.events.map(::withStoredAttachments),
-            cancelledUids = gatedCancellations(import),
+            cancelledUids = gatedCancellations(import, baseCalendar.events),
             source = sourceName,
             removeVanished = sourceName != null &&
                 (import.events.isNotEmpty() || import.cancelledUids.isNotEmpty()),
             describedUids = described,
         )
         val todos = mergeTodos(
+            base = baseCalendar.todos,
             incoming = import.todos.map(::withStoredAttachments),
             source = sourceName,
             removeVanished = sourceName != null && import.todos.isNotEmpty(),
             describedUids = described,
         )
         val journals = mergeJournals(
+            base = baseCalendar.journals,
             incoming = import.journals.map(::withStoredAttachments),
             source = sourceName,
             removeVanished = sourceName != null && import.journals.isNotEmpty(),
@@ -650,33 +711,28 @@ class AppStateHolder(
             journals = journals.changed,
             removed = events.removed + todos.removed + journals.removed,
         )
-        val changed = events.items != appState.events || todos.items != appState.todos ||
-            journals.items != appState.journals || import.freeBusy.isNotEmpty() ||
-            calendar != appState.calendar
-        // An all-zero outcome is only "nothing happened" when the lists did not move either;
+        val updatedCalendar = baseCalendar.copy(
+            name = import.calendarName ?: baseCalendar.name,
+            refreshMinutes = import.refreshMinutes ?: baseCalendar.refreshMinutes,
+            method = import.method?.wireName ?: baseCalendar.method,
+            timeZones = mergeCalendarTimeZones(baseCalendar.timeZones, import.timeZones),
+            events = events.items,
+            todos = todos.items,
+            journals = journals.items,
+        )
+        val changed = updatedCalendar != baseCalendar || import.freeBusy.isNotEmpty()
+        // An all-zero outcome is only "nothing happened" when the calendar did not move either;
         // provenance may have followed the file even though no record was added or replaced.
         if (outcome.isEmpty && !changed) return outcome
         if (changed) {
             persist(
-                appState.copy(
-                    events = events.items,
-                    todos = todos.items,
-                    journals = journals.items,
+                appState.replacingCalendar(calendarIndex) { updatedCalendar }.copy(
                     busyPeriods = mergeBusyPeriods(appState.busyPeriods, import.freeBusy, clock.now()),
-                    calendar = calendar,
                 ),
             )
         }
         return outcome
     }
-
-    /** Calendar-level properties the imported file carries; a missing value keeps the stored one. */
-    private fun CalendarMetadata.withImport(import: IcsImport): CalendarMetadata = copy(
-        name = import.calendarName ?: name,
-        refreshMinutes = import.refreshMinutes ?: refreshMinutes,
-        method = import.method?.wireName ?: method,
-        timeZones = mergeCalendarTimeZones(timeZones, import.timeZones),
-    )
 
     /**
      * Applies an imported `METHOD:REPLY`: the replying attendee's `PARTSTAT` is written onto the
@@ -685,7 +741,11 @@ class AppStateHolder(
      */
     private fun applyItipReply(import: IcsImport): ImportOutcome {
         val reply = import.itipReply() ?: return ImportOutcome()
-        val target = appState.events.firstOrNull { event ->
+        val calendarIndex = calendarIndexContaining { calendar ->
+            calendar.events.any { event -> event.uid == reply.uid && event.recurrenceId == reply.recurrenceId }
+        } ?: return ImportOutcome().also { notify(AppMessage.ItipReplyUnknown(reply.attendee.displayName)) }
+        val storedEvents = appState.calendars[calendarIndex].events
+        val target = storedEvents.firstOrNull { event ->
             event.uid == reply.uid && event.recurrenceId == reply.recurrenceId
         }
         if (target == null) {
@@ -698,22 +758,24 @@ class AppStateHolder(
             notify(AppMessage.ItipReplyUnknown(reply.attendee.displayName))
             return ImportOutcome()
         }
-        val result = appState.events.applyingReply(reply, clock.now())
+        val result = storedEvents.applyingReply(reply, clock.now())
         if (!result.applied) return ImportOutcome()
-        persist(appState.copy(events = result.events))
+        persist(appState.replacingCalendar(calendarIndex) { it.copy(events = result.events) })
         notify(AppMessage.ItipReplyProcessed(reply.attendee.displayName, reply.attendee.partStat ?: IcsPartStat.NeedsAction))
         return ImportOutcome(events = 1)
     }
 
     /**
      * The cancellations [import] may apply: one whose `SEQUENCE` is older than every stored copy of
-     * that UID is stale and must not remove the newer record (RFC 5546 conflict resolution).
+     * that UID is stale and must not remove the newer record (RFC 5546 conflict resolution). The
+     * comparison is scoped to the calendar being imported into.
      */
-    private fun gatedCancellations(import: IcsImport): Set<String> = import.cancelledUids.filterTo(mutableSetOf()) { uid ->
-        val incoming = import.cancelled.firstOrNull { it.uid == uid }?.sequence ?: 0
-        val stored = appState.events.filter { matchesUid(it, uid) }.maxOfOrNull { it.sequence } ?: 0
-        incoming >= stored
-    }
+    private fun gatedCancellations(import: IcsImport, storedEvents: List<Event>): Set<String> =
+        import.cancelledUids.filterTo(mutableSetOf()) { uid ->
+            val incoming = import.cancelled.firstOrNull { it.uid == uid }?.sequence ?: 0
+            val stored = storedEvents.filter { matchesUid(it, uid) }.maxOfOrNull { it.sequence } ?: 0
+            incoming >= stored
+        }
 
     private class MergeResult<T>(val items: List<T>, val changed: Int, val removed: Int)
 
@@ -724,13 +786,14 @@ class AppStateHolder(
      * their series cancelled or no longer lists them.
      */
     private fun mergeEvents(
+        base: List<Event>,
         incoming: List<Event>,
         cancelledUids: Set<String>,
         source: String?,
         removeVanished: Boolean,
         describedUids: Set<String> = emptySet(),
     ): MergeResult<Event> {
-        val merged = appState.events.toMutableList()
+        val merged = base.toMutableList()
         var removed = 0
         if (cancelledUids.isNotEmpty()) {
             val before = merged.size
@@ -741,11 +804,14 @@ class AppStateHolder(
         // provenance a partial export looks exactly like a removal. Provenance closes that gap: only
         // records this very file brought in are eligible, and only when the file still describes the
         // same kind of content.
-        if (removeVanished && source != null) {
+        if (removeVanished) {
             val present = describedUids.ifEmpty { incoming.mapNotNullTo(mutableSetOf()) { it.icsUid } }
             val before = merged.size
             merged.removeAll { event ->
-                event.importSource == source && event.icsUid != null && event.icsUid !in present
+                // A file import only owns records it brought in; a subscription owns its whole
+                // calendar, so anything upstream no longer describes is gone.
+                (source == null || event.importSource == source) &&
+                    event.icsUid != null && event.icsUid !in present
             }
             removed += before - merged.size
         }
@@ -788,18 +854,20 @@ class AppStateHolder(
     }
 
     private fun mergeTodos(
+        base: List<Todo>,
         incoming: List<Todo>,
         source: String?,
         removeVanished: Boolean,
         describedUids: Set<String> = emptySet(),
     ): MergeResult<Todo> {
-        val merged = appState.todos.toMutableList()
+        val merged = base.toMutableList()
         var removed = 0
-        if (removeVanished && source != null) {
+        if (removeVanished) {
             val present = describedUids.ifEmpty { incoming.mapNotNullTo(mutableSetOf()) { it.icsUid } }
             val before = merged.size
             merged.removeAll { todo ->
-                todo.importSource == source && todo.icsUid != null && todo.icsUid !in present
+                (source == null || todo.importSource == source) &&
+                    todo.icsUid != null && todo.icsUid !in present
             }
             removed += before - merged.size
         }
@@ -833,18 +901,20 @@ class AppStateHolder(
     }
 
     private fun mergeJournals(
+        base: List<Journal>,
         incoming: List<Journal>,
         source: String?,
         removeVanished: Boolean,
         describedUids: Set<String> = emptySet(),
     ): MergeResult<Journal> {
-        val merged = appState.journals.toMutableList()
+        val merged = base.toMutableList()
         var removed = 0
-        if (removeVanished && source != null) {
+        if (removeVanished) {
             val present = describedUids.ifEmpty { incoming.mapNotNullTo(mutableSetOf()) { it.icsUid } }
             val before = merged.size
             merged.removeAll { journal ->
-                journal.importSource == source && journal.icsUid != null && journal.icsUid !in present
+                (source == null || journal.importSource == source) &&
+                    journal.icsUid != null && journal.icsUid !in present
             }
             removed += before - merged.size
         }
@@ -882,18 +952,22 @@ class AppStateHolder(
      * so clearing today never wipes a whole series.
      */
     fun deleteEventsOn(date: LocalDate) {
-        val updated = appState.events.mapNotNull { event ->
-            when {
-                !event.occursOn(date) -> event
-                event.recurrenceId != null -> null
-                event.recurrence == null -> null
-                else -> {
-                    val occurrence = event.occurrenceStartOn(date) ?: date
-                    event.copy(recurrence = event.recurrence.withExclusion(event.recurrenceSlotOn(occurrence)))
-                }
-            }
+        val calendars = appState.calendars.map { calendar ->
+            calendar.copy(
+                events = calendar.events.mapNotNull { event ->
+                    when {
+                        !event.occursOn(date) -> event
+                        event.recurrenceId != null -> null
+                        event.recurrence == null -> null
+                        else -> {
+                            val occurrence = event.occurrenceStartOn(date) ?: date
+                            event.copy(recurrence = event.recurrence.withExclusion(event.recurrenceSlotOn(occurrence)))
+                        }
+                    }
+                },
+            )
         }
-        persist(appState.copy(events = updated))
+        persist(appState.copy(calendars = calendars))
     }
 
     // ----- todos -----
@@ -972,34 +1046,40 @@ class AppStateHolder(
             dtStamp = now.toString(),
             relatedTo = parentUid?.let { listOf(RelatedTo.parent(it)) } ?: emptyList(),
         )
-        persist(appState.copy(todos = appState.todos + todo))
+        persist(appState.replacingCalendar(localCalendarIndex) { it.copy(todos = it.todos + todo) })
         return WriteResult.Success
     }
 
     fun setTodoDone(id: String, done: Boolean) {
+        val index = calendarIndexContaining { calendar -> calendar.todos.any { it.id == id } } ?: return
         val now = clock.now()
         persist(
-            appState.copy(
-                todos = appState.todos.map { todo ->
-                    if (todo.id == id) {
-                        todo.copy(
-                            completed = if (done) now else null,
-                            status = if (done) TodoStatus.Completed else TodoStatus.NeedsAction,
-                            percentComplete = if (done) 100 else 0,
-                            lastModified = now.toString(),
-                            dtStamp = now.toString(),
-                            sequence = todo.sequence + 1,
-                        )
-                    } else {
-                        todo
-                    }
-                },
-            ),
+            appState.replacingCalendar(index) { calendar ->
+                calendar.copy(
+                    todos = calendar.todos.map { todo ->
+                        if (todo.id == id) {
+                            todo.copy(
+                                completed = if (done) now else null,
+                                status = if (done) TodoStatus.Completed else TodoStatus.NeedsAction,
+                                percentComplete = if (done) 100 else 0,
+                                lastModified = now.toString(),
+                                dtStamp = now.toString(),
+                                sequence = todo.sequence + 1,
+                            )
+                        } else {
+                            todo
+                        }
+                    },
+                )
+            },
         )
     }
 
     fun deleteTodo(id: String) {
-        persist(appState.copy(todos = appState.todos.filterNot { it.id == id }))
+        val index = calendarIndexContaining { calendar -> calendar.todos.any { it.id == id } } ?: return
+        persist(appState.replacingCalendar(index) { calendar ->
+            calendar.copy(todos = calendar.todos.filterNot { it.id == id })
+        })
     }
 
     // ----- journals -----
@@ -1022,39 +1102,43 @@ class AppStateHolder(
             lastModified = now.toString(),
             dtStamp = now.toString(),
         )
-        persist(appState.copy(journals = appState.journals + journal))
+        persist(appState.replacingCalendar(localCalendarIndex) { it.copy(journals = it.journals + journal) })
         return WriteResult.Success
     }
 
     fun updateJournal(journal: Journal): WriteResult {
-        if (appState.journals.none { it.id == journal.id }) return WriteResult.Success
+        val index = calendarIndexContaining { calendar -> calendar.journals.any { it.id == journal.id } }
+            ?: return WriteResult.Success
         val now = clock.now()
         persist(
-            appState.copy(
-                journals = appState.journals.map {
-                    if (it.id == journal.id) {
-                        journal.copy(lastModified = now.toString(), dtStamp = now.toString(), sequence = journal.sequence + 1)
-                    } else {
-                        it
-                    }
-                },
-            ),
+            appState.replacingCalendar(index) { calendar ->
+                calendar.copy(
+                    journals = calendar.journals.map {
+                        if (it.id == journal.id) {
+                            journal.copy(lastModified = now.toString(), dtStamp = now.toString(), sequence = journal.sequence + 1)
+                        } else {
+                            it
+                        }
+                    },
+                )
+            },
         )
         return WriteResult.Success
     }
 
     fun deleteJournal(id: String) {
-        persist(appState.copy(journals = appState.journals.filterNot { it.id == id }))
+        val index = calendarIndexContaining { calendar -> calendar.journals.any { it.id == id } } ?: return
+        persist(appState.replacingCalendar(index) { calendar ->
+            calendar.copy(journals = calendar.journals.filterNot { it.id == id })
+        })
     }
 
     // ----- subscriptions -----
 
-    /** Prefix marking records that came from a subscription instead of an imported file. */
-    private fun subscriptionSource(subscription: CalendarSubscription) = "sub:${subscription.id}"
-
     /**
-     * Adds a subscription for [url]. Null when the URL has no scheme the app can fetch, so the
-     * caller can point at the field instead of storing something that can never sync.
+     * Adds a subscription for [url] as its own calendar, so its records never mix with local ones.
+     * Null when the URL has no scheme the app can fetch, so the caller can point at the field
+     * instead of storing something that can never sync.
      */
     fun addSubscription(name: String, url: String): CalendarSubscription? {
         val resolved = resolveSubscriptionUrl(url) ?: return null
@@ -1065,17 +1149,24 @@ class AppStateHolder(
             name = name.trim().ifBlank { fallbackName },
             url = url.trim(),
         )
-        persist(appState.copy(subscriptions = appState.subscriptions + subscription))
+        persist(appState.copy(calendars = appState.calendars + subscription.toCalendar()))
         return subscription
     }
 
+    /** Removes a subscription calendar and only the records it owned; local calendars stay intact. */
     fun removeSubscription(id: String) {
-        persist(appState.copy(subscriptions = appState.subscriptions.filterNot { it.id == id }))
+        persist(appState.copy(calendars = appState.calendars.filterNot { it.id == id && !it.isLocal }))
     }
 
     private fun updateSubscription(id: String, transform: (CalendarSubscription) -> CalendarSubscription) {
-        if (appState.subscriptions.none { it.id == id }) return
-        persist(appState.copy(subscriptions = appState.subscriptions.map { if (it.id == id) transform(it) else it }))
+        val index = calendarIndexContaining { it.id == id && !it.isLocal } ?: return
+        val current = appState.calendars[index].subscription ?: return
+        val next = transform(current)
+        persist(
+            appState.replacingCalendar(index) { calendar ->
+                calendar.copy(name = next.name, syncState = next.toSyncState())
+            },
+        )
     }
 
     /** Subscriptions whose automatic refresh interval has elapsed at [now]. */
@@ -1097,7 +1188,7 @@ class AppStateHolder(
      * started again, and without a bridge the call does nothing.
      */
     fun syncSubscription(id: String) {
-        val subscription = appState.subscriptions.firstOrNull { it.id == id } ?: return
+        val subscription = appState.calendars.firstOrNull { it.id == id }?.subscription ?: return
         val http = subscriptionHttp ?: return
         if (syncJobs[id]?.isActive == true) return
         activeSyncIds = activeSyncIds + id
@@ -1238,35 +1329,41 @@ class AppStateHolder(
                 strings.untitledEvent,
             )
         }
-        val source = subscriptionSource(subscription)
         registerIcsTimeZones(parsed.timeZones)
-        val calendar = appState.calendar.copy(
-            refreshMinutes = parsed.refreshMinutes ?: appState.calendar.refreshMinutes,
-            timeZones = mergeCalendarTimeZones(appState.calendar.timeZones, parsed.timeZones),
-        )
+        val index = calendarIndexContaining { it.id == subscription.id && !it.isLocal }
+            ?: return SubscriptionApply(ImportOutcome(), null)
+        val baseCalendar = appState.calendars[index]
+        // A subscription owns its whole calendar, so no per-record provenance marker is needed;
+        // merges and vanished-record detection are scoped to this calendar alone.
         val events = mergeEvents(
+            base = baseCalendar.events,
             incoming = parsed.events.map(::withStoredAttachments),
-            cancelledUids = gatedCancellations(parsed),
-            source = source,
+            cancelledUids = gatedCancellations(parsed, baseCalendar.events),
+            source = null,
             removeVanished = removeVanished,
         )
         val todos = mergeTodos(
+            base = baseCalendar.todos,
             incoming = parsed.todos.map(::withStoredAttachments),
-            source = source,
+            source = null,
             removeVanished = removeVanished,
         )
         val journals = mergeJournals(
+            base = baseCalendar.journals,
             incoming = parsed.journals.map(::withStoredAttachments),
-            source = source,
+            source = null,
             removeVanished = removeVanished,
         )
+        val updatedCalendar = baseCalendar.copy(
+            refreshMinutes = parsed.refreshMinutes ?: baseCalendar.refreshMinutes,
+            timeZones = mergeCalendarTimeZones(baseCalendar.timeZones, parsed.timeZones),
+            events = events.items,
+            todos = todos.items,
+            journals = journals.items,
+        )
         persist(
-            appState.copy(
-                events = events.items,
-                todos = todos.items,
-                journals = journals.items,
+            appState.replacingCalendar(index) { updatedCalendar }.copy(
                 busyPeriods = mergeBusyPeriods(appState.busyPeriods, parsed.freeBusy, clock.now()),
-                calendar = calendar,
             ),
         )
         return SubscriptionApply(

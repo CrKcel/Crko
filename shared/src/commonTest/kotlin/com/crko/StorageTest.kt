@@ -73,7 +73,10 @@ class StorageTest {
                 end = IcsTimeValue.Utc(kotlin.time.Instant.parse("2026-10-27T10:00:00Z")),
             ),
         )
-        val encoded = AppJson.encodeToString(AppState.serializer(), AppState(events = events))
+        val encoded = AppJson.encodeToString(
+            AppState.serializer(),
+            AppState(calendars = listOf(com.crko.domain.Calendar.local().copy(events = events))),
+        )
         assertTrue(encoded.contains("\"schemaVersion\":$CurrentSchemaVersion"), encoded)
         val decoded = decodeStateWithReport(encoded)
         assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
@@ -228,7 +231,14 @@ class StorageTest {
         assertEquals(1, storage.loadDamage().droppedRecords)
         assertEquals(MIXED_PAYLOAD, store.values["state.v1.corrupt"])
         // The first edit used to overwrite the original; the backup has to survive it.
-        storage.saveState(restored.copy(events = restored.events + restored.events.first()))
+        val first = restored.events.first()
+        storage.saveState(
+            restored.copy(
+                calendars = restored.calendars.map { calendar ->
+                    if (calendar.events.any { it.id == first.id }) calendar.copy(events = calendar.events + first) else calendar
+                },
+            ),
+        )
         assertEquals(MIXED_PAYLOAD, store.values["state.v1.corrupt"])
         assertEquals(
             listOf("Kept", "Kept"),

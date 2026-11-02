@@ -3,7 +3,9 @@ package com.crko.storage
 import com.crko.dev.sampleState
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
+import com.crko.domain.Calendar
 import com.crko.domain.CalendarMetadata
+import com.crko.domain.CalendarSyncState
 import com.crko.domain.CalendarTimeZone
 import com.crko.domain.CurrentSchemaVersion
 import com.crko.domain.Event
@@ -11,14 +13,17 @@ import com.crko.domain.Journal
 import com.crko.domain.LegacyAppState
 import com.crko.domain.LegacyEvent
 import com.crko.domain.LegacyTodo
+import com.crko.domain.StageFiveAppState
 import com.crko.domain.StageFourAppState
 import com.crko.domain.PersistedSettings
 import com.crko.domain.Todo
+import com.crko.domain.legacyCalendarState
 import com.crko.domain.normalizeTimeZoneId
 import com.crko.domain.registerIcsTimeZones
 import com.crko.domain.toCurrentEvent
 import com.crko.domain.toCurrentTodo
 import com.crko.domain.today
+import com.crko.domain.withLocalCalendar
 import com.crko.isDebugBuild
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.JsonArray
@@ -184,17 +189,35 @@ internal fun decodeState(raw: String): AppState = decodeStateWithReport(raw).sta
 /**
  * Reads a stored payload so that one unreadable record cannot discard the whole calendar: the
  * records that still parse are kept and the rest is counted as damage. A payload written before
- * stage 1 is decoded through [LegacyEvent] and migrated in place.
+ * stage 1 is decoded through [LegacyEvent] and migrated in place, and every pre-stage-5 payload is
+ * lifted into the calendar containers.
  */
 internal fun decodeStateWithReport(raw: String): StateDecode {
     val root = runCatching { AppJson.parseToJsonElement(raw) }.getOrNull() as? JsonObject
         ?: return StateDecode(AppState(), LoadDamage(unreadable = true))
     val version = (root["schemaVersion"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
     // Only a payload already in the current layout may be decoded directly; an older one would
-    // silently lose the fields this version moved into `calendar` under `ignoreUnknownKeys`.
+    // silently lose the fields this version moved into the calendar containers.
     if (version == CurrentSchemaVersion) {
         runCatching { AppJson.decodeFromString(AppState.serializer(), raw) }.getOrNull()
             ?.let { state ->
+                val normalized = state.withLocalCalendar()
+                registerIcsTimeZones(normalized.calendar.timeZones)
+                return StateDecode(normalized, LoadDamage.None)
+            }
+        // One broken record must not discard the other calendars: decode the container headers and
+        // every record on its own, counting only what could not be read.
+        decodeCurrentCalendars(root)?.let { decoded ->
+            registerIcsTimeZones(decoded.state.calendar.timeZones)
+            return StateDecode(decoded.state, LoadDamage(droppedRecords = decoded.droppedRecords))
+        }
+    }
+    // Stage-5 payloads still kept flat lists; lift them into one local calendar plus one calendar per
+    // subscription, attributing old `sub:<id>` provenance to its subscription.
+    if (version == StageFiveSchemaVersion) {
+        runCatching { AppJson.decodeFromJsonElement(StageFiveAppState.serializer(), root) }.getOrNull()
+            ?.let { previous ->
+                val state = previous.toCurrent().withLocalCalendar()
                 registerIcsTimeZones(state.calendar.timeZones)
                 return StateDecode(state, LoadDamage.None)
             }
@@ -210,7 +233,7 @@ internal fun decodeStateWithReport(raw: String): StateDecode {
                 } else {
                     LinkedHashMap()
                 }
-                val state = previous.toCurrent(definitions)
+                val state = previous.toCurrent(definitions).withLocalCalendar()
                 registerIcsTimeZones(state.calendar.timeZones)
                 return StateDecode(state, LoadDamage.None)
             }
@@ -220,15 +243,14 @@ internal fun decodeStateWithReport(raw: String): StateDecode {
         AppJson.decodeFromJsonElement(LegacyAppState.serializer(), root)
     }.getOrNull()?.let { legacy ->
         val events = legacy.events.mapNotNull { it.toCurrentEvent(definitions) }
-        val state = AppState(
+        val state = legacyCalendarState(
             events = events,
             todos = legacy.todos.map { it.toCurrentTodo() },
             journals = legacy.journals.map { it.toCurrent() },
             subscriptions = legacy.subscriptions,
             busyPeriods = legacy.busyPeriods,
             calendar = CalendarMetadata(timeZones = definitions.values.toList()),
-            schemaVersion = CurrentSchemaVersion,
-        )
+        ).withLocalCalendar()
         registerIcsTimeZones(state.calendar.timeZones)
         return StateDecode(
             state = state,
@@ -238,12 +260,14 @@ internal fun decodeStateWithReport(raw: String): StateDecode {
     val (events, droppedEvents) = decodeEventRecords(root["events"], definitions)
     val (todos, droppedTodos) = decodeTodoRecords(root["todos"])
     val (journals, droppedJournals) = decodeRecords(root["journals"], Journal.serializer())
-    val state = AppState(
+    val state = legacyCalendarState(
         events = events,
         todos = todos,
         journals = journals,
+        subscriptions = emptyList(),
+        busyPeriods = emptyList(),
         calendar = CalendarMetadata(timeZones = definitions.values.toList()),
-    )
+    ).withLocalCalendar()
     registerIcsTimeZones(state.calendar.timeZones)
     return StateDecode(
         state,
@@ -253,6 +277,73 @@ internal fun decodeStateWithReport(raw: String): StateDecode {
 
 /** Layout used by stage 2, the last version that stored `VTIMEZONE` text on each event. */
 private const val StageTwoSchemaVersion = 3
+
+/** Layout used by stage 5, the last version that kept flat record lists. */
+private const val StageFiveSchemaVersion = 5
+
+/**
+ * The header of one stored calendar. It deliberately omits the record lists, so decoding it cannot
+ * fail because one record is damaged; the lists are decoded one item at a time afterwards.
+ */
+@kotlinx.serialization.Serializable
+private data class StoredCalendarHeader(
+    val id: String = com.crko.domain.LocalCalendarId,
+    val name: String = com.crko.domain.DefaultLocalCalendarName,
+    val method: String? = null,
+    val refreshMinutes: Int? = null,
+    val timeZones: List<CalendarTimeZone> = emptyList(),
+    val syncState: CalendarSyncState? = null,
+)
+
+private class DecodedCurrentState(val state: AppState, val droppedRecords: Int)
+
+/** Lenient decode of the current shape; null when the payload has no calendar container at all. */
+private fun decodeCurrentCalendars(root: JsonObject): DecodedCurrentState? {
+    val elements = root["calendars"] as? JsonArray ?: return null
+    var dropped = 0
+    val calendars = elements.mapNotNull { element ->
+        val objectElement = element as? JsonObject
+        if (objectElement == null) {
+            dropped++
+            return@mapNotNull null
+        }
+        val header = runCatching {
+            AppJson.decodeFromJsonElement(StoredCalendarHeader.serializer(), objectElement)
+        }.getOrNull()
+        if (header == null) {
+            dropped++
+            return@mapNotNull null
+        }
+        val (events, droppedEvents) = decodeEventRecords(objectElement["events"], linkedMapOf())
+        val (todos, droppedTodos) = decodeTodoRecords(objectElement["todos"])
+        val (journals, droppedJournals) = decodeRecords(objectElement["journals"], Journal.serializer())
+        dropped += droppedEvents + droppedTodos + droppedJournals
+        Calendar(
+            id = header.id,
+            name = header.name,
+            method = header.method,
+            refreshMinutes = header.refreshMinutes,
+            timeZones = header.timeZones,
+            events = events,
+            todos = todos,
+            journals = journals,
+            syncState = header.syncState,
+        )
+    }
+    val (busyPeriods, droppedBusy) = decodeRecords(
+        root["busyPeriods"],
+        com.crko.domain.BusyInterval.serializer(),
+    )
+    dropped += droppedBusy
+    return DecodedCurrentState(
+        state = AppState(
+            calendars = calendars,
+            busyPeriods = busyPeriods,
+            schemaVersion = CurrentSchemaVersion,
+        ).withLocalCalendar(),
+        droppedRecords = dropped,
+    )
+}
 
 /**
  * Lifts the `VTIMEZONE` text a pre-stage-3 event carried onto the calendar level. Both shapes the

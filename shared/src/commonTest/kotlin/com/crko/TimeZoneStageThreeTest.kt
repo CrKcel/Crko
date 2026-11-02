@@ -98,8 +98,12 @@ class TimeZoneStageThreeTest {
         )
         val imported = importCalendar(text, utc, "Untitled")
         val state = AppState(
-            events = imported.events,
-            calendar = CalendarMetadata(timeZones = imported.timeZones),
+            calendars = listOf(
+                com.crko.domain.Calendar.local().copy(
+                    timeZones = imported.timeZones,
+                    events = imported.events,
+                ),
+            ),
         )
         val reloaded = decodeStateWithReport(AppJson.encodeToString(AppState.serializer(), state))
         assertTrue(reloaded.damage.isEmpty, reloaded.damage.toString())

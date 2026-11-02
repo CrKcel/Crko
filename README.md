@@ -42,10 +42,11 @@ shared/src/commonMain/kotlin/com/crko/
 
 - `DTSTART` / `DTEND` / `DUE` / `COMPLETED` / `RECURRENCE-ID` 使用 `IcsTimeValue`（`Date`、`Floating`、`Zoned`、`Utc`）。结束时间排他；没有结束表示零时长定时事件；全天由 `Date` 推导，不再单独存储。
 - 重复集合是 `Recurrence`（`RRULE` + `RDATE` + `EXDATE`）。主事件与例外共享同一个 `UID`，通过 `RECURRENCE-ID` 区分；`RDATE;VALUE=PERIOD` 保留每次实例长度。
-- `VTIMEZONE` 属于 `CalendarMetadata`，事件只保存 `TZID`；未解析的未知时区由日历级定义兜底。
+- `AppState.calendars` 是持久化主结构：每个 `Calendar` 持有自己的事件、待办、日志、日历级属性与未知 `VTIMEZONE` 定义；`AppState.events` / `todos` / `journals` 只是跨日历的只读投影。相同的 `UID` 可以同时存在于不同日历而互不覆盖。
+- `VTIMEZONE` 属于 `Calendar`，事件只保存 `TZID`；未解析的未知时区由所属日历的定义兜底。
 - 设备时区只通过 `day` / `endDay` / `localStart` / `localEnd` / `occursOn` / `timeRangeOn` 等展示投影参与界面，不写回持久化模型。
-- `importSource` / `sourceLine` 等本地归属放在 `LocalRecordMeta`，不与 RFC 属性混在一起。
-- 旧版持久化 JSON 由 `LegacyModels` 与 `Platform.decodeStateWithReport` 迁移；新版本只写当前结构（`schemaVersion = 5`）。
+- `importSource` / `sourceLine` 等本地归属放在 `LocalRecordMeta`，不与 RFC 属性混在一起；订阅记录以所属 `Calendar` 为作用域，不再用 `importSource` 前缀充当日历身份。
+- 旧版持久化 JSON 由 `LegacyModels` 与 `Platform.decodeStateWithReport` 迁移；新版本只写当前结构（`schemaVersion = 6`）。
 
 防回归：
 

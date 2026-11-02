@@ -3,7 +3,9 @@ package com.crko
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.BusyInterval
+import com.crko.domain.Calendar
 import com.crko.domain.CalendarSubscription
+import com.crko.domain.toCalendar
 import com.crko.domain.MaxSubscriptionBytes
 import com.crko.domain.SubscriptionFailure
 import com.crko.domain.SubscriptionFetch
@@ -278,7 +280,12 @@ class SubscriptionSyncTest {
         f.syncSubscription(subscription.id)
         scope.advanceUntilIdle()
         assertEquals(2, f.appState.events.size)
-        assertEquals("sub:${subscription.id}", f.appState.events.single { it.icsUid == "a@x" }.importSource)
+        // The feed's records live in the subscription's own calendar, not in the local one.
+        assertEquals(
+            listOf("a@x", "b@x"),
+            f.appState.calendars.single { it.id == subscription.id }.events.mapNotNull { it.icsUid }.sorted(),
+        )
+        assertTrue(f.appState.calendars.single { it.id == subscription.id }.isLocal.not())
 
         // The feed drops one record and renames the other; the sync follows the source.
         http.handler = { HttpResponse(200, mapOf("etag" to "\"v2\""), icsOf("a@x" to "One renamed", stamp = "20260102T000000Z").encodeToByteArray()) }
@@ -328,7 +335,9 @@ class SubscriptionSyncTest {
         val fresh = CalendarSubscription("fresh", "Fresh", "https://x/b.ics", refreshMinutes = 15, lastSync = "2999-01-01T00:00:00Z")
         val manual = CalendarSubscription("manual", "Manual", "https://x/c.ics")
         val disabled = CalendarSubscription("disabled", "Off", "https://x/d.ics", refreshMinutes = 15, enabled = false)
-        storage.state = AppState(subscriptions = listOf(overdue, fresh, manual, disabled))
+        storage.state = AppState(
+            calendars = listOf(overdue, fresh, manual, disabled).map { it.toCalendar() },
+        )
         val f = AppStateHolder(
             scope = TestScope(StandardTestDispatcher()),
             initialSystemLocale = "en-US",
@@ -340,7 +349,7 @@ class SubscriptionSyncTest {
     @Test
     fun stateSerializationKeepsSubscriptionsAndBusyPeriods() {
         val state = AppState(
-            subscriptions = listOf(CalendarSubscription(id = "s1", name = "Feed", url = "webcal://x/cal.ics")),
+            calendars = listOf(Calendar.local(), CalendarSubscription(id = "s1", name = "Feed", url = "webcal://x/cal.ics").toCalendar()),
             busyPeriods = listOf(BusyInterval()),
         )
         val decoded = AppJson.decodeFromString(AppState.serializer(), AppJson.encodeToString(AppState.serializer(), state))
@@ -413,7 +422,9 @@ class SubscriptionSyncTest {
             }
         }
         var ids = 0
-        storage.state = AppState(subscriptions = listOf(CalendarSubscription("s1", "Feed", "https://x/cal/", caldav = true)))
+        storage.state = AppState(
+            calendars = listOf(CalendarSubscription("s1", "Feed", "https://x/cal/", caldav = true).toCalendar()),
+        )
         val scope = TestScope(StandardTestDispatcher(testScheduler))
         val f = AppStateHolder(
             scope = scope,
@@ -462,7 +473,9 @@ class SubscriptionSyncTest {
             }
         }
         var ids = 0
-        storage.state = AppState(subscriptions = listOf(CalendarSubscription("s1", "Feed", "https://x/cal/", caldav = true)))
+        storage.state = AppState(
+            calendars = listOf(CalendarSubscription("s1", "Feed", "https://x/cal/", caldav = true).toCalendar()),
+        )
         val scope = TestScope(StandardTestDispatcher(testScheduler))
         val f = AppStateHolder(
             scope = scope,

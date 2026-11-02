@@ -1,6 +1,7 @@
 package com.crko.dev
 
 import com.crko.domain.AppState
+import com.crko.domain.Calendar
 import com.crko.domain.Event
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.MaxEndMinutes
@@ -100,5 +101,7 @@ fun sampleState(
         todo("更新简历", TodoPriority.Normal, today.plusDays(-6), done = true, createdHoursAgo = 146),
     )
 
-    return AppState(events = events, todos = todos)
+    return AppState(
+        calendars = listOf(Calendar.local().copy(events = events, todos = todos)),
+    )
 }

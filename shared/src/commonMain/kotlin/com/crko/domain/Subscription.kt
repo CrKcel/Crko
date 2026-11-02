@@ -3,9 +3,9 @@ package com.crko.domain
 import kotlinx.serialization.Serializable
 
 /**
- * A remote calendar the app keeps a local copy of: a plain webcal/ICS feed or a CalDAV collection.
- * The subscription is only the address and its sync bookkeeping — records are merged into the
- * ordinary event list, so they can be read and edited like local ones.
+ * UI-facing view of a subscribed [Calendar]: the address plus its sync bookkeeping. Persisted data
+ * keeps the same values inside [Calendar.syncState], so this type survives for the subscription
+ * screen and for reading pre-stage-5 payloads.
  */
 @Serializable
 data class CalendarSubscription(
@@ -29,3 +29,38 @@ data class CalendarSubscription(
      */
     val caldav: Boolean = false,
 )
+
+/** The sync half of a subscribed calendar. */
+fun CalendarSubscription.toSyncState(): CalendarSyncState = CalendarSyncState(
+    url = url,
+    enabled = enabled,
+    refreshMinutes = refreshMinutes,
+    lastSync = lastSync,
+    etag = etag,
+    syncToken = syncToken,
+    caldav = caldav,
+)
+
+/** Creates the calendar container of a subscription, without any records yet. */
+fun CalendarSubscription.toCalendar(): Calendar = Calendar(
+    id = id,
+    name = name,
+    refreshMinutes = refreshMinutes.takeIf { it > 0 },
+    syncState = toSyncState(),
+)
+
+/** The subscription view of a calendar; null for a local calendar. */
+val Calendar.subscription: CalendarSubscription?
+    get() = syncState?.let { state ->
+        CalendarSubscription(
+            id = id,
+            name = name,
+            url = state.url,
+            enabled = state.enabled,
+            refreshMinutes = state.refreshMinutes,
+            lastSync = state.lastSync,
+            etag = state.etag,
+            syncToken = state.syncToken,
+            caldav = state.caldav,
+        )
+    }

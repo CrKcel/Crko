@@ -430,10 +430,14 @@ class RecurrenceTest {
     @Test
     fun repeatRuleSurvivesJsonRoundTrip() {
         val state = AppState(
-            events = listOf(
-                event(
-                    RepeatRule(RepeatFrequency.Weekly, byDay = days(0, 3)),
-                    excludedDates = listOf(anchor.plusDays(2).toString()),
+            calendars = listOf(
+                com.crko.domain.Calendar.local().copy(
+                    events = listOf(
+                        event(
+                            RepeatRule(RepeatFrequency.Weekly, byDay = days(0, 3)),
+                            excludedDates = listOf(anchor.plusDays(2).toString()),
+                        ),
+                    ),
                 ),
             ),
         )

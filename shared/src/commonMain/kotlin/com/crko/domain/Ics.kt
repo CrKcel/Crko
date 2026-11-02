@@ -1089,7 +1089,7 @@ internal fun registerIcsTimeZones(timeZones: Iterable<CalendarTimeZone>) {
 internal fun icsTimeZoneDefinition(tzid: String): String? = IcsTimeZoneCache.definitionOf(tzid)
 
 /**
- * Process-wide lookup of the calendar-level definitions. [AppState.calendar] remains the persisted
+ * Process-wide lookup of the calendar-level definitions. [Calendar.timeZones] remains the persisted
  * source of truth; this cache only lets the `Event` display projections resolve unknown zones
  * without threading the whole state through every recurrence query. Parsed definitions are kept so
  * hundreds of values from one file share a single interpretation of their `VTIMEZONE`.

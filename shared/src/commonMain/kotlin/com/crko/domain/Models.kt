@@ -678,8 +678,14 @@ data class Journal(
         get() = start?.instantOrNull(TimeZone.currentSystemDefault())?.toString()
 }
 
-/** Current persisted layout; stage 4 moved component metadata, participants, alarms and attachments. */
-const val CurrentSchemaVersion = 5
+/** Current persisted layout; stage 5 moved records into calendar containers. */
+const val CurrentSchemaVersion = 6
+
+/** Stable id of the built-in local calendar. */
+const val LocalCalendarId = "local"
+
+/** Display name of the local calendar before the user or an imported file names it. */
+const val DefaultLocalCalendarName = "Crko"
 
 /**
  * A raw `VTIMEZONE` definition for a `TZID` the platform does not know. Known IANA zones are stored
@@ -691,7 +697,10 @@ data class CalendarTimeZone(
     val definition: String,
 )
 
-/** Properties of the calendar container, independent of any one event or todo. */
+/**
+ * Properties of a calendar container. Kept as the legacy payload shape and as a display projection
+ * of [AppState.calendar]; the persisted model is [Calendar] itself.
+ */
 @Serializable
 data class CalendarMetadata(
     /** `X-WR-CALNAME`. */
@@ -704,20 +713,98 @@ data class CalendarMetadata(
     val timeZones: List<CalendarTimeZone> = emptyList(),
 )
 
+/** Sync bookkeeping of a subscribed [Calendar]; null on a local calendar. */
 @Serializable
-data class AppState(
+data class CalendarSyncState(
+    /** URL as entered, including a possible `webcal://` scheme. */
+    val url: String,
+    val enabled: Boolean = true,
+    /** Minutes between automatic refreshes; 0 means sync only on request. */
+    val refreshMinutes: Int = 0,
+    /** ISO instant of the last successful sync. */
+    val lastSync: String? = null,
+    /** HTTP entity tag of the last fetched feed, echoed back as `If-None-Match`. */
+    val etag: String? = null,
+    /** CalDAV `sync-token` of the last successful sync, for incremental reports. */
+    val syncToken: String? = null,
+    /** The server turned out to speak CalDAV, so syncing uses `REPORT` instead of a plain `GET`. */
+    val caldav: Boolean = false,
+)
+
+/**
+ * One calendar, local or subscribed. Records live inside their calendar, so two calendars may carry
+ * the same `UID` without one import replacing the other. [sync] is non-null exactly for a
+ * subscription.
+ */
+@Serializable
+data class Calendar(
+    val id: String,
+    val name: String,
+    /** iTIP `METHOD` of the last imported message, as its wire name. */
+    val method: String? = null,
+    /** Published `REFRESH-INTERVAL` / `X-PUBLISHED-TTL`, in minutes. */
+    val refreshMinutes: Int? = null,
+    /** Raw definitions for `TZID` values of this calendar the platform cannot resolve. */
+    val timeZones: List<CalendarTimeZone> = emptyList(),
     val events: List<Event> = emptyList(),
     val todos: List<Todo> = emptyList(),
     val journals: List<Journal> = emptyList(),
-    /** Subscribed remote calendars; a sync merges their records into the lists above. */
-    val subscriptions: List<CalendarSubscription> = emptyList(),
+    /** Remote sync bookkeeping; null for a local calendar. */
+    val syncState: CalendarSyncState? = null,
+) {
+    val isLocal: Boolean get() = syncState == null
+
+    companion object {
+        fun local(
+            id: String = LocalCalendarId,
+            name: String = DefaultLocalCalendarName,
+        ): Calendar = Calendar(id = id, name = name)
+    }
+}
+
+@Serializable
+data class AppState(
+    /** Every calendar the app shows; the first local one receives newly created records. */
+    val calendars: List<Calendar> = listOf(Calendar.local()),
     /** Busy periods imported from `VFREEBUSY` components, kept for free/busy queries. */
     val busyPeriods: List<BusyInterval> = emptyList(),
-    /** Calendar-level properties and unknown `VTIMEZONE` definitions. */
-    val calendar: CalendarMetadata = CalendarMetadata(),
     /** Layout version of this payload; older payloads are migrated on read. */
     val schemaVersion: Int = CurrentSchemaVersion,
-)
+) {
+    /** Records of every calendar, flattened for display queries. */
+    val events: List<Event> get() = calendars.flatMap { it.events }
+    val todos: List<Todo> get() = calendars.flatMap { it.todos }
+    val journals: List<Journal> get() = calendars.flatMap { it.journals }
+
+    /** Subscriptions as their UI-facing view; the sync bookkeeping stays inside each calendar. */
+    val subscriptions: List<CalendarSubscription> get() = calendars.mapNotNull { it.subscription }
+
+    /** The calendar new local records go into, falling back to whatever calendar exists. */
+    val localCalendar: Calendar? get() = calendars.firstOrNull { it.isLocal } ?: calendars.firstOrNull()
+
+    /** Legacy display/export projection: the local calendar's properties plus every known zone. */
+    val calendar: CalendarMetadata
+        get() {
+            val primary = localCalendar
+            val zones = LinkedHashMap<String, CalendarTimeZone>()
+            calendars.forEach { calendar ->
+                calendar.timeZones.forEach { zone ->
+                    val id = normalizeTimeZoneId(zone.tzid)
+                    if (id.isNotEmpty() && zone.definition.isNotBlank()) zones[id] = zone.copy(tzid = id)
+                }
+            }
+            return CalendarMetadata(
+                name = primary?.name,
+                refreshMinutes = primary?.refreshMinutes,
+                method = primary?.method,
+                timeZones = zones.values.toList(),
+            )
+        }
+}
+
+/** Adds the built-in local calendar when a payload contains only subscriptions (or nothing). */
+fun AppState.withLocalCalendar(): AppState =
+    if (calendars.any { it.isLocal }) this else copy(calendars = listOf(Calendar.local()) + calendars)
 
 val AppJson: Json = Json {
     ignoreUnknownKeys = true

@@ -126,6 +126,9 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
                         syntheticMarkers.firstOrNull { it in line }?.let { marker ->
                             report(file, index, "synthetic UID marker '$marker' outside migration code")
                         }
+                        if (line.contains("\"sub:\"") || line.contains("subscriptionSource")) {
+                            report(file, index, "importSource must not act as calendar identity outside migration code")
+                        }
                     }
                 }
             }
