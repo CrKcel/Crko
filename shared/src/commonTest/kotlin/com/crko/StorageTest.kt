@@ -184,6 +184,41 @@ class StorageTest {
     }
 
     @Test
+    fun versionedLegacyPayloadsAreBackedUpBeforeMigration() {
+        val payloads = listOf(
+            """{"schemaVersion":2,"events":[{"id":"e","title":"Old","date":"2026-10-27","startMinutes":540,"endMinutes":600}]}""",
+            """{"schemaVersion":3,"events":[],"todos":[],"journals":[],"subscriptions":[],"busyPeriods":[],"calendar":{}}""",
+            """{"schemaVersion":4,"events":[],"todos":[],"journals":[],"subscriptions":[],"busyPeriods":[],"calendar":{}}""",
+            """{"schemaVersion":5,"events":[],"todos":[],"journals":[],"subscriptions":[],"busyPeriods":[],"calendar":{}}""",
+        )
+        payloads.forEach { payload ->
+            val store = MemoryStore(mapOf("state.v1" to payload))
+            val storage = FileStateStorage({ store }, { MemoryStore() }, seedSampleOnFirstLaunch = false)
+            val restored = storage.loadState()
+            assertEquals(CurrentSchemaVersion, restored.schemaVersion, payload)
+            storage.saveState(restored)
+            assertEquals(payload, store.values["state.v1.migration-backup"], payload)
+        }
+    }
+
+    @Test
+    fun onlyTheFirstMigratedPayloadIsBackedUpAndCurrentPayloadsAreLeftAlone() {
+        val first = """{"schemaVersion":5,"events":[],"todos":[],"journals":[],"subscriptions":[],"busyPeriods":[],"calendar":{}}"""
+        val store = MemoryStore(mapOf("state.v1" to first))
+        val storage = FileStateStorage({ store }, { MemoryStore() }, seedSampleOnFirstLaunch = false)
+        storage.loadState()
+        store.putString("state.v1", """{"schemaVersion":4,"events":[],"todos":[],"journals":[],"subscriptions":[],"busyPeriods":[],"calendar":{}}""")
+        storage.loadState()
+        assertEquals(first, store.values["state.v1.migration-backup"])
+
+        val current = AppJson.encodeToString(AppState.serializer(), AppState())
+        val currentStore = MemoryStore(mapOf("state.v1" to current))
+        val currentStorage = FileStateStorage({ currentStore }, { MemoryStore() }, seedSampleOnFirstLaunch = false)
+        currentStorage.loadState()
+        assertNull(currentStore.values["state.v1.migration-backup"])
+    }
+
+    @Test
     fun oneUndecodableRecordNoLongerDiscardsTheWholeCalendar() {
         val decoded = decodeStateWithReport(MIXED_PAYLOAD)
         assertEquals(listOf("Kept"), decoded.state.events.map { it.title })

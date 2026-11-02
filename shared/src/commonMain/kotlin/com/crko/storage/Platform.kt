@@ -99,6 +99,8 @@ private const val SETTINGS_KEY = "settings.v1"
 private const val CORRUPT_STATE_KEY = "state.v1.corrupt"
 /** Raw payload kept once before it is migrated from the pre-stage-1 event layout. */
 private const val LEGACY_STATE_BACKUP_KEY = "state.v1.legacy-backup"
+/** Raw payload kept once before a versioned older layout is migrated. */
+private const val MIGRATION_STATE_BACKUP_KEY = "state.v1.migration-backup"
 
 /** What went wrong while reading a stored payload, if anything. */
 data class LoadDamage(
@@ -125,6 +127,12 @@ interface StateStorage {
     fun loadDamage(): LoadDamage = LoadDamage.None
 }
 
+/** The declared schema version of a stored payload, or null when it is unversioned/unreadable. */
+private fun payloadSchemaVersion(raw: String): Int? {
+    val root = runCatching { AppJson.parseToJsonElement(raw) }.getOrNull() as? JsonObject ?: return null
+    return (root["schemaVersion"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
+}
+
 /**
  * The key-value backed storage. It takes the stores lazily so the damaged-payload handling can be
  * driven from a test without a platform `SharedPreferences`/`NSUserDefaults`.
@@ -149,6 +157,15 @@ class FileStateStorage(
         // migration that drops an unrecoverable field still has a copy to recover from.
         if (!raw.contains("\"schemaVersion\"") && stateStore().getString(LEGACY_STATE_BACKUP_KEY) == null) {
             stateStore().putString(LEGACY_STATE_BACKUP_KEY, raw)
+        }
+        // Versioned older payloads are migrated on read too; keep the first one for the same reason.
+        // Only the first copy is kept: later ones would just describe a state that is already
+        // migrated.
+        val version = payloadSchemaVersion(raw)
+        if (version != null && version < CurrentSchemaVersion &&
+            stateStore().getString(MIGRATION_STATE_BACKUP_KEY) == null
+        ) {
+            stateStore().putString(MIGRATION_STATE_BACKUP_KEY, raw)
         }
         val decoded = decodeStateWithReport(raw)
         lastDamage = decoded.damage
