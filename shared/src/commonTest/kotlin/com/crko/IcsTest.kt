@@ -165,11 +165,11 @@ class IcsTest {
             """,
         )
         val events = importIcs(text, shanghai, "Untitled")
-        assertEquals(540, events[0].startMinutes)
-        assertEquals(630, events[0].endMinutes)
-        assertEquals("2026-10-27", events[0].date)
-        assertEquals(540, events[1].startMinutes)
-        assertEquals(600, events[1].endMinutes)
+        assertEquals(LocalDateTime(2026, 10, 27, 9, 0), events[0].localStart(shanghai))
+        assertEquals(LocalDateTime(2026, 10, 27, 10, 30), events[0].localEnd(shanghai))
+        assertEquals(LocalDate(2026, 10, 27), events[0].localStart(shanghai).date)
+        assertEquals(LocalDateTime(2026, 10, 27, 9, 0), events[1].localStart(shanghai))
+        assertEquals(LocalDateTime(2026, 10, 27, 10, 0), events[1].localEnd(shanghai))
     }
 
     @Test
@@ -440,8 +440,8 @@ class IcsTest {
             "Quarterly planning workshop with the entire product team",
             event.title,
         )
-        assertEquals(540, event.startMinutes)
-        assertEquals(17 * 60 + 30, event.endMinutes)
+        assertEquals(LocalDateTime(2026, 10, 27, 9, 0), event.localStart(shanghai))
+        assertEquals(LocalDateTime(2026, 10, 27, 17, 30), event.localEnd(shanghai))
     }
 
     @Test
