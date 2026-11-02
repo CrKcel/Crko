@@ -160,7 +160,16 @@ internal data class LegacyEvent(
 )
 
 /** Converts a stored legacy record, or null when its anchor date is unusable. */
-internal fun LegacyEvent.toCurrentEvent(): Event? {
+internal fun LegacyEvent.toCurrentEvent(
+    definitions: MutableMap<String, CalendarTimeZone>? = null,
+): Event? {
+    // Stage-1 payloads already carried typed start/end values, so the definition is collected
+    // whether or not the legacy wall-clock fields were used.
+    if (!timeZoneId.isNullOrBlank()) {
+        timeZoneDefinition?.takeIf { it.isNotBlank() }?.let { text ->
+            definitions?.put(timeZoneId, CalendarTimeZone(timeZoneId, text))
+        }
+    }
     val currentStart = start ?: run {
         // A damaged payload can carry a date that is present but unparseable; dropping the record
         // is better than putting it on 1970-01-01 and crashing every later calendar query.
@@ -173,6 +182,7 @@ internal fun LegacyEvent.toCurrentEvent(): Event? {
             source = sourceStart,
             tzid = timeZoneId,
             definition = timeZoneDefinition,
+            definitions = definitions,
         )
     }
     val currentEnd = if (start != null) {
@@ -190,6 +200,7 @@ internal fun LegacyEvent.toCurrentEvent(): Event? {
             endSource = sourceEnd,
             tzid = timeZoneId,
             definition = timeZoneDefinition,
+            definitions = definitions,
         )
     }
     return Event(
@@ -215,7 +226,6 @@ internal fun LegacyEvent.toCurrentEvent(): Event? {
         icsUid = seriesUid ?: stripSyntheticSeriesUid(icsUid),
         recurrenceId = recurrenceId?.let(::parseLegacyDate),
         recurrenceRange = if (thisAndFuture) RecurrenceRange.ThisAndFuture else null,
-        timeZoneDefinition = timeZoneDefinition,
         created = created,
         lastModified = lastModified,
         dtStamp = dtStamp,

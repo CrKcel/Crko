@@ -130,6 +130,8 @@ data class IcsImport(
      * subscribed copy should be refreshed.
      */
     val refreshMinutes: Int? = null,
+    /** Raw `VTIMEZONE` definitions for `TZID` values the platform cannot resolve, deduplicated. */
+    val timeZones: List<CalendarTimeZone> = emptyList(),
     /** Busy periods of the `VFREEBUSY` components the file carried. */
     val freeBusy: List<BusyInterval> = emptyList(),
     /**
@@ -177,7 +179,11 @@ fun exportIcs(
     now: Instant = Clock.System.now(),
 ): String = exportCalendar(events = events, todos = emptyList(), now = now)
 
-/** Serializes events and todos into one VCALENDAR, emitting VTIMEZONE blocks where needed. */
+/**
+ * Serializes events and todos into one VCALENDAR, emitting `VTIMEZONE` blocks for the unknown zones
+ * the records reference. Definitions are deduplicated by `TZID`, and a known IANA zone is written
+ * as a bare `TZID` reference because every client can resolve it itself.
+ */
 fun exportCalendar(
     events: List<Event>,
     todos: List<Todo> = emptyList(),
@@ -185,6 +191,8 @@ fun exportCalendar(
     calendarName: String? = null,
     journals: List<Journal> = emptyList(),
     method: ItipMethod? = null,
+    refreshMinutes: Int? = null,
+    timeZones: List<CalendarTimeZone> = emptyList(),
 ): String = buildString {
     line("BEGIN:VCALENDAR")
     line("VERSION:2.0")
@@ -192,17 +200,20 @@ fun exportCalendar(
     line("CALSCALE:GREGORIAN")
     method?.let { line("METHOD:${it.wireName}") }
     if (!calendarName.isNullOrBlank()) line("X-WR-CALNAME:${escapeText(calendarName)}")
-    // Preserved VTIMEZONE blocks are written back verbatim. Known IANA zones are not given a
-    // synthetic fixed-offset definition: that would be wrong for series crossing a DST change,
-    // while clients can resolve the TZID themselves.
-    val zones = mutableMapOf<String, String>()
+    refreshMinutes?.takeIf { it > 0 }?.let { minutes ->
+        line("REFRESH-INTERVAL;VALUE=DURATION:${formatDuration(minutes)}")
+    }
+    // Only zones the calendar refers to are written, so a stored definition that no event uses does
+    // not bloat the export. Known IANA zones need no block: a synthetic fixed-offset definition
+    // would be wrong for series crossing a DST change.
+    val stored = timeZones.associate { normalizeTimeZoneId(it.tzid) to it.definition }
+    val zones = linkedMapOf<String, String>()
     events.forEach { event ->
-        listOfNotNull(event.start, event.end).forEach { value ->
-            if (value !is IcsTimeValue.Zoned) return@forEach
-            val id = value.tzid
+        event.referencedTimeZoneIds().forEach { id ->
             if (id.equals("UTC", ignoreCase = true) || id in zones) return@forEach
-            val definition = value.definition?.takeIf { it.isNotBlank() }
-                ?: event.timeZoneDefinition?.takeIf { it.isNotBlank() }
+            if (resolvePlatformZone(id) != null) return@forEach
+            val definition = stored[id]?.takeIf { it.isNotBlank() }
+                ?: icsTimeZoneDefinition(id)?.takeIf { it.isNotBlank() }
                 ?: return@forEach
             // The block has to declare the very id the properties reference: import normalises away
             // a leading "/" (a Microsoft convention), so the verbatim text can differ from [id].
@@ -216,6 +227,21 @@ fun exportCalendar(
     todos.forEachIndexed { index, todo -> appendTodo(todo, index, now) }
     journals.forEachIndexed { index, journal -> appendJournal(journal, index, now) }
     line("END:VCALENDAR")
+}
+
+/** Every `TZID` a record names, including its recurrence set and exception slot. */
+private fun Event.referencedTimeZoneIds(): Set<String> = buildSet {
+    fun add(value: IcsTimeValue?) {
+        (value as? IcsTimeValue.Zoned)?.let { add(it.tzid) }
+    }
+    add(start)
+    add(end)
+    add(recurrenceId)
+    recurrence?.let { set ->
+        add(set.rule?.until)
+        set.rdates.forEach { add(it.value) }
+        set.exdates.forEach(::add)
+    }
 }
 
 /**
@@ -244,7 +270,8 @@ internal fun importCalendarLines(
     val components = if (calendars.isEmpty()) roots else calendars.flatMap { it.children }
     val calendarMeta = readCalendarMeta(calendars)
     val zones = mutableMapOf<String, CustomZone>()
-    val zoneDefinitions = mutableMapOf<String, String>()
+    // Only unknown zones need their definition kept; an IANA id is enough for every platform.
+    val timeZones = linkedMapOf<String, CalendarTimeZone>()
     components.filter { it.name == "VTIMEZONE" }.forEach { component ->
         val zoneId = component.first("TZID")?.value?.trim()?.removePrefix("/")
         val zone = parseCustomZone(component)
@@ -252,16 +279,20 @@ internal fun importCalendarLines(
             warnings.add(IcsWarning.UnresolvedTimeZone)
         } else {
             zones[zone.id] = zone
-            if (zoneId != null) zoneDefinitions[zoneId] = component.toText()
+            val id = zoneId ?: zone.id
+            if (!isPlatformTimeZone(id)) timeZones[id] = CalendarTimeZone(id, component.toText())
         }
     }
+    // Register before mapping values: an unknown zone's absolute instant is needed to align ends,
+    // expand occurrences and compare times, and the event itself only keeps the TZID.
+    registerIcsTimeZones(timeZones.values)
     // Floating times are device-local by default, but a calendar may declare the zone they belong
     // to. Resolving it here keeps DTSTART/UNTIL in the same zone instead of silently shifting.
     val floatingZone = calendarFloatingZone(calendars, zones, warnings)
 
     val rawEvents = components
         .filter { it.name == "VEVENT" }
-        .map { readEvent(it, zones, zoneDefinitions, floatingZone, details) }
+        .map { readEvent(it, zones, floatingZone, details) }
     val groups = linkedMapOf<String, MutableList<RawEvent>>()
     val orphanEvents = mutableListOf<RawEvent>()
     rawEvents.forEach { raw ->
@@ -321,6 +352,7 @@ internal fun importCalendarLines(
         method = calendarMeta.method,
         calendarName = calendarMeta.name,
         refreshMinutes = calendarMeta.refreshMinutes,
+        timeZones = timeZones.values.toList(),
         freeBusy = freeBusy,
         describedUids = buildSet {
             events.mapNotNullTo(this) { it.icsUid }
@@ -764,7 +796,7 @@ private fun formatUntil(until: IcsTimeValue, start: IcsTimeValue?): String = whe
     until is IcsTimeValue.Utc -> formatUtc(until.instant)
     until is IcsTimeValue.Floating -> formatIcsLocalDateTime(until.dateTime, utc = false)
     until is IcsTimeValue.Zoned -> {
-        val zone = resolveIcsZoneOrNull(until.tzid, until.definition)
+        val zone = resolveIcsZoneOrNull(until.tzid)
         if (zone != null) formatUtc(until.dateTime.toInstant(zone)) else formatIcsLocalDateTime(until.dateTime, utc = false)
     }
     // Date-only UNTIL: the last occurrence on that date at the component's own wall-clock time.
@@ -773,7 +805,7 @@ private fun formatUntil(until: IcsTimeValue, start: IcsTimeValue?): String = whe
         val last = LocalDateTime(until.date, time)
         when (start) {
             is IcsTimeValue.Zoned -> {
-                val zone = resolveIcsZoneOrNull(start.tzid, start.definition)
+                val zone = resolveIcsZoneOrNull(start.tzid)
                 if (zone != null) formatUtc(last.toInstant(zone)) else formatIcsLocalDateTime(last, utc = false)
             }
             is IcsTimeValue.Utc -> formatUtc(last.toInstant(TimeZone.UTC))
@@ -1033,29 +1065,69 @@ private sealed interface IcsZone {
         }
 }
 
-private fun resolveZone(tzid: String?, definition: String?): IcsZone? = when {
+private fun resolveZone(tzid: String?): IcsZone? = when {
     tzid == null -> null
     tzid.equals("UTC", ignoreCase = true) || tzid.equals("GMT", ignoreCase = true) -> IcsZone.Utc
     else -> resolvePlatformZone(tzid)
-        ?: definition?.let { text ->
-            parseComponents(text)
-                .firstOrNull { it.name == "VTIMEZONE" }
-                ?.let(::parseCustomZone)
-                ?.let { IcsZone.Custom(it) }
-        }
+        ?: IcsTimeZoneCache.customZoneOrNull(tzid)?.let { IcsZone.Custom(it) }
 }
 
-/** Platform zone a stored `TZID` resolves to, or null when only a custom definition knows it. */
-internal fun resolveIcsZoneOrNull(tzid: String, definition: String?): TimeZone? =
-    when (val zone = resolveZone(tzid, definition)) {
+/** Platform zone a `TZID` resolves to, or null when only a stored calendar definition knows it. */
+internal fun resolveIcsZoneOrNull(tzid: String): TimeZone? =
+    when (val zone = resolveZone(tzid)) {
         is IcsZone.Platform -> zone.zone
         IcsZone.Utc -> TimeZone.UTC
         else -> null
     }
 
-/** Absolute instant of a value whose zone may only exist in a stored raw `VTIMEZONE`. */
-internal fun customZoneInstantOrNull(dateTime: LocalDateTime, tzid: String, definition: String?): Instant? =
-    resolveZone(tzid, definition)?.toInstant(dateTime)
+/** Absolute instant of a value whose zone may only exist in a calendar-level `VTIMEZONE`. */
+internal fun customZoneInstantOrNull(dateTime: LocalDateTime, tzid: String): Instant? =
+    resolveZone(tzid)?.toInstant(dateTime)
+
+/** Whether the platform resolves [tzid] on its own, so no `VTIMEZONE` block needs to be stored. */
+private fun isPlatformTimeZone(tzid: String): Boolean =
+    tzid.equals("UTC", ignoreCase = true) || tzid.equals("GMT", ignoreCase = true) ||
+        resolvePlatformZone(tzid) != null
+
+internal fun normalizeTimeZoneId(tzid: String): String = tzid.trim().removePrefix("/")
+
+/** Adds the calendar-level definitions of unknown zones to the runtime lookup cache. */
+internal fun registerIcsTimeZones(timeZones: Iterable<CalendarTimeZone>) {
+    timeZones.forEach { IcsTimeZoneCache.register(it.tzid, it.definition) }
+}
+
+/** Stored `VTIMEZONE` text of an unknown zone, for an export that only carries [Event] values. */
+internal fun icsTimeZoneDefinition(tzid: String): String? = IcsTimeZoneCache.definitionOf(tzid)
+
+/**
+ * Process-wide lookup of the calendar-level definitions. [AppState.calendar] remains the persisted
+ * source of truth; this cache only lets the `Event` display projections resolve unknown zones
+ * without threading the whole state through every recurrence query. Parsed definitions are kept so
+ * hundreds of values from one file share a single interpretation of their `VTIMEZONE`.
+ */
+private object IcsTimeZoneCache {
+    private val definitions = mutableMapOf<String, String>()
+    private val parsed = mutableMapOf<String, CustomZone?>()
+
+    fun register(tzid: String, definition: String) {
+        val id = normalizeTimeZoneId(tzid)
+        if (id.isEmpty() || definition.isBlank() || isPlatformTimeZone(id)) return
+        if (definitions[id] == definition) return
+        definitions[id] = definition
+        parsed.remove(id)
+    }
+
+    fun definitionOf(tzid: String): String? = definitions[normalizeTimeZoneId(tzid)]
+
+    fun customZoneOrNull(tzid: String): CustomZone? {
+        val id = normalizeTimeZoneId(tzid)
+        val definition = definitions[id] ?: return null
+        return parsed.getOrPut(id) { customZoneFromText(definition) }
+    }
+
+    private fun customZoneFromText(text: String): CustomZone? =
+        parseComponents(text).firstOrNull { it.name == "VTIMEZONE" }?.let(::parseCustomZone)
+}
 
 /** The zone a calendar declares for values without a `TZID`, if any. */
 private fun calendarFloatingZone(
@@ -1146,7 +1218,6 @@ private data class RawEvent(
     /** `DTSTAMP` of the copy, used to tell the newest copy of a UID apart from its stale ones. */
     val dtStamp: String? = null,
     val alarms: List<RawAlarm> = emptyList(),
-    val timeZoneDefinition: String? = null,
     val extraProperties: List<String> = emptyList(),
     /** Line of `BEGIN:VEVENT`, used to point a warning at the record. */
     val lineNumber: Int = 0,
@@ -1157,7 +1228,6 @@ private fun RawEvent.isCancelled(): Boolean = status.equals("CANCELLED", ignoreC
 private fun readEvent(
     component: IcsComponent,
     zones: Map<String, CustomZone>,
-    zoneDefinitions: Map<String, String>,
     floatingZone: IcsZone?,
     details: MutableList<IcsWarningDetail>,
 ): RawEvent {
@@ -1192,7 +1262,6 @@ private fun readEvent(
     var sequence = 0
     var dtStamp: String? = null
     val extra = mutableListOf<String>()
-    var timeZoneDefinition: String? = null
 
     component.properties.forEach { line ->
         when (line.name) {
@@ -1262,11 +1331,6 @@ private fun readEvent(
         }
     }
 
-    val zoneId = (start as? IcsTime.DateTime)?.zone?.id ?: (end as? IcsTime.DateTime)?.zone?.id
-    if (zoneId != null && !zoneId.equals("UTC", ignoreCase = true)) {
-        timeZoneDefinition = zoneDefinitions[zoneId]
-    }
-
     val alarms = component.children.filter { it.name == "VALARM" }.mapNotNull(::readAlarm)
     if (component.children.any { it.name != "VALARM" }) {
         warnings += IcsWarning.UnknownSubcomponent
@@ -1304,7 +1368,6 @@ private fun readEvent(
         sequence = sequence,
         dtStamp = dtStamp,
         alarms = alarms,
-        timeZoneDefinition = timeZoneDefinition,
         extraProperties = extra,
         lineNumber = component.lineNumber,
     )
@@ -1555,7 +1618,7 @@ private fun parseUntil(
     val utc = value.endsWith("Z", ignoreCase = true)
     val line = ContentLine("UNTIL", if (utc) emptyMap() else mapOf("VALUE" to "DATE-TIME"), value, value)
     // A date-only UNTIL is written without VALUE=DATE by some clients; parseTime handles it too.
-    return parseTime(line, zones, warnings, defaultZone)?.toValue(null)
+    return parseTime(line, zones, warnings, defaultZone)?.toValue()
 }
 
 private fun parseDurationMinutes(value: String): Int? {
@@ -1731,7 +1794,7 @@ private fun mapSeries(
     val seenSlots = mutableSetOf<IcsTimeValue>()
     var ambiguous = false
     group.filter { it.recurrenceId != null }.forEach { override ->
-        val slot = override.recurrenceId?.toValue(override.timeZoneDefinition) ?: return@forEach
+        val slot = override.recurrenceId?.toValue() ?: return@forEach
         // Two exceptions naming the very same instant are indistinguishable; two on one day but at
         // different times are fine, which is exactly what the typed slot makes possible.
         if (!seenSlots.add(slot)) ambiguous = true
@@ -1771,7 +1834,7 @@ private fun mapSingle(
     untitledTitle: String,
     zones: Map<String, CustomZone>,
     warnings: MutableSet<IcsWarning>,
-    recurrence: Recurrence? = mapRecurrence(raw.rule, raw.rawRule, raw.rDates, raw.exdates, raw.timeZoneDefinition),
+    recurrence: Recurrence? = mapRecurrence(raw.rule, raw.rawRule, raw.rDates, raw.exdates),
 ): Event? {
     val parsedStart = raw.start ?: raw.recurrenceId
     if (parsedStart == null) {
@@ -1780,7 +1843,7 @@ private fun mapSingle(
         return null
     }
     val title = raw.summary.ifBlank { untitledTitle }
-    val start = parsedStart.toValue(raw.timeZoneDefinition)
+    val start = parsedStart.toValue()
     val end = mapEnd(start, raw, deviceZone)
     return Event(
         id = null,
@@ -1804,9 +1867,8 @@ private fun mapSingle(
         alarms = raw.alarms.map { it.toAlarm() },
         recurrence = recurrence,
         icsUid = raw.uid,
-        recurrenceId = raw.recurrenceId?.toValue(raw.timeZoneDefinition),
+        recurrenceId = raw.recurrenceId?.toValue(),
         recurrenceRange = RecurrenceRange.parse(raw.recurrenceRange),
-        timeZoneDefinition = raw.timeZoneDefinition,
         created = raw.created,
         lastModified = raw.lastModified,
         dtStamp = raw.dtStamp,
@@ -1847,22 +1909,21 @@ private fun mapRecurrence(
     rawRule: String?,
     rDates: List<IcsTime>,
     exdates: List<IcsTime>,
-    definition: String?,
 ): Recurrence? {
-    val rdates = rDates.map { RecurrenceDate(it.toValue(definition), it.periodDuration()) }
-    val excluded = exdates.map { it.toValue(definition) }
+    val rdates = rDates.map { RecurrenceDate(it.toValue(), it.periodDuration()) }
+    val excluded = exdates.map { it.toValue() }
     if (rule == null && rawRule == null && rdates.isEmpty() && excluded.isEmpty()) return null
     return Recurrence(rule = rule, rdates = rdates, exdates = excluded, rawRule = rawRule)
 }
 
-/** RFC 5545 value of a parsed time; [definition] is the record's stored `VTIMEZONE`, if any. */
-private fun IcsTime.toValue(definition: String?): IcsTimeValue = when (this) {
+/** RFC 5545 value of a parsed time; unknown zones resolve through the calendar-level definitions. */
+private fun IcsTime.toValue(): IcsTimeValue = when (this) {
     is IcsTime.AllDay -> IcsTimeValue.Date(date)
     is IcsTime.DateTime -> when (val zone = zone) {
         IcsZone.Floating -> IcsTimeValue.Floating(value)
         IcsZone.Utc -> IcsTimeValue.Utc(value.toInstant(TimeZone.UTC))
-        is IcsZone.Platform -> IcsTimeValue.Zoned(value, zone.id, definition)
-        is IcsZone.Custom -> IcsTimeValue.Zoned(value, zone.zone.id, definition)
+        is IcsZone.Platform -> IcsTimeValue.Zoned(value, zone.id)
+        is IcsZone.Custom -> IcsTimeValue.Zoned(value, zone.zone.id)
     }
 }
 
@@ -1881,7 +1942,7 @@ private fun mapEnd(start: IcsTimeValue, raw: RawEvent, deviceZone: TimeZone): Ic
         }
         return IcsTimeValue.Date(exclusive)
     }
-    val parsedEnd = (raw.end as? IcsTime.DateTime)?.toValue(raw.timeZoneDefinition)
+    val parsedEnd = (raw.end as? IcsTime.DateTime)?.toValue()
     val resolved = when {
         parsedEnd != null -> alignEndTo(start, parsedEnd, deviceZone)
         raw.durationMinutes != null && raw.durationMinutes > 0 ->
@@ -1909,16 +1970,16 @@ private fun alignEndTo(start: IcsTimeValue, end: IcsTimeValue, deviceZone: TimeZ
             // Same TZID on both values needs no conversion; this also keeps a custom zone, whose
             // wall clock cannot be recovered from an instant without its rules.
             if (end is IcsTimeValue.Zoned && end.tzid == start.tzid) {
-                return IcsTimeValue.Zoned(end.dateTime, start.tzid, start.definition)
+                return IcsTimeValue.Zoned(end.dateTime, start.tzid)
             }
-            val zone = icsZoneOrNull(start.tzid, start.definition) ?: deviceZone
+            val zone = icsZoneOrNull(start.tzid) ?: deviceZone
             val instant = when (end) {
                 is IcsTimeValue.Utc -> end.instant
                 is IcsTimeValue.Zoned -> end.instantOrNull(deviceZone) ?: end.dateTime.toInstant(zone)
                 is IcsTimeValue.Floating -> end.dateTime.toInstant(zone)
                 is IcsTimeValue.Date -> return end
             }
-            IcsTimeValue.Zoned(instant.toLocalDateTime(zone), start.tzid, start.definition)
+            IcsTimeValue.Zoned(instant.toLocalDateTime(zone), start.tzid)
         }
         is IcsTimeValue.Utc -> {
             val instant = when (end) {
@@ -2146,7 +2207,7 @@ private fun readTodo(
         completedTime = completedTime,
         alarms = alarms.map { it.toAlarm() },
         repeat = repeat,
-        rDates = rdates.map { RecurrenceDate(it.toValue(null), it.periodDuration()) },
+        rDates = rdates.map { RecurrenceDate(it.toValue(), it.periodDuration()) },
         excludedDates = exdates.map { it.localDate(deviceZone).toString() }.distinct(),
         sourceLine = component.lineNumber,
     )

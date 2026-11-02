@@ -34,13 +34,15 @@ sealed interface IcsTimeValue {
     @SerialName("floating")
     data class Floating(val dateTime: LocalDateTime) : IcsTimeValue
 
-    /** [definition] is the original `VTIMEZONE` text when the zone is not an IANA one. */
+    /**
+     * Wall clock in [tzid]. An unknown zone's `VTIMEZONE` definition lives at the calendar level
+     * (see [CalendarMetadata.timeZones]), so the value itself only carries the reference.
+     */
     @Serializable
     @SerialName("zoned")
     data class Zoned(
         val dateTime: LocalDateTime,
         val tzid: String,
-        val definition: String? = null,
     ) : IcsTimeValue
 
     @Serializable
@@ -119,7 +121,7 @@ fun IcsTimeValue.displayDate(zone: TimeZone): LocalDate = when (this) {
 fun IcsTimeValue.instantOrNull(zone: TimeZone): Instant? = when (this) {
     is IcsTimeValue.Date -> null
     is IcsTimeValue.Floating -> dateTime.toInstant(zone)
-    is IcsTimeValue.Zoned -> zonedInstantOrNull(dateTime, tzid, definition)
+    is IcsTimeValue.Zoned -> zonedInstantOrNull(dateTime, tzid)
     is IcsTimeValue.Utc -> instant
 }
 
@@ -146,8 +148,8 @@ fun IcsTimeValue.withWallDateTime(dateTime: LocalDateTime): IcsTimeValue = when 
  */
 fun IcsTimeValue.withDeviceDateTime(dateTime: LocalDateTime, deviceZone: TimeZone): IcsTimeValue = when (this) {
     is IcsTimeValue.Zoned -> {
-        val zone = icsZoneOrNull(tzid, definition) ?: deviceZone
-        IcsTimeValue.Zoned(dateTime.toInstant(deviceZone).toLocalDateTime(zone), tzid, definition)
+        val zone = icsZoneOrNull(tzid) ?: deviceZone
+        IcsTimeValue.Zoned(dateTime.toInstant(deviceZone).toLocalDateTime(zone), tzid)
     }
     is IcsTimeValue.Utc -> IcsTimeValue.Utc(dateTime.toInstant(deviceZone))
     else -> IcsTimeValue.Floating(dateTime)
@@ -165,9 +167,9 @@ fun IcsTimeValue.plusDuration(duration: Duration, fallbackZone: TimeZone): IcsTi
             .toLocalDateTime(fallbackZone),
     )
     is IcsTimeValue.Zoned -> {
-        val zone = icsZoneOrNull(tzid, definition) ?: fallbackZone
+        val zone = icsZoneOrNull(tzid) ?: fallbackZone
         val end = (instantOrNull(fallbackZone) ?: dateTime.toInstant(zone)) + duration
-        IcsTimeValue.Zoned(end.toLocalDateTime(zone), tzid, definition)
+        IcsTimeValue.Zoned(end.toLocalDateTime(zone), tzid)
     }
     is IcsTimeValue.Utc -> IcsTimeValue.Utc(instant + duration)
 }
@@ -186,13 +188,13 @@ private fun LocalDateTime.wallSecondsUntil(other: LocalDateTime): Long =
         (other.time.hour * 3_600L + other.time.minute * 60L + other.time.second) -
         (time.hour * 3_600L + time.minute * 60L + time.second)
 
-/** IANA zone a value names, or null when the platform (and any stored definition) cannot resolve it. */
-internal fun icsZoneOrNull(tzid: String, definition: String?): TimeZone? = resolveIcsZoneOrNull(tzid, definition)
+/** IANA zone a value names, or null when the platform cannot resolve it. */
+internal fun icsZoneOrNull(tzid: String): TimeZone? = resolveIcsZoneOrNull(tzid)
 
-/** Absolute instant of a zoned value, resolving a stored `VTIMEZONE` definition as a fallback. */
-internal fun zonedInstantOrNull(dateTime: LocalDateTime, tzid: String, definition: String?): Instant? {
-    icsZoneOrNull(tzid, definition)?.let { return dateTime.toInstant(it) }
-    return customZoneInstantOrNull(dateTime, tzid, definition)
+/** Absolute instant of a zoned value, resolving a calendar-level `VTIMEZONE` definition as fallback. */
+internal fun zonedInstantOrNull(dateTime: LocalDateTime, tzid: String): Instant? {
+    icsZoneOrNull(tzid)?.let { return dateTime.toInstant(it) }
+    return customZoneInstantOrNull(dateTime, tzid)
 }
 
 // ----- Event projections -----

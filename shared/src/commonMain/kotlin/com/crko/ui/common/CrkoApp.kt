@@ -210,6 +210,7 @@ fun CrkoApp(state: AppStateHolder) {
     }
 
     fun exportCalendar() {
+        val calendar = state.appState.calendar
         val events = state.appState.events
         val todos = state.appState.todos
         val journals = state.appState.journals
@@ -219,8 +220,10 @@ fun CrkoApp(state: AppStateHolder) {
                 exportCalendar(
                     events,
                     todos,
-                    calendarName = "Crko",
+                    calendarName = calendar.name ?: "Crko",
                     journals = journals,
+                    refreshMinutes = calendar.refreshMinutes,
+                    timeZones = calendar.timeZones,
                 )
             }
             fileBridge.saveExport(

@@ -46,6 +46,7 @@ internal fun legacyIcsTimeValue(
     source: String?,
     tzid: String?,
     definition: String?,
+    definitions: MutableMap<String, CalendarTimeZone>? = null,
 ): IcsTimeValue {
     val storedDate = parseStoredDate(date) ?: LocalDate(1970, 1, 1)
     if (allDay) return IcsTimeValue.Date(storedDate)
@@ -58,7 +59,12 @@ internal fun legacyIcsTimeValue(
     return when {
         source.endsWith("Z", ignoreCase = true) == true -> IcsTimeValue.Utc(wall.toInstant(TimeZone.UTC))
         tzid.equals("UTC", ignoreCase = true) -> IcsTimeValue.Utc(wall.toInstant(TimeZone.UTC))
-        !tzid.isNullOrBlank() -> IcsTimeValue.Zoned(wall, tzid, definition)
+        !tzid.isNullOrBlank() -> {
+            definition?.takeIf { it.isNotBlank() }?.let { text ->
+                definitions?.put(tzid, CalendarTimeZone(tzid, text))
+            }
+            IcsTimeValue.Zoned(wall, tzid)
+        }
         else -> IcsTimeValue.Floating(wall)
     }
 }
@@ -76,6 +82,7 @@ internal fun legacyEndValue(
     endSource: String?,
     tzid: String?,
     definition: String?,
+    definitions: MutableMap<String, CalendarTimeZone>? = null,
 ): IcsTimeValue? {
     val startDate = parseStoredDate(date) ?: LocalDate(1970, 1, 1)
     if (allDay) {
@@ -91,12 +98,13 @@ internal fun legacyEndValue(
         source = startSource,
         tzid = tzid,
         definition = definition,
+        definitions = definitions,
     )
     val wall = endSource?.let(::parseLegacySource)
         ?: LocalDateTime(parseStoredDate(endDate ?: date) ?: startDate, legacyTime(endMinutes, endSeconds))
     if (wall <= start.wallDateTime) return null
     return when (start) {
-        is IcsTimeValue.Zoned -> IcsTimeValue.Zoned(wall, start.tzid, start.definition)
+        is IcsTimeValue.Zoned -> IcsTimeValue.Zoned(wall, start.tzid)
         is IcsTimeValue.Utc -> IcsTimeValue.Utc(wall.toInstant(TimeZone.UTC))
         is IcsTimeValue.Floating -> IcsTimeValue.Floating(wall)
         is IcsTimeValue.Date -> IcsTimeValue.Date(wall.date)

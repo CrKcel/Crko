@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.state.ToggleableState
 import com.crko.domain.BusyInterval
+import com.crko.domain.CalendarTimeZone
 import com.crko.domain.CancelledIcsRecord
 import com.crko.domain.Event
 import com.crko.domain.IcsImport
@@ -65,6 +66,8 @@ internal data class ImportSelection(
     val method: ItipMethod? = null,
     val calendarName: String? = null,
     val refreshMinutes: Int? = null,
+    /** Unknown-zone definitions travel with the import even when every record is unchecked. */
+    val timeZones: List<CalendarTimeZone> = emptyList(),
     val freeBusy: List<BusyInterval> = emptyList(),
 )
 
@@ -126,6 +129,7 @@ internal fun importSelection(imported: IcsImport): ImportSelection = ImportSelec
     method = imported.method,
     calendarName = imported.calendarName,
     refreshMinutes = imported.refreshMinutes,
+    timeZones = imported.timeZones,
     freeBusy = imported.freeBusy,
 )
 
@@ -149,6 +153,7 @@ internal fun ImportSelection.toIcsImport(checked: List<Boolean>): IcsImport {
         method = method,
         calendarName = calendarName,
         refreshMinutes = refreshMinutes,
+        timeZones = timeZones,
         freeBusy = freeBusy,
         // The whole file, not the kept subset: unchecking a row skips its update, but the record
         // the file still describes must survive the vanished-record reconciliation.

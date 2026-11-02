@@ -291,11 +291,6 @@ data class Event(
     val recurrenceId: IcsTimeValue? = null,
     /** `RANGE` parameter of [recurrenceId]; null for an ordinary single-instance exception. */
     val recurrenceRange: RecurrenceRange? = null,
-    /**
-     * Original raw `VTIMEZONE` block when the zone is not known to the platform. Kept here until
-     * the calendar-level time zone store of stage 3 takes over.
-     */
-    val timeZoneDefinition: String? = null,
     /** ISO-8601 instant. */
     val created: String? = null,
     /** ISO-8601 instant. */
@@ -428,7 +423,6 @@ data class Event(
         sourceStart: String? = null,
         sourceEnd: String? = null,
         timeZoneId: String? = null,
-        timeZoneDefinition: String? = null,
         created: String? = null,
         lastModified: String? = null,
         dtStamp: String? = null,
@@ -448,7 +442,7 @@ data class Event(
             allDay = allDay,
             source = sourceStart,
             tzid = timeZoneId,
-            definition = timeZoneDefinition,
+            definition = null,
         ),
         end = legacyEndValue(
             date = date,
@@ -461,7 +455,7 @@ data class Event(
             startSource = sourceStart,
             endSource = sourceEnd,
             tzid = timeZoneId,
-            definition = timeZoneDefinition,
+            definition = null,
         ),
         note = note,
         location = location,
@@ -483,7 +477,6 @@ data class Event(
             parseStoredDate(text)?.let(IcsTimeValue::Date)
         },
         recurrenceRange = if (thisAndFuture) RecurrenceRange.ThisAndFuture else null,
-        timeZoneDefinition = timeZoneDefinition,
         created = created,
         lastModified = lastModified,
         dtStamp = dtStamp,
@@ -588,8 +581,31 @@ data class Journal(
     val sourceLine: Int = 0,
 )
 
-/** Current persisted layout; stage 2 moved recurrence sets to [Recurrence]. */
-const val CurrentSchemaVersion = 3
+/** Current persisted layout; stage 3 moved `VTIMEZONE` definitions to the calendar level. */
+const val CurrentSchemaVersion = 4
+
+/**
+ * A raw `VTIMEZONE` definition for a `TZID` the platform does not know. Known IANA zones are stored
+ * only as the `TZID` inside [IcsTimeValue.Zoned], so this list stays small and deduplicated.
+ */
+@Serializable
+data class CalendarTimeZone(
+    val tzid: String,
+    val definition: String,
+)
+
+/** Properties of the calendar container, independent of any one event or todo. */
+@Serializable
+data class CalendarMetadata(
+    /** `X-WR-CALNAME`. */
+    val name: String? = null,
+    /** `REFRESH-INTERVAL` / `X-PUBLISHED-TTL`, in minutes. */
+    val refreshMinutes: Int? = null,
+    /** iTIP `METHOD` of the last imported message, as its wire name. */
+    val method: String? = null,
+    /** Raw definitions for `TZID` values the platform cannot resolve. */
+    val timeZones: List<CalendarTimeZone> = emptyList(),
+)
 
 @Serializable
 data class AppState(
@@ -600,6 +616,8 @@ data class AppState(
     val subscriptions: List<CalendarSubscription> = emptyList(),
     /** Busy periods imported from `VFREEBUSY` components, kept for free/busy queries. */
     val busyPeriods: List<BusyInterval> = emptyList(),
+    /** Calendar-level properties and unknown `VTIMEZONE` definitions. */
+    val calendar: CalendarMetadata = CalendarMetadata(),
     /** Layout version of this payload; older payloads are migrated on read. */
     val schemaVersion: Int = CurrentSchemaVersion,
 )

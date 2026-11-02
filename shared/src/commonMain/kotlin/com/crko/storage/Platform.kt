@@ -3,6 +3,8 @@ package com.crko.storage
 import com.crko.dev.sampleState
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
+import com.crko.domain.CalendarMetadata
+import com.crko.domain.CalendarTimeZone
 import com.crko.domain.CurrentSchemaVersion
 import com.crko.domain.Event
 import com.crko.domain.Journal
@@ -11,6 +13,7 @@ import com.crko.domain.LegacyEvent
 import com.crko.domain.LegacyTodo
 import com.crko.domain.PersistedSettings
 import com.crko.domain.Todo
+import com.crko.domain.registerIcsTimeZones
 import com.crko.domain.toCurrentEvent
 import com.crko.domain.toCurrentTodo
 import com.crko.domain.today
@@ -186,45 +189,124 @@ internal fun decodeStateWithReport(raw: String): StateDecode {
         ?: return StateDecode(AppState(), LoadDamage(unreadable = true))
     val version = (root["schemaVersion"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
     // Only a payload already in the current layout may be decoded directly; an older one would
-    // silently lose the fields this version moved into `recurrence` under `ignoreUnknownKeys`.
+    // silently lose the fields this version moved into `calendar` under `ignoreUnknownKeys`.
     if (version == CurrentSchemaVersion) {
         runCatching { AppJson.decodeFromString(AppState.serializer(), raw) }.getOrNull()
-            ?.let { return StateDecode(it, LoadDamage.None) }
+            ?.let { state ->
+                registerIcsTimeZones(state.calendar.timeZones)
+                return StateDecode(state, LoadDamage.None)
+            }
     }
+    // Stage 2 payloads already carry the typed recurrence set, which LegacyEvent cannot express;
+    // decoding them with the current model keeps every field, and only the per-record VTIMEZONE
+    // text has to be lifted into the new calendar-level store.
+    if (version == StageTwoSchemaVersion) {
+        runCatching { AppJson.decodeFromJsonElement(AppState.serializer(), root) }.getOrNull()
+            ?.let { previous ->
+                val state = previous.copy(
+                    schemaVersion = CurrentSchemaVersion,
+                    calendar = previous.calendar.copy(
+                        timeZones = collectLegacyTimeZoneDefinitions(root),
+                    ),
+                )
+                registerIcsTimeZones(state.calendar.timeZones)
+                return StateDecode(state, LoadDamage.None)
+            }
+    }
+    val definitions = linkedMapOf<String, CalendarTimeZone>()
     runCatching {
         AppJson.decodeFromJsonElement(LegacyAppState.serializer(), root)
     }.getOrNull()?.let { legacy ->
-        val events = legacy.events.mapNotNull { it.toCurrentEvent() }
+        val events = legacy.events.mapNotNull { it.toCurrentEvent(definitions) }
+        val state = AppState(
+            events = events,
+            todos = legacy.todos.map { it.toCurrentTodo() },
+            journals = legacy.journals,
+            subscriptions = legacy.subscriptions,
+            busyPeriods = legacy.busyPeriods,
+            calendar = CalendarMetadata(timeZones = definitions.values.toList()),
+            schemaVersion = CurrentSchemaVersion,
+        )
+        registerIcsTimeZones(state.calendar.timeZones)
         return StateDecode(
-            state = AppState(
-                events = events,
-                todos = legacy.todos.map { it.toCurrentTodo() },
-                journals = legacy.journals,
-                subscriptions = legacy.subscriptions,
-                busyPeriods = legacy.busyPeriods,
-                schemaVersion = CurrentSchemaVersion,
-            ),
+            state = state,
             damage = LoadDamage(droppedRecords = legacy.events.size - events.size),
         )
     }
-    val (events, droppedEvents) = decodeEventRecords(root["events"])
+    val (events, droppedEvents) = decodeEventRecords(root["events"], definitions)
     val (todos, droppedTodos) = decodeTodoRecords(root["todos"])
     val (journals, droppedJournals) = decodeRecords(root["journals"], Journal.serializer())
+    val state = AppState(
+        events = events,
+        todos = todos,
+        journals = journals,
+        calendar = CalendarMetadata(timeZones = definitions.values.toList()),
+    )
+    registerIcsTimeZones(state.calendar.timeZones)
     return StateDecode(
-        AppState(events = events, todos = todos, journals = journals),
+        state,
         LoadDamage(droppedRecords = droppedEvents + droppedTodos + droppedJournals),
     )
 }
 
+/** Layout used by stage 2, the last version that stored `VTIMEZONE` text on each event. */
+private const val StageTwoSchemaVersion = 3
+
+/**
+ * Lifts the `VTIMEZONE` text a pre-stage-3 event carried onto the calendar level. Both shapes the
+ * old model used are read: the event's own `timeZoneDefinition` and the `definition` nested in a
+ * typed time value, so a custom zone survives whether the payload predates or postdates stage 1.
+ */
+private fun collectLegacyTimeZoneDefinitions(root: JsonObject): List<CalendarTimeZone> {
+    val definitions = linkedMapOf<String, CalendarTimeZone>()
+
+    fun register(tzid: String?, definition: String?) {
+        val id = tzid?.trim()?.removePrefix("/")?.takeIf { it.isNotEmpty() } ?: return
+        val text = definition?.takeIf { it.isNotBlank() } ?: return
+        definitions[id] = CalendarTimeZone(id, text)
+    }
+
+    fun zoned(element: JsonElement?): JsonObject? =
+        (element as? JsonObject)?.takeIf {
+            (it["type"] as? JsonPrimitive)?.contentOrNull == "zoned"
+        }
+
+    fun tzidOf(element: JsonElement?): String? =
+        zoned(element)?.get("tzid")?.let { (it as? JsonPrimitive)?.contentOrNull }
+
+    fun collectValue(element: JsonElement?) {
+        register(tzidOf(element), zoned(element)?.get("definition")?.let { (it as? JsonPrimitive)?.contentOrNull })
+    }
+
+    (root["events"] as? JsonArray)?.forEach { element ->
+        val event = element as? JsonObject ?: return@forEach
+        val definition = (event["timeZoneDefinition"] as? JsonPrimitive)?.contentOrNull
+        if (definition != null) register(tzidOf(event["start"]) ?: tzidOf(event["end"]), definition)
+        collectValue(event["start"])
+        collectValue(event["end"])
+        collectValue(event["recurrenceId"])
+        val recurrence = event["recurrence"] as? JsonObject
+        collectValue((recurrence?.get("rule") as? JsonObject)?.get("until"))
+        (recurrence?.get("rdates") as? JsonArray)?.forEach { rdate ->
+            collectValue((rdate as? JsonObject)?.get("value"))
+        }
+        (recurrence?.get("exdates") as? JsonArray)?.forEach(::collectValue)
+    }
+    return definitions.values.toList()
+}
+
 /** One event at a time: the current shape first, then either pre-stage-2 layout. */
-private fun decodeEventRecords(element: JsonElement?): Pair<List<Event>, Int> {
+private fun decodeEventRecords(
+    element: JsonElement?,
+    definitions: MutableMap<String, CalendarTimeZone>,
+): Pair<List<Event>, Int> {
     if (element == null) return emptyList<Event>() to 0
     val array = element as? JsonArray ?: return emptyList<Event>() to 1
     var dropped = 0
     val kept = array.mapNotNull { item ->
         runCatching { AppJson.decodeFromJsonElement(Event.serializer(), item) }.getOrNull()
             ?: runCatching {
-                AppJson.decodeFromJsonElement(LegacyEvent.serializer(), item).toCurrentEvent()
+                AppJson.decodeFromJsonElement(LegacyEvent.serializer(), item).toCurrentEvent(definitions)
             }.getOrNull()
                 .also { if (it == null) dropped++ }
     }

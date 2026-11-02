@@ -7,7 +7,9 @@ import androidx.compose.runtime.setValue
 import com.crko.domain.AppState
 import com.crko.domain.Attachment
 import com.crko.domain.BusyInterval
+import com.crko.domain.CalendarMetadata
 import com.crko.domain.CalendarSubscription
+import com.crko.domain.CalendarTimeZone
 import com.crko.domain.Event
 import com.crko.domain.EventStatus
 import com.crko.domain.IcsImport
@@ -42,6 +44,7 @@ import com.crko.domain.itipReply
 import com.crko.domain.shiftedByDays
 import com.crko.domain.todoForest
 import com.crko.domain.mergeBusyPeriods
+import com.crko.domain.normalizeTimeZoneId
 import com.crko.domain.occurrenceStartOn
 import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.occursOn
@@ -51,6 +54,7 @@ import com.crko.domain.parseStoredDate
 import com.crko.domain.plusWallDays
 import com.crko.domain.recurrenceSlotDate
 import com.crko.domain.recurrenceSlotOn
+import com.crko.domain.registerIcsTimeZones
 import com.crko.domain.shiftedByWallDays
 import com.crko.domain.wallDate
 import com.crko.domain.withExclusion
@@ -208,6 +212,9 @@ class AppStateHolder(
     private val reminderMutex = Mutex()
 
     init {
+        // Unknown zones are stored once at the calendar level; registering them here makes the
+        // restored events resolve their wall clock and absolute instant on the first frame.
+        registerIcsTimeZones(appState.calendar.timeZones)
         if (settings.agendaScrollHour < 0) {
             updateSettings { it.copy(agendaScrollHour = 8) }
         }
@@ -593,7 +600,11 @@ class AppStateHolder(
         if (import.method == ItipMethod.Reply) return applyItipReply(import)
         val hasContent = import.events.isNotEmpty() || import.todos.isNotEmpty() ||
             import.journals.isNotEmpty() || import.cancelledUids.isNotEmpty() || import.freeBusy.isNotEmpty()
-        if (!hasContent && source.isNullOrBlank()) return ImportOutcome()
+        val hasCalendarMeta = import.calendarName != null || import.refreshMinutes != null ||
+            import.timeZones.isNotEmpty()
+        if (!hasContent && !hasCalendarMeta && source.isNullOrBlank()) return ImportOutcome()
+        registerIcsTimeZones(import.timeZones)
+        val calendar = appState.calendar.withImport(import)
         val sourceName = source?.takeIf { it.isNotBlank() }
         // The vanished-record pass compares against every UID the file describes, not against the
         // kept rows alone: unchecking a preview row skips that one update without deleting the
@@ -635,7 +646,8 @@ class AppStateHolder(
             removed = events.removed + todos.removed + journals.removed,
         )
         val changed = events.items != appState.events || todos.items != appState.todos ||
-            journals.items != appState.journals || import.freeBusy.isNotEmpty()
+            journals.items != appState.journals || import.freeBusy.isNotEmpty() ||
+            calendar != appState.calendar
         // An all-zero outcome is only "nothing happened" when the lists did not move either;
         // provenance may have followed the file even though no record was added or replaced.
         if (outcome.isEmpty && !changed) return outcome
@@ -646,11 +658,20 @@ class AppStateHolder(
                     todos = todos.items,
                     journals = journals.items,
                     busyPeriods = mergeBusyPeriods(appState.busyPeriods, import.freeBusy, clock.now()),
+                    calendar = calendar,
                 ),
             )
         }
         return outcome
     }
+
+    /** Calendar-level properties the imported file carries; a missing value keeps the stored one. */
+    private fun CalendarMetadata.withImport(import: IcsImport): CalendarMetadata = copy(
+        name = import.calendarName ?: name,
+        refreshMinutes = import.refreshMinutes ?: refreshMinutes,
+        method = import.method?.wireName ?: method,
+        timeZones = mergeCalendarTimeZones(timeZones, import.timeZones),
+    )
 
     /**
      * Applies an imported `METHOD:REPLY`: the replying attendee's `PARTSTAT` is written onto the
@@ -1215,6 +1236,11 @@ class AppStateHolder(
             )
         }
         val source = subscriptionSource(subscription)
+        registerIcsTimeZones(parsed.timeZones)
+        val calendar = appState.calendar.copy(
+            refreshMinutes = parsed.refreshMinutes ?: appState.calendar.refreshMinutes,
+            timeZones = mergeCalendarTimeZones(appState.calendar.timeZones, parsed.timeZones),
+        )
         val events = mergeEvents(
             incoming = parsed.events.map(::withStoredAttachments),
             cancelledUids = gatedCancellations(parsed),
@@ -1237,6 +1263,7 @@ class AppStateHolder(
                 todos = todos.items,
                 journals = journals.items,
                 busyPeriods = mergeBusyPeriods(appState.busyPeriods, parsed.freeBusy, clock.now()),
+                calendar = calendar,
             ),
         )
         return SubscriptionApply(
@@ -1326,6 +1353,7 @@ class AppStateHolder(
     }
 
     private fun persist(next: AppState) {
+        registerIcsTimeZones(next.calendar.timeZones)
         appState = next
         storage.saveState(next)
         scheduleReminders()
@@ -1357,6 +1385,24 @@ class AppStateHolder(
             runCatching { scheduler.ensurePermission() }
         }
     }
+}
+
+/**
+ * One definition per `TZID`: the incoming file's copy wins, while zones it does not mention keep
+ * the definition already stored.
+ */
+private fun mergeCalendarTimeZones(
+    existing: List<CalendarTimeZone>,
+    incoming: List<CalendarTimeZone>,
+): List<CalendarTimeZone> {
+    val merged = LinkedHashMap<String, CalendarTimeZone>()
+    (existing + incoming).forEach { zone ->
+        val id = normalizeTimeZoneId(zone.tzid)
+        if (id.isNotEmpty() && zone.definition.isNotBlank()) {
+            merged[id] = zone.copy(tzid = id)
+        }
+    }
+    return merged.values.toList()
 }
 
 /**

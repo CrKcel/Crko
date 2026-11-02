@@ -541,11 +541,12 @@ class IcsTest {
             END:VEVENT
             """,
         )
-        val event = importIcs(text, utc, "Untitled").single()
+        val imported = importCalendar(text, utc, "Untitled")
+        val event = imported.events.single()
         assertEquals(6 * 60, event.localStart(utc).hour * 60 + event.localStart(utc).minute)
         assertEquals(7 * 60, event.localEnd(utc)?.let { it.hour * 60 + it.minute })
         assertEquals("Custom/Plus3", event.timeZoneId)
-        assertTrue(event.timeZoneDefinition?.contains("TZOFFSETTO:+0300") == true)
+        assertTrue(imported.timeZones.single().definition.contains("TZOFFSETTO:+0300"))
     }
 
     @Test
