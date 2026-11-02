@@ -3,11 +3,14 @@ package com.crko.storage
 import com.crko.dev.sampleState
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
+import com.crko.domain.CurrentSchemaVersion
 import com.crko.domain.Event
 import com.crko.domain.Journal
+import com.crko.domain.LegacyAppState
+import com.crko.domain.LegacyEvent
 import com.crko.domain.PersistedSettings
 import com.crko.domain.Todo
-import com.crko.domain.parseStoredDate
+import com.crko.domain.toCurrentEvent
 import com.crko.domain.today
 import com.crko.isDebugBuild
 import kotlinx.serialization.KSerializer
@@ -80,6 +83,8 @@ expect fun platformSupportsMonet(): Boolean
 private const val STATE_KEY = "state.v1"
 private const val SETTINGS_KEY = "settings.v1"
 private const val CORRUPT_STATE_KEY = "state.v1.corrupt"
+/** Raw payload kept once before it is migrated from the pre-stage-1 event layout. */
+private const val LEGACY_STATE_BACKUP_KEY = "state.v1.legacy-backup"
 
 /** What went wrong while reading a stored payload, if anything. */
 data class LoadDamage(
@@ -126,6 +131,11 @@ class FileStateStorage(
             saveState(sample)
             return sample
         }
+        // A payload written before stage 1 has no `schemaVersion`; keep the original once so a
+        // migration that drops an unrecoverable field still has a copy to recover from.
+        if (!raw.contains("\"schemaVersion\"") && stateStore().getString(LEGACY_STATE_BACKUP_KEY) == null) {
+            stateStore().putString(LEGACY_STATE_BACKUP_KEY, raw)
+        }
         val decoded = decodeStateWithReport(raw)
         lastDamage = decoded.damage
         if (!decoded.damage.isEmpty && stateStore().getString(CORRUPT_STATE_KEY) == null) {
@@ -164,41 +174,52 @@ internal fun decodeState(raw: String): AppState = decodeStateWithReport(raw).sta
 
 /**
  * Reads a stored payload so that one unreadable record cannot discard the whole calendar: the
- * records that still parse are kept and the rest is counted as damage.
+ * records that still parse are kept and the rest is counted as damage. A payload written before
+ * stage 1 is decoded through [LegacyEvent] and migrated in place.
  */
 internal fun decodeStateWithReport(raw: String): StateDecode {
     runCatching { AppJson.decodeFromString(AppState.serializer(), raw) }.getOrNull()
-        ?.let { return decodeWithSanity(it, 0) }
+        ?.let { return StateDecode(it, LoadDamage.None) }
     val root = runCatching { AppJson.parseToJsonElement(raw) }.getOrNull() as? JsonObject
         ?: return StateDecode(AppState(), LoadDamage(unreadable = true))
-    val (events, droppedEvents) = decodeRecords(root["events"], Event.serializer())
+    runCatching {
+        AppJson.decodeFromJsonElement(LegacyAppState.serializer(), root)
+    }.getOrNull()?.let { legacy ->
+        val events = legacy.events.mapNotNull { it.toCurrentEvent() }
+        return StateDecode(
+            state = AppState(
+                events = events,
+                todos = legacy.todos,
+                journals = legacy.journals,
+                subscriptions = legacy.subscriptions,
+                busyPeriods = legacy.busyPeriods,
+                schemaVersion = CurrentSchemaVersion,
+            ),
+            damage = LoadDamage(droppedRecords = legacy.events.size - events.size),
+        )
+    }
+    val (events, droppedEvents) = decodeEventRecords(root["events"])
     val (todos, droppedTodos) = decodeRecords(root["todos"], Todo.serializer())
     val (journals, droppedJournals) = decodeRecords(root["journals"], Journal.serializer())
-    return decodeWithSanity(
+    return StateDecode(
         AppState(events = events, todos = todos, journals = journals),
-        droppedEvents + droppedTodos + droppedJournals,
+        LoadDamage(droppedRecords = droppedEvents + droppedTodos + droppedJournals),
     )
 }
 
-/**
- * Drops events whose anchor date cannot parse. Such a record decodes fine (the field is a plain
- * string) but would crash the first calendar query that touches it, so it counts as unreadable;
- * the stored backup still holds the original payload.
- */
-private fun decodeWithSanity(state: AppState, droppedSoFar: Int): StateDecode {
-    var dropped = droppedSoFar
-    val events = state.events.mapNotNull { event ->
-        if (parseStoredDate(event.date) == null) {
-            dropped++
-            null
-        } else {
-            event
-        }
+/** One event at a time: the current shape first, then the pre-stage-1 shape. */
+private fun decodeEventRecords(element: JsonElement?): Pair<List<Event>, Int> {
+    if (element == null) return emptyList<Event>() to 0
+    val array = element as? JsonArray ?: return emptyList<Event>() to 1
+    var dropped = 0
+    val kept = array.mapNotNull { item ->
+        runCatching { AppJson.decodeFromJsonElement(Event.serializer(), item) }.getOrNull()
+            ?: runCatching {
+                AppJson.decodeFromJsonElement(LegacyEvent.serializer(), item).toCurrentEvent()
+            }.getOrNull()
+                .also { if (it == null) dropped++ }
     }
-    return StateDecode(
-        state = if (dropped == droppedSoFar) state else state.copy(events = events),
-        damage = LoadDamage(droppedRecords = dropped),
-    )
+    return kept to dropped
 }
 
 private fun <T> decodeRecords(element: JsonElement?, serializer: KSerializer<T>): Pair<List<T>, Int> {

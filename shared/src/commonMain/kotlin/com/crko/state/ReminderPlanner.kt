@@ -6,10 +6,12 @@ import com.crko.domain.OccurrenceTime
 import com.crko.domain.Todo
 import com.crko.domain.daysTo
 import com.crko.domain.occurrenceDate
-import com.crko.domain.occurrenceEnd
+import com.crko.domain.occurrenceEndInstant
+import com.crko.domain.occurrenceStartInstant
 import com.crko.domain.occurrenceStartsBetween
 import com.crko.domain.occurrenceTimesOn
 import com.crko.domain.plusDays
+import com.crko.domain.wallDateFor
 import com.crko.i18n.Strings
 import com.crko.i18n.alarmLabel
 import kotlinx.datetime.LocalDate
@@ -115,24 +117,31 @@ private fun collectEventReminders(
     val span = event.day.daysTo(event.endDay)
 
     fun emitOccurrence(candidate: LocalDate, times: List<OccurrenceTime>) {
+        val wallDate = event.wallDateFor(candidate, zone)
         times.forEach { time ->
-            val startAt = candidate.atTime(time.minutes.toLocalTime(time.seconds)).toInstant(zone)
-            val endAt = when {
-                // All-day ranges are inclusive on the stored end date and end at the next midnight.
-                event.allDay -> candidate.plusDays(span).plusDays(1).atTime(LocalTime(0, 0)).toInstant(zone)
-                // A `BYHOUR`/`BYMINUTE` instance keeps the anchor's length, so its end follows its start.
-                else -> event.occurrenceEnd(candidate, time).toInstant(zone)
-            }
+            val startAt = event.occurrenceStartInstant(wallDate, time, zone)
+            val endAt = event.occurrenceEndInstant(wallDate, time, zone)
+            val startLocal = startAt.toLocalDateTime(zone)
             relative.forEach { (index, alarm) ->
                 val base = if (alarm.relatedToEnd) endAt else startAt
-                emitWithRepeat(event, index, alarm, base, candidate, event.allDay, time.minutes, nowMillis, strings, output)
+                emitWithRepeat(
+                    event,
+                    index,
+                    alarm,
+                    base,
+                    candidate,
+                    startLocal.time.let { it.hour * 60 + it.minute },
+                    nowMillis,
+                    strings,
+                    output,
+                )
             }
         }
     }
 
     if (event.repeat == null) {
         // A one-off event has exactly one occurrence; no walk over the horizon.
-        if (event.day <= horizonEnd) emitOccurrence(event.day, event.occurrenceTimesOn(event.day))
+        if (event.day <= horizonEnd) emitOccurrence(event.day, event.occurrenceTimesOn(event.wallDay))
         return
     }
 
@@ -140,7 +149,7 @@ private fun collectEventReminders(
     var candidate = maxOf(event.day, today.plusDays(-1 - lookback))
     while (candidate <= horizonEnd) {
         // Skipped dates and expanded start times are both resolved here.
-        val times = event.occurrenceTimesOn(candidate)
+        val times = event.occurrenceTimesOn(event.wallDateFor(candidate, zone))
         if (times.isNotEmpty()) emitOccurrence(candidate, times)
         candidate = candidate.plusDays(1)
     }
@@ -153,7 +162,6 @@ private fun emitWithRepeat(
     alarm: Alarm,
     base: Instant,
     occurrence: LocalDate,
-    allDay: Boolean,
     startMinutes: Int,
     nowMillis: Long,
     strings: Strings,
@@ -173,7 +181,7 @@ private fun emitWithRepeat(
             triggerAtMillis = at,
             title = event.title.ifBlank { strings.untitledEvent },
             body = alarm.description.ifBlank {
-                "${strings.alarmLabel(alarm.triggerMinutes, alarm.relatedToEnd)} · ${alarmMoment(allDay, occurrence, startMinutes, strings)}"
+                "${strings.alarmLabel(alarm.triggerMinutes, alarm.relatedToEnd)} · ${alarmMoment(event.allDay, occurrence, startMinutes, strings)}"
             },
         )
     }

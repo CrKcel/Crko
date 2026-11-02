@@ -1,7 +1,12 @@
 package com.crko
 
+import com.crko.domain.AppJson
 import com.crko.domain.AppState
+import com.crko.domain.CurrentSchemaVersion
+import com.crko.domain.Event
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.PersistedSettings
+import com.crko.domain.isZeroDuration
 import com.crko.storage.FileStateStorage
 import com.crko.storage.KeyValueStore
 import com.crko.storage.LoadDamage
@@ -14,6 +19,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -35,6 +41,90 @@ private const val MIXED_PAYLOAD =
         """{"id":null,"title":"Broken"}],"todos":[]}"""
 
 class StorageTest {
+
+    @Test
+    fun newPayloadRoundTripsEveryTimeValueVariant() {
+        val events = listOf(
+            Event(
+                id = "date",
+                title = "Date",
+                start = IcsTimeValue.Date(LocalDate(2026, 10, 27)),
+                end = IcsTimeValue.Date(LocalDate(2026, 10, 29)),
+            ),
+            Event(
+                id = "floating",
+                title = "Floating",
+                start = IcsTimeValue.Floating(LocalDateTime(2026, 10, 27, 9, 0)),
+                end = IcsTimeValue.Floating(LocalDateTime(2026, 10, 27, 10, 0)),
+            ),
+            Event(
+                id = "zoned",
+                title = "Zoned",
+                start = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 9, 0), "Europe/Berlin"),
+                end = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 10, 0), "Europe/Berlin"),
+            ),
+            Event(
+                id = "utc",
+                title = "Utc",
+                start = IcsTimeValue.Utc(kotlin.time.Instant.parse("2026-10-27T09:00:00Z")),
+                end = IcsTimeValue.Utc(kotlin.time.Instant.parse("2026-10-27T10:00:00Z")),
+            ),
+        )
+        val encoded = AppJson.encodeToString(AppState.serializer(), AppState(events = events))
+        assertTrue(encoded.contains("\"schemaVersion\":$CurrentSchemaVersion"), encoded)
+        val decoded = decodeStateWithReport(encoded)
+        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
+        assertEquals(events, decoded.state.events)
+    }
+
+    @Test
+    fun legacyPayloadMigratesToRfcTimeValues() {
+        val payload = """{"events":[""" +
+            """{"id":"all","title":"All","date":"2026-10-27","startMinutes":0,"endMinutes":0,"endDate":"2026-10-28","allDay":true},""" +
+            """{"id":"tz","title":"Tz","date":"2026-10-27","startMinutes":540,"endMinutes":600,"sourceStart":"20261027T090000","sourceEnd":"20261027T100000","timeZoneId":"Europe/Berlin"},""" +
+            """{"id":"zero","title":"Zero","date":"2026-10-27","startMinutes":720,"endMinutes":720}],""" +
+            """"todos":[{"id":"t","title":"Todo"}],"journals":[{"id":"j","title":"Journal"}]}"""
+        val decoded = decodeStateWithReport(payload)
+        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
+        assertEquals(CurrentSchemaVersion, decoded.state.schemaVersion)
+        assertEquals(3, decoded.state.events.size)
+        assertEquals(1, decoded.state.todos.size)
+        assertEquals(1, decoded.state.journals.size)
+
+        val allDay = decoded.state.events.first { it.id == "all" }
+        assertEquals(IcsTimeValue.Date(LocalDate(2026, 10, 27)), allDay.start)
+        assertEquals(IcsTimeValue.Date(LocalDate(2026, 10, 29)), allDay.end)
+
+        val zoned = decoded.state.events.first { it.id == "tz" }
+        assertEquals(
+            IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 9, 0), "Europe/Berlin"),
+            zoned.start,
+        )
+        assertEquals(
+            IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 10, 0), "Europe/Berlin"),
+            zoned.end,
+        )
+
+        val zero = decoded.state.events.first { it.id == "zero" }
+        assertNull(zero.end)
+        assertTrue(zero.isZeroDuration)
+    }
+
+    @Test
+    fun legacyPayloadIsBackedUpBeforeItIsMigrated() {
+        val legacy = """{"events":[{"id":"e","title":"Old","date":"2026-10-27","startMinutes":540,"endMinutes":600}]}"""
+        val store = MemoryStore(mapOf("state.v1" to legacy))
+        val storage = FileStateStorage({ store }, { MemoryStore() }, seedSampleOnFirstLaunch = false)
+        val restored = storage.loadState()
+        assertEquals(1, restored.events.size)
+        assertEquals(legacy, store.values["state.v1.legacy-backup"])
+        // Writing the migrated state must not overwrite the preserved original.
+        storage.saveState(restored)
+        assertEquals(legacy, store.values["state.v1.legacy-backup"])
+        val resent = store.values.getValue("state.v1")
+        assertTrue(resent.contains("\"schemaVersion\":$CurrentSchemaVersion"), resent)
+        assertEquals(1, decodeStateWithReport(resent).state.events.size)
+    }
 
     @Test
     fun oneUndecodableRecordNoLongerDiscardsTheWholeCalendar() {

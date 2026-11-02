@@ -6,6 +6,9 @@ import kotlinx.datetime.LocalTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.number
 import kotlinx.datetime.toInstant
+import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 private const val OccurrenceGuard = 100_000
 
@@ -15,16 +18,25 @@ internal const val CountIndexLimit = 5_000
 internal fun Event.isOccurrenceStart(candidate: LocalDate, rule: RepeatRule): Boolean {
     val count = rule.count
     val index = if (count != null) countOccurrenceIndex else null
+    val startTime = wallStartTime()
     return isRuleOccurrence(
-        day,
+        wallDay,
         rule,
-        excludedDates,
+        excludedWallDates(),
         candidate,
-        startMinutes to startSeconds,
+        startTime.minutes to startTime.seconds,
         count,
         // The index belongs to this exact rule instance; a modified copy keeps the ordinal walk.
         index?.takeIf { it.first === rule }?.second,
     )
+}
+
+/** Skip dates in the event's own wall clock, so they line up with the rule-generated dates. */
+private fun Event.excludedWallDates(): List<String> {
+    if (excludedDates.isEmpty()) return emptyList()
+    return excludedDates.mapNotNull { text ->
+        parseStoredDate(text)?.let { wallDateFor(it).toString() }
+    }
 }
 
 /**
@@ -614,85 +626,109 @@ internal fun expandedStartTimes(rule: RepeatRule, startTime: OccurrenceTime): Li
 }
 
 /**
- * Start times of the occurrence starting on [date]. One per expanded time of day when the rule
- * carries `BYHOUR` / `BYMINUTE` / `BYSECOND`, otherwise the event's own start. `RDATE` days and a
- * `DTSTART` that misses the `BY*` filters keep the single stored start, since only rule-generated
- * dates are expanded. Empty when [date] does not start an occurrence.
+ * Start times of the occurrence starting on [date], where [date] is a wall-clock date in the
+ * event's own zone. One per expanded time of day when the rule carries `BYHOUR` / `BYMINUTE` /
+ * `BYSECOND`, otherwise the event's own start. `RDATE` days and a `DTSTART` that misses the `BY*`
+ * filters keep the single stored start, since only rule-generated dates are expanded.
  */
 fun Event.occurrenceTimesOn(date: LocalDate): List<OccurrenceTime> {
-    val rule = repeat ?: return if (occursOn(date)) {
-        listOf(OccurrenceTime(startMinutes, startSeconds))
-    } else {
-        emptyList()
+    val rule = repeat
+    if (rule == null) {
+        val covered = date >= wallDay && date <= wallLastOccupiedDay()
+        if (!covered) return emptyList()
+        return if (start is IcsTimeValue.Date) listOf(OccurrenceTime(0, 0)) else listOf(wallStartTime())
     }
-    if (allDay) return if (isOccurrenceStart(date, rule)) listOf(OccurrenceTime(0, 0)) else emptyList()
+    if (start is IcsTimeValue.Date) {
+        return if (isOccurrenceStart(date, rule)) listOf(OccurrenceTime(0, 0)) else emptyList()
+    }
     if (!isOccurrenceStart(date, rule)) return emptyList()
-    if (!matchesRule(rule, day, date)) return listOf(OccurrenceTime(startMinutes, startSeconds))
-    return expandedStartTimes(rule, OccurrenceTime(startMinutes, startSeconds))
+    if (!matchesRule(rule, wallDay, date)) return listOf(wallStartTime())
+    return expandedStartTimes(rule, wallStartTime())
 }
 
 /** Wall-clock length of one occurrence, in seconds, derived from the anchor's start and end. */
 val Event.occurrenceDurationSeconds: Long
-    get() = when {
-        allDay -> (day.daysTo(endDay) + 1) * 86_400L
-        else -> day.daysTo(endDay) * 86_400L + endMinutes * 60L + endSeconds - startMinutes * 60L - startSeconds
+    get() {
+        if (start is IcsTimeValue.Date) {
+            val exclusive = end?.wallDate ?: wallDay.plusDays(1)
+            return (exclusive.toEpochDays() - wallDay.toEpochDays()).coerceAtLeast(1) * 86_400L
+        }
+        val endValue = end ?: return 0
+        return start.durationUntil(endValue, TimeZone.currentSystemDefault()).inWholeSeconds
     }
 
-/** End of the occurrence starting on [startDay] at [time], from the anchor's length. */
-fun Event.occurrenceEnd(startDay: LocalDate, time: OccurrenceTime): LocalDateTime {
-    val endTotal = startDay.toEpochDays() * 86_400L + time.minutes * 60L + time.seconds + occurrenceDurationSeconds
-    val endDay = LocalDate.fromEpochDays(endTotal.floorDiv(86_400))
-    val seconds = endTotal.mod(86_400).toInt()
-    return LocalDateTime(endDay, LocalTime(seconds / 3600, seconds % 3600 / 60, seconds % 60))
+/** Instant at which the occurrence starting on wall date [date] at [time] begins. */
+fun Event.occurrenceStartInstant(
+    date: LocalDate,
+    time: OccurrenceTime,
+    zone: TimeZone = TimeZone.currentSystemDefault(),
+): Instant {
+    val dateTime = LocalDateTime(date, LocalTime(time.minutes / 60, time.minutes % 60, time.seconds))
+    val value = start.withWallDateTime(dateTime)
+    return value.instantOrNull(zone) ?: dateTime.toInstant(zone)
 }
 
+/** Instant at which the occurrence starting on [date] at [time] ends. */
+fun Event.occurrenceEndInstant(
+    date: LocalDate,
+    time: OccurrenceTime,
+    zone: TimeZone = TimeZone.currentSystemDefault(),
+): Instant = occurrenceStartInstant(date, time, zone) + occurrenceDurationSeconds.seconds
+
 /**
- * Slices of [event] on [date]: one range per occurrence instance covering the day, clipped to it.
- * Rules without `BYHOUR` / `BYMINUTE` / `BYSECOND` — and all-day events — keep the single slice
- * [timeRangeOn] computes, so nothing changes for them.
+ * Slices of [event] on [date] in [zone]: one range per occurrence instance covering the day,
+ * clipped to it. Rules without `BYHOUR` / `BYMINUTE` / `BYSECOND` — and all-day events — keep the
+ * single slice [timeRangeOn] computes, so nothing changes for them.
  */
-fun Event.occurrenceRangesOn(date: LocalDate): List<Pair<Int, Int>> {
-    val rule = repeat ?: return listOf(timeRangeOn(date))
+fun Event.occurrenceRangesOn(
+    date: LocalDate,
+    zone: TimeZone = TimeZone.currentSystemDefault(),
+): List<Pair<Int, Int>> {
+    val rule = repeat ?: return listOf(timeRangeOn(date, zone))
     val expands = rule.byHour.isNotEmpty() || rule.byMinute.isNotEmpty() || rule.bySecond.isNotEmpty()
-    if (allDay || !expands) return listOf(timeRangeOn(date))
+    if (allDay || !expands) return listOf(timeRangeOn(date, zone))
+    val anchor = day
+    val span = anchor.daysTo(lastOccupiedDay).coerceAtLeast(0)
+    // An instance occupies as many days as the anchor, so the covering instance may start up to a
+    // whole span earlier; a rule never starts before the anchor itself.
+    val firstOffset = minOf(span, anchor.daysTo(date).coerceAtLeast(0))
     val ranges = mutableListOf<Pair<Int, Int>>()
-    val span = day.daysTo(lastOccupiedDay).coerceAtLeast(0)
-    // An instance occupies as many days as the anchor does, so the covering instance starts at
-    // most a whole span earlier — and a rule never starts before the anchor itself, which clamps
-    // the walk when the queried date sits inside the anchor occurrence's own span.
-    val firstOffset = minOf(span, (date.toEpochDays() - day.toEpochDays()).toInt()).coerceAtLeast(0)
     for (offset in firstOffset downTo 0) {
-        val startDay = date.plusDays(-offset)
-        for (time in occurrenceTimesOn(startDay)) {
-            occurrenceRangeOn(date, startDay, time)?.let { ranges += it }
+        val displayStart = date.plusDays(-offset)
+        if (displayStart < anchor) continue
+        val wallStart = wallDateFor(displayStart, zone)
+        if (!isOccurrenceStart(wallStart, rule)) continue
+        for (time in occurrenceTimesOn(wallStart)) {
+            occurrenceRangeOn(date, wallStart, time, zone)?.let { ranges += it }
         }
     }
     // Not an occurrence day, or a slice the day cannot hold: keep the raw range for callers that
     // bypass occursOn.
-    return ranges.ifEmpty { listOf(timeRangeOn(date)) }
+    return ranges.ifEmpty { listOf(timeRangeOn(date, zone)) }
 }
 
-/** The slice of the instance starting on [startDay] at [time] that falls on [date], or null. */
+/** The slice of the instance starting on [wallStart] at [time] that falls on [date], or null. */
 private fun Event.occurrenceRangeOn(
     date: LocalDate,
-    startDay: LocalDate,
+    wallStart: LocalDate,
     time: OccurrenceTime,
+    zone: TimeZone,
 ): Pair<Int, Int>? {
-    val end = occurrenceEnd(startDay, time)
-    // An end at exactly midnight occupies the previous day through 24:00, like the stored model.
-    val lastDay = if (end.time.hour == 0 && end.time.minute == 0 && end.time.second == 0) {
-        end.date.plusDays(-1)
+    val startInstant = occurrenceStartInstant(wallStart, time, zone)
+    val endInstant = occurrenceEndInstant(wallStart, time, zone)
+    val startLocal = startInstant.toLocalDateTime(zone)
+    val endLocal = endInstant.toLocalDateTime(zone)
+    val lastDay = if (endLocal.date > startLocal.date && endLocal.time == LocalTime(0, 0)) {
+        endLocal.date.plusDays(-1)
     } else {
-        end.date
+        endLocal.date
     }
-    if (date < startDay || date > lastDay) return null
-    val offset = startDay.daysTo(date)
-    val lastOffset = startDay.daysTo(lastDay)
-    val start = if (offset == 0) time.minutes else 0
+    if (date < startLocal.date || date > lastDay) return null
+    val start = if (date == startLocal.date) startLocal.hour * 60 + startLocal.minute else 0
     val endMinutes = when {
-        offset < lastOffset -> EndOfDayMinutes
-        lastDay != end.date -> EndOfDayMinutes
-        else -> end.time.hour * 60 + end.time.minute
+        date < lastDay -> EndOfDayMinutes
+        endLocal.time == LocalTime(0, 0) && lastDay != endLocal.date -> EndOfDayMinutes
+        else -> endLocal.hour * 60 + endLocal.minute
     }
     return start to endMinutes
 }

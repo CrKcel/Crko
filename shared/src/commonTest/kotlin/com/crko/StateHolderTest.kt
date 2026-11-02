@@ -6,6 +6,7 @@ import com.crko.domain.AppState
 import com.crko.domain.Attachment
 import com.crko.domain.Event
 import com.crko.domain.IcsImport
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.IcsWarning
 import com.crko.domain.IcsWarningDetail
 import com.crko.domain.Journal
@@ -17,10 +18,13 @@ import com.crko.domain.TodoStatus
 import com.crko.domain.attachmentMimeType
 import com.crko.domain.exportIcs
 import com.crko.domain.importCalendar
-import com.crko.domain.normalizedForZone
+import com.crko.domain.localEnd
+import com.crko.domain.localStart
 import com.crko.domain.occurrenceStartOn
 import com.crko.domain.occursOn
 import com.crko.domain.plusDays
+import com.crko.domain.shiftedByDays
+import com.crko.domain.wallDateTime
 import com.crko.domain.PersistedSettings
 import com.crko.domain.TodoPriority
 import com.crko.domain.effectiveUid
@@ -33,6 +37,7 @@ import com.crko.state.EditScope
 import com.crko.state.ImportOutcome
 import com.crko.state.WriteResult
 import com.crko.storage.StateStorage
+import com.crko.domain.daysTo
 import com.crko.domain.decodedBytes
 import com.crko.ui.common.importSummaryText
 import com.crko.ui.schedule.endMinutesAfterStartChange
@@ -43,6 +48,8 @@ import com.crko.ui.more.journalWithEdits
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.LocalTime
 import kotlinx.datetime.TimeZone
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -99,8 +106,11 @@ class StateHolderTest {
         val base = Event(null, "Meeting", "2026-10-27", 540, 600)
         assertEquals(WriteResult.EmptyTitle, f.holder.saveEvent(base.copy(title = "   ")))
         // A zero-length timed event is valid RFC 5545; only an end before the start is rejected.
-        assertEquals(WriteResult.Success, f.holder.saveEvent(base.copy(endMinutes = 540)))
-        assertEquals(WriteResult.InvalidTimeRange, f.holder.saveEvent(base.copy(endMinutes = 500)))
+        assertEquals(WriteResult.Success, f.holder.saveEvent(base.copy(end = null)))
+        assertEquals(
+            WriteResult.InvalidTimeRange,
+            f.holder.saveEvent(base.copy(end = IcsTimeValue.Floating(LocalDateTime(2026, 10, 27, 8, 20)))),
+        )
         assertEquals("Meeting", f.holder.eventsOn(f.holder.today).single().title)
     }
 
@@ -109,7 +119,7 @@ class StateHolderTest {
         val f = Fixture()
         val event = Event("e1", "Draft", "2026-10-27", 60, 120)
         f.holder.saveEvent(event)
-        f.holder.saveEvent(event.copy(title = "Final", startMinutes = 90, endMinutes = 150))
+        f.holder.saveEvent(event.copy(title = "Final").withTimes(event.wallDay, 90, 150))
         val stored = f.holder.appState.events.single()
         assertEquals("Final", stored.title)
         assertEquals(90, stored.startMinutes)
@@ -413,7 +423,7 @@ class StateHolderTest {
         val series = f.dailySeries()
         val occurrence = f.holder.today.plusDays(1)
         val result = f.holder.saveEvent(
-            series.copy(title = "Moved", date = occurrence.toString(), startMinutes = 660, endMinutes = 720),
+            series.copy(title = "Moved").withTimes(occurrence, 660, 720),
             occurrenceDate = occurrence,
             scope = EditScope.ThisEvent,
         )
@@ -436,7 +446,7 @@ class StateHolderTest {
         val series = f.dailySeries()
         val split = f.holder.today.plusDays(2)
         f.holder.saveEvent(
-            series.copy(title = "New standup", date = split.toString(), startMinutes = 600, endMinutes = 615),
+            series.copy(title = "New standup").withTimes(split, 600, 615),
             occurrenceDate = split,
             scope = EditScope.ThisAndFuture,
         )
@@ -469,7 +479,7 @@ class StateHolderTest {
         )
         val series = f.holder.appState.events.single()
         f.holder.saveEvent(
-            series.copy(title = "New standup", date = split.toString()),
+            series.copy(title = "New standup").movedTo(split),
             occurrenceDate = split,
             scope = EditScope.ThisAndFuture,
         )
@@ -512,7 +522,7 @@ class StateHolderTest {
         val f = Fixture()
         val series = f.dailySeries()
         f.holder.saveEvent(
-            series.copy(title = "Moved", date = f.holder.today.plusDays(1).toString()),
+            series.copy(title = "Moved").movedTo(f.holder.today.plusDays(1)),
             occurrenceDate = f.holder.today.plusDays(1),
             scope = EditScope.ThisEvent,
         )
@@ -573,90 +583,32 @@ class StateHolderTest {
     }
 
     @Test
-    fun zonedSourceIsRebasedToTheCurrentDeviceZone() {
+    fun zonedEventKeepsItsRfcValueAndProjectsForDisplay() {
         val event = Event(
             id = "zoned",
             title = "Zoned",
-            date = "2026-07-27",
-            startMinutes = 9 * 60,
-            endMinutes = 10 * 60,
-            sourceStart = "20260727T090000",
-            sourceEnd = "20260727T100000",
-            timeZoneId = "Europe/Berlin",
+            start = IcsTimeValue.Zoned(LocalDateTime(2026, 7, 27, 9, 0), "Europe/Berlin"),
+            end = IcsTimeValue.Zoned(LocalDateTime(2026, 7, 27, 10, 0), "Europe/Berlin"),
         )
-        val rebased = event.normalizedForZone(TimeZone.UTC)
-        assertEquals(7 * 60, rebased.startMinutes)
-        assertEquals(8 * 60, rebased.endMinutes)
-        assertEquals("2026-07-27", rebased.date)
-        assertEquals("Europe/Berlin", rebased.timeZoneId)
+        // The persisted value is the one the calendar file describes, not a device-zone projection.
+        assertEquals(IcsTimeValue.Zoned(LocalDateTime(2026, 7, 27, 9, 0), "Europe/Berlin"), event.start)
+        // Display projection moves with the viewer's zone (Berlin summer time is UTC+2).
+        assertEquals(LocalDateTime(2026, 7, 27, 7, 0), event.localStart(TimeZone.UTC))
+        assertEquals(LocalDateTime(2026, 7, 27, 8, 0), event.localEnd(TimeZone.UTC))
     }
 
     @Test
-    fun zoneRebaseMovesExceptionRecurrenceIdWithItsSeries() {
+    fun movingASeriesKeepsItsZoneAndWallClock() {
         val series = Event(
             id = "series",
             title = "Series",
-            date = "2026-10-27",
-            startMinutes = 30,
-            endMinutes = 60,
-            sourceStart = "20261027T003000",
-            sourceEnd = "20261027T010000",
-            timeZoneId = "Asia/Shanghai",
+            start = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 0, 30), "Asia/Shanghai"),
+            end = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 1, 0), "Asia/Shanghai"),
             repeat = RepeatRule(RepeatFrequency.Daily),
-            excludedDates = listOf("2026-10-28"),
         )
-        val exception = Event(
-            id = "override",
-            title = "Moved",
-            date = "2026-10-28",
-            startMinutes = 30,
-            endMinutes = 60,
-            sourceStart = "20261028T003000",
-            sourceEnd = "20261028T010000",
-            timeZoneId = "Asia/Shanghai",
-            seriesUid = series.uid,
-            recurrenceId = "2026-10-28",
-        )
-
-        val rebased = listOf(series, exception).normalizedForZone(TimeZone.UTC)
-
-        assertEquals("2026-10-26", rebased[0].date)
-        assertEquals(listOf("2026-10-27"), rebased[0].excludedDates)
-        assertEquals("2026-10-27", rebased[1].date)
-        assertEquals("2026-10-27", rebased[1].recurrenceId)
-    }
-
-    @Test
-    fun zoneRebaseMovesAppCreatedExceptionsWithItsSeries() {
-        val series = Event(
-            id = "series",
-            title = "Series",
-            date = "2026-10-27",
-            startMinutes = 30,
-            endMinutes = 60,
-            sourceStart = "20261027T003000",
-            sourceEnd = "20261027T010000",
-            timeZoneId = "Asia/Shanghai",
-            repeat = RepeatRule(RepeatFrequency.Daily),
-            excludedDates = listOf("2026-10-28"),
-        )
-        val exception = Event(
-            id = "override",
-            title = "Moved",
-            date = "2026-10-28",
-            startMinutes = 600,
-            endMinutes = 660,
-            seriesUid = series.uid,
-            recurrenceId = "2026-10-28",
-        )
-
-        val rebased = listOf(series, exception).normalizedForZone(TimeZone.UTC)
-
-        assertEquals("2026-10-26", rebased[0].date)
-        assertEquals(listOf("2026-10-27"), rebased[0].excludedDates)
-        assertEquals("2026-10-27", rebased[1].date)
-        assertEquals("2026-10-27", rebased[1].recurrenceId)
-        assertEquals(600, rebased[1].startMinutes)
+        val moved = series.shiftedByDays(2)
+        assertEquals(IcsTimeValue.Zoned(LocalDateTime(2026, 10, 29, 0, 30), "Asia/Shanghai"), moved.start)
+        assertEquals("Asia/Shanghai", moved.timeZoneId)
     }
 
     @Test
@@ -665,7 +617,7 @@ class StateHolderTest {
         val series = f.dailySeries()
         val occurrence = f.holder.today.plusDays(3)
         f.holder.saveEvent(
-            series.copy(title = "Renamed", date = occurrence.toString(), startMinutes = 600, endMinutes = 615),
+            series.copy(title = "Renamed").withTimes(occurrence, 600, 615),
             occurrenceDate = occurrence,
             scope = EditScope.AllEvents,
         )
@@ -681,9 +633,9 @@ class StateHolderTest {
         val f = Fixture()
         val series = f.dailySeries()
         val occurrence = f.holder.today.plusDays(1)
-        f.holder.saveEvent(series.copy(title = "Moved", date = occurrence.toString()), occurrence, EditScope.ThisEvent)
+        f.holder.saveEvent(series.copy(title = "Moved").movedTo(occurrence), occurrence, EditScope.ThisEvent)
         assertEquals(2, f.holder.appState.events.size)
-        f.holder.saveEvent(series.copy(repeat = null, date = occurrence.toString()), occurrence, EditScope.AllEvents)
+        f.holder.saveEvent(series.copy(repeat = null).movedTo(occurrence), occurrence, EditScope.AllEvents)
         val stored = f.holder.appState.events.single()
         assertNull(stored.repeat)
         assertTrue(stored.excludedDates.isEmpty())
@@ -696,7 +648,7 @@ class StateHolderTest {
         val f = Fixture()
         val series = f.dailySeries(count = 5)
         val split = f.holder.today.plusDays(2)
-        f.holder.saveEvent(series.copy(title = "New", date = split.toString()), split, EditScope.ThisAndFuture)
+        f.holder.saveEvent(series.copy(title = "New").movedTo(split), split, EditScope.ThisAndFuture)
         val newSeries = f.holder.appState.events.first { it.id != series.id }
         assertNull(newSeries.repeat?.count)
         assertNull(newSeries.repeat?.until)
@@ -712,7 +664,7 @@ class StateHolderTest {
         val series = f.holder.appState.events.single()
         val occurrence = start.plusDays(7)
         val moved = start.plusDays(2)
-        f.holder.saveEvent(series.copy(title = "Moved", date = moved.toString()), occurrence, EditScope.ThisEvent)
+        f.holder.saveEvent(series.copy(title = "Moved").movedTo(moved), occurrence, EditScope.ThisEvent)
         val override = f.holder.eventsOn(moved).single()
         assertEquals("Moved", override.title)
         assertEquals(occurrence.toString(), override.recurrenceId)
@@ -729,7 +681,7 @@ class StateHolderTest {
         val series = f.holder.appState.events.single()
         val occurrence = start.plusDays(7)
         f.holder.saveEvent(
-            series.copy(title = "Moved", date = start.toString()),
+            series.copy(title = "Moved").movedTo(start),
             occurrence,
             EditScope.ThisEvent,
         )
@@ -750,13 +702,13 @@ class StateHolderTest {
         )
         val series = f.holder.appState.events.single()
         f.holder.saveEvent(
-            series.copy(title = "Moved", date = start.plusDays(2).toString()),
+            series.copy(title = "Moved").movedTo(start.plusDays(2)),
             start.plusDays(1),
             EditScope.ThisEvent,
         )
 
         f.holder.saveEvent(
-            series.copy(title = "Shifted", date = start.plusDays(1).toString()),
+            series.copy(title = "Shifted").movedTo(start.plusDays(1)),
             start,
             EditScope.AllEvents,
         )
@@ -779,7 +731,7 @@ class StateHolderTest {
         val series = f.holder.appState.events.single()
 
         f.holder.saveEvent(
-            series.copy(title = "Moved", date = start.toString()),
+            series.copy(title = "Moved").movedTo(start),
             start.plusDays(3),
             EditScope.AllEvents,
         )
@@ -805,7 +757,7 @@ class StateHolderTest {
         )
         val series = f.holder.appState.events.single()
         f.holder.saveEvent(
-            series.copy(title = "Shifted", date = start.plusDays(1).toString()),
+            series.copy(title = "Shifted").movedTo(start.plusDays(1)),
             start,
             EditScope.AllEvents,
         )
@@ -847,7 +799,7 @@ class StateHolderTest {
         val futureUid = f.holder.appState.events.first { it.title == "Future" }.uid
 
         f.holder.saveEvent(
-            base.copy(title = "Shifted", date = today.plusDays(1).toString()),
+            base.copy(title = "Shifted").movedTo(today.plusDays(1)),
             today,
             EditScope.AllEvents,
         )
@@ -882,10 +834,16 @@ class StateHolderTest {
         assertEquals("Europe/Berlin", renamed.timeZoneId)
         assertEquals("20261027T090000", renamed.sourceStart)
 
-        f.holder.saveEvent(renamed.copy(startMinutes = 11 * 60, endMinutes = 12 * 60))
+        f.holder.saveEvent(
+            renamed.copy(
+                start = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 11, 0), "Europe/Berlin"),
+                end = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 12, 0), "Europe/Berlin"),
+            ),
+        )
         val retimed = f.holder.appState.events.single()
-        assertNull(retimed.timeZoneId)
-        assertNull(retimed.sourceStart)
+        // Editing the wall clock must keep the imported TZID so the next export stays zoned.
+        assertEquals("Europe/Berlin", retimed.timeZoneId)
+        assertEquals("20261027T110000", retimed.sourceStart)
     }
 
     @Test
@@ -909,7 +867,12 @@ class StateHolderTest {
         val occurrence = series.occurrenceStartOn(middle)!!
         assertEquals(start, occurrence)
         f.holder.saveEvent(
-            series.copy(title = "Edited", date = start.toString(), endDate = start.plusDays(2).toString()),
+            series.copy(title = "Edited").withTimes(
+                start,
+                series.startMinutes,
+                series.endMinutes,
+                endDate = start.plusDays(2),
+            ),
             occurrence,
             EditScope.ThisEvent,
         )
@@ -1351,3 +1314,24 @@ class StateHolderTest {
         assertNull(Attachment(binary = true, data = "!!!").decodedBytes())
     }
 }
+
+/** Moves a floating fixture to [date], keeping its wall clock and length. */
+private fun Event.movedTo(date: LocalDate): Event {
+    val delta = start.wallDateTime.date.daysTo(date)
+    return shiftedByDays(delta)
+}
+
+/** Floating fixture at [date] with new wall-clock minutes; end equal to start is zero length. */
+private fun Event.withTimes(
+    date: LocalDate,
+    startMinutes: Int,
+    endMinutes: Int,
+    endDate: LocalDate = date,
+): Event = copy(
+    start = IcsTimeValue.Floating(LocalDateTime(date, LocalTime(startMinutes / 60, startMinutes % 60))),
+    end = if (endDate == date && endMinutes == startMinutes) {
+        null
+    } else {
+        IcsTimeValue.Floating(LocalDateTime(endDate, LocalTime(endMinutes / 60, endMinutes % 60)))
+    },
+)

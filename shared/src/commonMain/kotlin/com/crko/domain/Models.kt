@@ -2,10 +2,14 @@ package com.crko.domain
 
 import com.crko.storage.AppAttachmentStore
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
+import kotlin.time.Duration.Companion.seconds
 
 enum class RepeatFrequency { Daily, Weekly, Monthly, Yearly, Custom }
 
@@ -219,21 +223,11 @@ data class Event(
     /** Null for events that have not been saved yet. */
     val id: String?,
     val title: String,
-    /** The date of the first occurrence, also the anchor for a repeating event. */
-    val date: String,
-    /** Minutes after midnight. */
-    val startMinutes: Int,
-    /** Minutes after midnight. For an event ending at midnight this is 0 and [endDate] is the next day. */
-    val endMinutes: Int,
-    /** Seconds of the start minute, preserved from ICS; the editor still picks whole minutes. */
-    val startSeconds: Int = 0,
-    /** Seconds of the end minute. */
-    val endSeconds: Int = 0,
+    /** RFC 5545 `DTSTART`; the date of the first occurrence and the anchor of a repeating event. */
+    val start: IcsTimeValue,
+    /** RFC 5545 `DTEND`, exclusive. Null means a zero-length timed event. */
+    val end: IcsTimeValue? = null,
     val note: String = "",
-    /** Last day the event touches, inclusive. Null means [date]. */
-    val endDate: String? = null,
-    /** Dates from `VALUE=DATE`; times are ignored. */
-    val allDay: Boolean = false,
     val location: String = "",
     val categories: List<String> = emptyList(),
     val url: String = "",
@@ -250,22 +244,20 @@ data class Event(
     val alarms: List<Alarm> = emptyList(),
     /** Null for a one-off event. */
     val repeat: RepeatRule? = null,
-    /** Dates on which a repeating event is skipped, e.g. a single day cleared from the agenda. */
+    /** Dates on which a repeating event is skipped, as display dates (stage 2 types these). */
     val excludedDates: List<String> = emptyList(),
     /** UID from an imported ICS file; keeps re-importing the same file from duplicating events. */
     val icsUid: String? = null,
     /** UID of the series this event overrides, for a `RECURRENCE-ID` exception. */
     val seriesUid: String? = null,
-    /** Original occurrence date of an exception, ISO-8601. */
+    /** Original occurrence date of an exception, as a display date. */
     val recurrenceId: String? = null,
     /** The exception was imported from `RECURRENCE-ID;RANGE=THISANDFUTURE`. */
     val thisAndFuture: Boolean = false,
-    /** Original ICS local start value, including `Z` for UTC, used to export `TZID` events losslessly. */
-    val sourceStart: String? = null,
-    /** Original ICS local end value. */
-    val sourceEnd: String? = null,
-    val timeZoneId: String? = null,
-    /** Original raw `VTIMEZONE` block when the zone is not known to the platform. */
+    /**
+     * Original raw `VTIMEZONE` block when the zone is not known to the platform. Kept here until
+     * the calendar-level time zone store of stage 3 takes over.
+     */
     val timeZoneDefinition: String? = null,
     /** ISO-8601 instant. */
     val created: String? = null,
@@ -285,23 +277,60 @@ data class Event(
     /** Line of `BEGIN:VEVENT` in the imported file, for pointing feedback at the record. */
     val sourceLine: Int = 0,
 ) {
-    /** Parsed [date], cached because [occursOn] runs for every visible calendar cell. */
-    val day: LocalDate by lazy(LazyThreadSafetyMode.NONE) { LocalDate.parse(date) }
+    /** Display start date of the anchor occurrence in the device zone. */
+    val day: LocalDate get() = start.displayDate(TimeZone.currentSystemDefault())
 
-    /** Last date the event touches; clamped so a stale end date can never precede the start. */
-    val endDay: LocalDate by lazy(LazyThreadSafetyMode.NONE) {
-        // A damaged stored payload can carry an end date that does not parse; treat it as absent
-        // instead of letting every calendar query on this record crash.
-        val parsed = endDate?.takeIf { it.isNotBlank() }?.let(::parseStoredDate)
-        if (parsed != null && parsed > day) parsed else day
-    }
+    /** Display date the event ends on, matching the pre-migration inclusive end-date semantics. */
+    val endDay: LocalDate get() = displayEndDay(TimeZone.currentSystemDefault())
 
-    /** Last date on which the event actually occupies time, treating `00:00` as exclusive. */
-    val lastOccupiedDay: LocalDate
-        get() = if (!allDay && endMinutes == 0 && endDay > day) endDay.plusDays(-1) else endDay
+    /** Display date of the last day on which the event actually occupies time. */
+    val lastOccupiedDay: LocalDate get() = displayLastOccupiedDay(TimeZone.currentSystemDefault())
+
+    /** Wall-clock start date in the event's own zone, the anchor the recurrence rule expands. */
+    val wallDay: LocalDate get() = start.wallDate
 
     /** Stable UID used for series/exception relationships and exports. */
     val uid: String? get() = icsUid?.takeIf { it.isNotBlank() } ?: id?.let { "$it@crko" }
+
+    /*
+     * Read-only views of the pre-migration fields. Nothing here is stored: each value is projected
+     * from [start]/[end] on demand, so display code keeps working while the RFC values stay the
+     * single source of truth.
+     */
+
+    val allDay: Boolean get() = start is IcsTimeValue.Date
+
+    val date: String get() = day.toString()
+
+    val endDate: String? get() = endDay.takeIf { it != day }?.toString()
+
+    val startMinutes: Int
+        get() = if (allDay) 0 else localStart().time.let { it.hour * 60 + it.minute }
+
+    val endMinutes: Int
+        get() {
+            if (allDay) return 0
+            val local = localEnd() ?: return startMinutes
+            return local.time.hour * 60 + local.time.minute
+        }
+
+    val startSeconds: Int get() = if (allDay) 0 else localStart().second
+
+    val endSeconds: Int get() = if (allDay) 0 else localEnd()?.second ?: startSeconds
+
+    /** `TZID` of the start, `UTC` for a UTC value, null for floating/date values. */
+    val timeZoneId: String?
+        get() = when (val value = start) {
+            is IcsTimeValue.Zoned -> value.tzid
+            is IcsTimeValue.Utc -> "UTC"
+            else -> null
+        }
+
+    /** Original ICS local start text (compact form, `Z` for UTC), for legacy call sites. */
+    val sourceStart: String? get() = legacySourceText(start)
+
+    /** Original ICS local end text (compact form, `Z` for UTC), for legacy call sites. */
+    val sourceEnd: String? get() = legacySourceText(end)
 
     /**
      * Rule-generated occurrence days of a `COUNT` series, cached with the rule instance they were
@@ -310,17 +339,116 @@ data class Event(
      */
     internal val countOccurrenceIndex: Pair<RepeatRule, LongArray>? by lazy(LazyThreadSafetyMode.NONE) {
         val rule = repeat ?: return@lazy null
-        val index = buildCountIndex(rule, day) ?: return@lazy null
+        val index = buildCountIndex(rule, wallDay) ?: return@lazy null
         rule to index
     }
+
+    /**
+     * Pre-migration constructor kept for fixtures and the legacy decoder. It converts the former
+     * device-local fields into an RFC time value; new code must pass [start]/[end] instead.
+     */
+    constructor(
+        id: String?,
+        title: String,
+        date: String,
+        startMinutes: Int,
+        endMinutes: Int,
+        startSeconds: Int = 0,
+        endSeconds: Int = 0,
+        note: String = "",
+        endDate: String? = null,
+        allDay: Boolean = false,
+        location: String = "",
+        categories: List<String> = emptyList(),
+        url: String = "",
+        geo: String? = null,
+        attachments: List<Attachment> = emptyList(),
+        status: EventStatus = EventStatus.Confirmed,
+        transparency: EventTransparency = EventTransparency.Opaque,
+        eventClass: EventClass? = null,
+        priority: Int? = null,
+        organizer: String? = null,
+        attendees: List<String> = emptyList(),
+        alarms: List<Alarm> = emptyList(),
+        repeat: RepeatRule? = null,
+        excludedDates: List<String> = emptyList(),
+        icsUid: String? = null,
+        seriesUid: String? = null,
+        recurrenceId: String? = null,
+        thisAndFuture: Boolean = false,
+        sourceStart: String? = null,
+        sourceEnd: String? = null,
+        timeZoneId: String? = null,
+        timeZoneDefinition: String? = null,
+        created: String? = null,
+        lastModified: String? = null,
+        dtStamp: String? = null,
+        sequence: Int = 0,
+        extraProperties: List<String> = emptyList(),
+        organizerRaw: String? = null,
+        attendeeRaw: List<String> = emptyList(),
+        importSource: String? = null,
+        sourceLine: Int = 0,
+    ) : this(
+        id = id,
+        title = title,
+        start = legacyIcsTimeValue(
+            date = date,
+            minutes = startMinutes,
+            seconds = startSeconds,
+            allDay = allDay,
+            source = sourceStart,
+            tzid = timeZoneId,
+            definition = timeZoneDefinition,
+        ),
+        end = legacyEndValue(
+            date = date,
+            endDate = endDate,
+            startMinutes = startMinutes,
+            endMinutes = endMinutes,
+            startSeconds = startSeconds,
+            endSeconds = endSeconds,
+            allDay = allDay,
+            startSource = sourceStart,
+            endSource = sourceEnd,
+            tzid = timeZoneId,
+            definition = timeZoneDefinition,
+        ),
+        note = note,
+        location = location,
+        categories = categories,
+        url = url,
+        geo = geo,
+        attachments = attachments,
+        status = status,
+        transparency = transparency,
+        eventClass = eventClass,
+        priority = priority,
+        organizer = organizer,
+        attendees = attendees,
+        alarms = alarms,
+        repeat = repeat,
+        excludedDates = excludedDates,
+        icsUid = icsUid,
+        seriesUid = seriesUid,
+        recurrenceId = recurrenceId,
+        thisAndFuture = thisAndFuture,
+        timeZoneDefinition = timeZoneDefinition,
+        created = created,
+        lastModified = lastModified,
+        dtStamp = dtStamp,
+        sequence = sequence,
+        extraProperties = extraProperties,
+        organizerRaw = organizerRaw,
+        attendeeRaw = attendeeRaw,
+        importSource = importSource,
+        sourceLine = sourceLine,
+    )
 }
 
 /** RFC 5545: a timed event without `DTEND`/`DURATION` has zero length rather than one hour. */
 val Event.isZeroDuration: Boolean
-    get() = !allDay &&
-        endDay == day &&
-        endMinutes == startMinutes &&
-        endSeconds == startSeconds
+    get() = end == null
 
 /**
  * Latest minute of day an event may end at (23:59). Midnight endings are represented by the next
@@ -408,6 +536,9 @@ data class Journal(
     val sourceLine: Int = 0,
 )
 
+/** Current persisted layout; stage 1 moved event times to [IcsTimeValue]. */
+const val CurrentSchemaVersion = 2
+
 @Serializable
 data class AppState(
     val events: List<Event> = emptyList(),
@@ -417,6 +548,8 @@ data class AppState(
     val subscriptions: List<CalendarSubscription> = emptyList(),
     /** Busy periods imported from `VFREEBUSY` components, kept for free/busy queries. */
     val busyPeriods: List<BusyInterval> = emptyList(),
+    /** Layout version of this payload; older payloads are migrated on read. */
+    val schemaVersion: Int = CurrentSchemaVersion,
 )
 
 val AppJson: Json = Json {
@@ -434,62 +567,93 @@ data class PersistedSettings(
     val agendaScrollHour: Int = -1,
 )
 
-/** Whether this event happens on [date]; repeating events also cover every later matching date. */
-fun Event.occursOn(date: LocalDate): Boolean {
+/** Whether this event happens on [date] in [zone]; repeating events cover every matching date. */
+fun Event.occursOn(
+    date: LocalDate,
+    zone: TimeZone = TimeZone.currentSystemDefault(),
+): Boolean {
     if (repeat == null) return date >= day && date <= lastOccupiedDay
-    return isCoveredByOccurrence(date)
+    return occurrenceStartOn(date, zone) != null
 }
 
-/** The occurrence start whose span covers [date], if any. */
-fun Event.occurrenceStartOn(date: LocalDate): LocalDate? {
-    val rule = repeat ?: return if (occursOn(date)) day else null
-    if (date < day) return null
-    val span = day.daysTo(lastOccupiedDay).coerceAtLeast(0)
-    for (offset in 0..span) {
+/** Display date of the occurrence whose span covers [date], if any. */
+fun Event.occurrenceStartOn(
+    date: LocalDate,
+    zone: TimeZone = TimeZone.currentSystemDefault(),
+): LocalDate? {
+    val anchor = day
+    val rule = repeat ?: return if (date >= anchor && date <= lastOccupiedDay) anchor else null
+    if (date < anchor) return null
+    val span = anchor.daysTo(lastOccupiedDay).coerceAtLeast(0)
+    // A zone projection can move an occurrence by one day, so the window has one extra day of
+    // slack; an occurrence never starts before the anchor itself.
+    for (offset in 0..span + 1) {
         val candidate = date.plusDays(-offset)
-        if (candidate < day) break
-        if (isOccurrenceStart(candidate, rule)) return candidate
+        if (candidate < anchor) break
+        val wall = wallDateFor(candidate, zone)
+        if (!isOccurrenceStart(wall, rule)) continue
+        if (date <= displayLastOccupiedDayOf(candidate, wall, zone)) return candidate
     }
     return null
 }
 
-private fun Event.isCoveredByOccurrence(date: LocalDate): Boolean {
-    val rule = repeat ?: return false
-    val span = day.daysTo(lastOccupiedDay).coerceAtLeast(0)
-    for (offset in 0..span) {
-        val candidate = date.plusDays(-offset)
-        if (candidate < day) break
-        if (isOccurrenceStart(candidate, rule)) return true
+/** Display date on which the occurrence starting on [wallStart] stops occupying time. */
+internal fun Event.displayLastOccupiedDayOf(
+    displayStart: LocalDate,
+    wallStart: LocalDate,
+    zone: TimeZone,
+): LocalDate {
+    if (allDay) return displayStart.plusDays(wallDay.daysTo(wallLastOccupiedDay()))
+    val startInstant = occurrenceStartInstant(wallStart, wallStartTime(), zone)
+    val endInstant = startInstant + occurrenceDurationSeconds.seconds
+    val startLocal = startInstant.toLocalDateTime(zone)
+    val endLocal = endInstant.toLocalDateTime(zone)
+    val last = if (endLocal.date > startLocal.date && endLocal.time == LocalTime(0, 0)) {
+        endLocal.date.plusDays(-1)
+    } else {
+        endLocal.date
     }
-    return false
+    return if (last > displayStart) last else displayStart
 }
 
 /** Events happening on [date], all-day ones first and then ordered by start time. */
-fun List<Event>.occurringOn(date: LocalDate): List<Event> =
-    filter { it.occursOn(date) }.sortedWith(compareBy<Event> { !it.allDay }.thenBy { it.startMinutes })
+fun List<Event>.occurringOn(
+    date: LocalDate,
+    zone: TimeZone = TimeZone.currentSystemDefault(),
+): List<Event> = filter { it.occursOn(date, zone) }
+    .sortedWith(
+        compareBy<Event> { !it.allDay }
+            .thenBy { it.localStart(zone).time.let { time -> time.hour * 60 + time.minute } },
+    )
 
-/** The slice of [event] that falls on [date], clipped to the day. */
-fun Event.timeRangeOn(date: LocalDate): Pair<Int, Int> {
+/** The slice of [event] that falls on [date] in [zone], clipped to the day. */
+fun Event.timeRangeOn(
+    date: LocalDate,
+    zone: TimeZone = TimeZone.currentSystemDefault(),
+): Pair<Int, Int> {
     if (allDay) return 0 to EndOfDayMinutes
-    // A repeating event slices every occurrence by that occurrence's own start; the anchor fields
-    // describe the first one only. Slicing past the occurrence (or an uncovered date) has no
-    // meaningful clip, so the raw range is returned for callers that bypass occursOn.
-    val startDay = repeat?.let { occurrenceStartOn(date) } ?: day
-    if (startDay == null || date < startDay) return startMinutes to endMinutes
-    val offset = startDay.daysTo(date)
-    // A midnight ending occupies the day up to 24:00, so its last occupied day is the one before
-    // the stored end date; every other multi-day event runs to midnight on its non-final days.
-    val endsAtMidnight = endMinutes == 0 && endDay > day
-    val lastOffset = if (endsAtMidnight) day.daysTo(endDay) - 1 else day.daysTo(endDay)
-    if (offset > lastOffset) return startMinutes to endMinutes
-    val start = if (offset == 0) startMinutes else 0
+    // Slicing past the occurrence (or an uncovered date) has no meaningful clip, so the raw range is
+    // returned for callers that bypass occursOn.
+    val displayStart = occurrenceStartOn(date, zone) ?: return startMinutes to endMinutes
+    val startInstant = occurrenceStartInstant(wallDateFor(displayStart, zone), wallStartTime(), zone)
+    val endInstant = startInstant + occurrenceDurationSeconds.seconds
+    val startLocal = startInstant.toLocalDateTime(zone)
+    val endLocal = endInstant.toLocalDateTime(zone)
+    // An end at exactly midnight occupies the previous day through 24:00.
+    val lastDisplay = if (endLocal.date > startLocal.date && endLocal.time == LocalTime(0, 0)) {
+        endLocal.date.plusDays(-1)
+    } else {
+        endLocal.date
+    }
+    if (date > lastDisplay) return startMinutes to endMinutes
+    val start = if (date == startLocal.date) startLocal.hour * 60 + startLocal.minute else 0
     val end = when {
-        offset < lastOffset -> EndOfDayMinutes
-        endsAtMidnight -> EndOfDayMinutes
-        else -> endMinutes
+        date < lastDisplay -> EndOfDayMinutes
+        endLocal.time == LocalTime(0, 0) && lastDisplay != endLocal.date -> EndOfDayMinutes
+        else -> endLocal.hour * 60 + endLocal.minute
     }
     return start to end
 }
 
-/** Whether the event spans more than one calendar day. */
+/** Whether the event spans more than one display day (a midnight end counts as spanning). */
 fun Event.isMultiDay(): Boolean = endDay > day

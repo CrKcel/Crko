@@ -99,8 +99,8 @@ fun List<Event>.busyIntervals(
         val scanStart = maxOf(event.day, firstDay.plusDays(-backOffset))
         var date = scanStart
         while (date <= lastDay) {
-            if (event.occursOn(date)) {
-                val (startMinutes, endMinutes) = event.timeRangeOn(date)
+            if (event.occursOn(date, zone)) {
+                val (startMinutes, endMinutes) = event.timeRangeOn(date, zone)
                 if (endMinutes > startMinutes) {
                     val interval = busyIntervalOf(type, date, startMinutes, endMinutes, zone)
                     // Only periods that really intersect the window are reported, clipped to it.

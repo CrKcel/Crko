@@ -39,6 +39,7 @@ import com.crko.domain.Attachment
 import com.crko.domain.Event
 import com.crko.domain.EventStatus
 import com.crko.domain.EventTransparency
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
@@ -51,6 +52,7 @@ import com.crko.domain.parseRepeatUntil
 import com.crko.domain.plusDays
 import com.crko.domain.safeAttachmentFileName
 import com.crko.domain.startOfWeek
+import com.crko.domain.withDeviceDateTime
 import com.crko.i18n.Strings
 import com.crko.i18n.alarmLabel
 import com.crko.state.EditScope
@@ -59,7 +61,9 @@ import com.crko.ui.icons.AppIcons
 import com.crko.ui.transfer.CalendarFileBridge
 import com.crko.ui.transfer.rememberCalendarFileBridge
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.LocalTime
+import kotlinx.datetime.TimeZone
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
@@ -539,18 +543,39 @@ private fun EventEditorContent(
             val selectedScope = if (canScope) scope else EditScope.AllEvents
             Button(
                 onClick = {
+                    val deviceZone = TimeZone.currentSystemDefault()
+                    val startTime = LocalTime(
+                        start.hour,
+                        start.minute,
+                        if (startMinutes == event.startMinutes) event.startSeconds else 0,
+                    )
+                    val endTime = LocalTime(
+                        end.hour,
+                        end.minute,
+                        if (endMinutes == event.endMinutes) event.endSeconds else 0,
+                    )
+                    val newStart: IcsTimeValue
+                    val newEnd: IcsTimeValue?
+                    if (allDay) {
+                        newStart = IcsTimeValue.Date(date)
+                        newEnd = IcsTimeValue.Date(resolvedEndDate.plusDays(1))
+                    } else {
+                        newStart = event.start.withDeviceDateTime(LocalDateTime(date, startTime), deviceZone)
+                        // Equal wall times on one day mean a zero-length event (no DTEND).
+                        val zeroDuration = resolvedEndDate == date && startTime == endTime
+                        newEnd = if (zeroDuration) {
+                            null
+                        } else {
+                            event.start.withDeviceDateTime(LocalDateTime(resolvedEndDate, endTime), deviceZone)
+                        }
+                    }
                     val saved = onSave(
                         event.copy(
                             id = event.id ?: newId(),
                             title = title,
                             note = note,
-                            date = date.toString(),
-                            allDay = allDay,
-                            startMinutes = startMinutes,
-                            endMinutes = endMinutes,
-                            startSeconds = if (startMinutes == event.startMinutes) event.startSeconds else 0,
-                            endSeconds = if (endMinutes == event.endMinutes) event.endSeconds else 0,
-                            endDate = resolvedEndDate.takeIf { it != date }?.toString(),
+                            start = newStart,
+                            end = newEnd,
                             location = location,
                             categories = categories.split(',', '，').map { it.trim() }.filter { it.isNotEmpty() },
                             url = url,

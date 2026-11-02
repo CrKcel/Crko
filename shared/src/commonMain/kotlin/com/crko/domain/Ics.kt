@@ -8,6 +8,7 @@ import kotlinx.datetime.number
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 import com.crko.storage.AppAttachmentStore
@@ -195,12 +196,17 @@ fun exportCalendar(
     // while clients can resolve the TZID themselves.
     val zones = mutableMapOf<String, String>()
     events.forEach { event ->
-        val id = event.timeZoneId ?: return@forEach
-        if (id.equals("UTC", ignoreCase = true) || id in zones) return@forEach
-        val definition = event.timeZoneDefinition?.takeIf { it.isNotBlank() } ?: return@forEach
-        // The block has to declare the very id the properties reference: import normalises away a
-        // leading "/" (a Microsoft convention), so the verbatim text can differ from [id].
-        zones[id] = rewriteDeclaredZoneId(normalizeComponent(definition), id)
+        listOfNotNull(event.start, event.end).forEach { value ->
+            if (value !is IcsTimeValue.Zoned) return@forEach
+            val id = value.tzid
+            if (id.equals("UTC", ignoreCase = true) || id in zones) return@forEach
+            val definition = value.definition?.takeIf { it.isNotBlank() }
+                ?: event.timeZoneDefinition?.takeIf { it.isNotBlank() }
+                ?: return@forEach
+            // The block has to declare the very id the properties reference: import normalises away
+            // a leading "/" (a Microsoft convention), so the verbatim text can differ from [id].
+            zones[id] = rewriteDeclaredZoneId(normalizeComponent(definition), id)
+        }
     }
     zones.forEach { (_, definition) ->
         definition.trimEnd().split(Regex("\\r?\\n")).forEach { line(it) }
@@ -448,193 +454,14 @@ fun exportItipReply(
         event.organizer?.let { if (it.isNotBlank()) line("ORGANIZER:${sanitizeUriValue(it)}") }
     }
     line(attendee.toLine())
-    if (event.recurrenceId != null) {
-        if (event.allDay) {
-            parseDateText(event.recurrenceId)?.let { line("RECURRENCE-ID;VALUE=DATE:${formatDate(it)}") }
-        } else {
-            val zoneParam = event.timeZoneId
-                ?.takeIf { it.isNotBlank() && !it.equals("UTC", ignoreCase = true) }
-                ?.let { id -> if (event.sourceStart?.endsWith("Z", ignoreCase = true) == true) "" else ";TZID=$id" }
-                .orEmpty()
-            val value = buildRecurrenceValue(
-                event.recurrenceId.orEmpty(),
-                event.startMinutes,
-                event.startSeconds,
-                event.sourceStart,
-                event.timeZoneId,
-            )
-            line("RECURRENCE-ID$zoneParam:$value")
+    event.recurrenceId?.let { recurrenceId ->
+        parseDateText(recurrenceId)?.let { date ->
+            appendTimeLine("RECURRENCE-ID", event.start.withWallDate(event.wallDateFor(date)))
         }
     }
-    if (event.allDay) {
-        line("DTSTART;VALUE=DATE:${formatDate(event.day)}")
-    } else {
-        appendTimedStart("DTSTART", event, event.date, event.startMinutes, event.startSeconds)
-    }
+    appendTimeLine("DTSTART", event.start)
     line("END:VEVENT")
     line("END:VCALENDAR")
-}
-
-/**
- * Recomputes locally stored wall-clock fields from the preserved ICS source when the device zone
- * changed since import. Idempotent; events without a source time (`sourceStart`) are returned as-is.
- *
- * [recurrenceIdShift] is used for exceptions: their `RECURRENCE-ID` belongs to the parent series, so
- * it has to move with the series anchor rather than with the exception's own (possibly moved) date.
- */
-fun Event.normalizedForZone(
-    deviceZone: TimeZone,
-    recurrenceIdShift: Int? = null,
-): Event {
-    // Exceptions created in this app have no source text, but they still belong to the imported
-    // series. Shift them with the parent so they do not stay on the old day and double-book the
-    // shifted occurrence.
-    if (allDay) {
-        return if (seriesUid != null && recurrenceIdShift != null) {
-            shiftedByDays(recurrenceIdShift)
-        } else {
-            this
-        }
-    }
-    val startText = sourceStart
-    if (startText == null) {
-        return if (seriesUid != null && recurrenceIdShift != null) {
-            shiftedByDays(recurrenceIdShift)
-        } else {
-            this
-        }
-    }
-    val zone = resolveZone(timeZoneId, timeZoneDefinition) ?: return this
-    val startLocal = parseSourceLocal(startText) ?: return this
-    val startDateTime = zone.toInstant(startLocal).toLocalDateTime(deviceZone)
-    val endDateText = endDate
-    val endDateTime = when {
-        sourceEnd != null -> parseSourceLocal(sourceEnd)
-            ?.let { zone.toInstant(it) }?.toLocalDateTime(deviceZone)
-        endDateText != null -> {
-            val endDateParsed = runCatching { LocalDate.parse(endDateText) }.getOrNull()
-            if (endDateParsed != null) {
-                val minutes = endMinutes
-                val endLocal = LocalDateTime(endDateParsed, LocalTime(minutes / 60, minutes % 60))
-                zone.toInstant(endLocal).toLocalDateTime(deviceZone)
-            } else {
-                null
-            }
-        }
-        else -> null
-    }
-    val newEndDate = endDateTime?.date?.toString()
-    val newEndMinutes = endDateTime?.time?.let { it.hour * 60 + it.minute } ?: endMinutes
-    val wasZeroDuration = sourceEnd == null && endDateText == null &&
-        endMinutes == startMinutes && endSeconds == startSeconds
-    val newStartMinutes = startDateTime.time.hour * 60 + startDateTime.time.minute
-    val newStartSeconds = startDateTime.time.second
-    // Occurrence dates in excludedDates/RDATE move with the anchor; shift them by the same day so a
-    // zone change that crosses midnight does not leave skips and extra dates on the wrong day.
-    val dateShift = day.daysTo(startDateTime.date)
-    fun shiftDate(text: String, days: Int): String? =
-        runCatching { LocalDate.parse(text) }.getOrNull()?.plusDays(days)?.toString()
-    val shiftedRepeat = if (repeat == null || dateShift == 0) {
-        repeat
-    } else {
-        repeat.copy(
-            until = repeat.until?.let { until ->
-                val parsed = parseRepeatUntil(until)
-                if (parsed != null && parsed.instant == null && parsed.localDateTime == null) {
-                    parsed.date.plusDays(dateShift).toString()
-                } else {
-                    until
-                }
-            },
-            rDates = repeat.rDates.mapNotNull { shiftDate(it, dateShift) },
-        )
-    }
-    val shiftedExclusions = if (dateShift == 0) {
-        excludedDates
-    } else {
-        excludedDates.mapNotNull { shiftDate(it, dateShift) }
-    }
-    val shiftedRecurrenceId = recurrenceId?.let { id ->
-        shiftDate(id, recurrenceIdShift ?: dateShift) ?: id
-    }
-    return copy(
-        date = startDateTime.date.toString(),
-        startMinutes = newStartMinutes,
-        endMinutes = if (wasZeroDuration) newStartMinutes else newEndMinutes,
-        startSeconds = newStartSeconds,
-        endSeconds = if (wasZeroDuration) newStartSeconds else endDateTime?.time?.second ?: endSeconds,
-        endDate = newEndDate,
-        repeat = shiftedRepeat,
-        excludedDates = shiftedExclusions,
-        recurrenceId = shiftedRecurrenceId,
-    )
-}
-
-/** Day offset a zone change applies to [this] event's local start date, or 0 when unresolved. */
-internal fun Event.zoneRebaseShift(deviceZone: TimeZone): Int {
-    if (allDay) return 0
-    val startText = sourceStart ?: return 0
-    val zone = resolveZone(timeZoneId, timeZoneDefinition) ?: return 0
-    val startLocal = parseSourceLocal(startText) ?: return 0
-    return day.daysTo(zone.toInstant(startLocal).toLocalDateTime(deviceZone).date)
-}
-
-/**
- * Recomputes every event together so exceptions follow the date shift of their parent series. A
- * moved exception may shift by a different number of days than its series, but its
- * `RECURRENCE-ID` must always use the series shift.
- */
-fun List<Event>.normalizedForZone(deviceZone: TimeZone): List<Event> {
-    if (isEmpty()) return this
-    val seriesShifts = buildMap {
-        this@normalizedForZone.forEach { event ->
-            val uid = event.uid ?: return@forEach
-            if (uid !in this) put(uid, event.zoneRebaseShift(deviceZone))
-        }
-    }
-    return map { event ->
-        val shift = event.seriesUid?.let(seriesShifts::get) ?: event.zoneRebaseShift(deviceZone)
-        event.normalizedForZone(deviceZone, recurrenceIdShift = shift)
-    }
-}
-
-private fun shiftIcsDate(text: String, days: Int): String? =
-    runCatching { LocalDate.parse(text) }.getOrNull()?.plusDays(days)?.toString()
-
-private fun shiftIcsUntil(text: String, days: Int): String? {
-    val parsed = parseRepeatUntil(text) ?: return text
-    return when {
-        parsed.instant != null ->
-            Instant.fromEpochSeconds(parsed.instant.epochSeconds + days * 86_400L).toString()
-        parsed.localDateTime != null -> LocalDateTime(
-            parsed.localDateTime.date.plusDays(days),
-            parsed.localDateTime.time,
-        ).toString()
-        else -> parsed.date.plusDays(days).toString()
-    }
-}
-
-/** Shifts every date belonging to [this] event, keeping its wall-clock time. */
-private fun Event.shiftedByDays(days: Int): Event {
-    if (days == 0) return this
-    val newDay = day.plusDays(days)
-    val newEnd = endDay.plusDays(days)
-    return copy(
-        date = newDay.toString(),
-        endDate = newEnd.takeIf { it != newDay }?.toString(),
-        excludedDates = excludedDates.mapNotNull { shiftIcsDate(it, days) },
-        recurrenceId = recurrenceId?.let { shiftIcsDate(it, days) ?: it },
-        repeat = repeat?.let { rule ->
-            rule.copy(
-                until = rule.until?.let { shiftIcsUntil(it, days) },
-                rDates = rule.rDates.mapNotNull { shiftIcsDate(it, days) },
-            )
-        },
-        sourceStart = null,
-        sourceEnd = null,
-        timeZoneId = null,
-        timeZoneDefinition = null,
-    )
 }
 
 private fun StringBuilder.line(value: String) {
@@ -666,34 +493,16 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     if (!event.thisAndFuture && series != null) {
         event.recurrenceId?.let { recurrenceIdDate ->
             // The value type follows the master series' DTSTART, not the exception's own DTSTART.
-            if (series.allDay) {
-                val date = parseDateText(recurrenceIdDate)
-                if (date != null) line("RECURRENCE-ID;VALUE=DATE:${formatDate(date)}")
-            } else {
-                val seriesStartMinutes = series.startMinutes
-                val seriesSource = series.sourceStart
-                val seriesZone = series.timeZoneId
-                val zoneParam = if (seriesSource?.endsWith("Z", ignoreCase = true) != true && seriesZone != null) {
-                    if (seriesZone.equals("UTC", ignoreCase = true)) "" else ";TZID=$seriesZone"
-                } else {
-                    ""
-                }
-                val value = buildRecurrenceValue(recurrenceIdDate, seriesStartMinutes, series.startSeconds, seriesSource, seriesZone)
-                line("RECURRENCE-ID$zoneParam:$value")
+            val date = parseDateText(recurrenceIdDate)
+            if (date != null) {
+                appendTimeLine("RECURRENCE-ID", series.start.withWallDate(series.wallDateFor(date)))
             }
         }
     }
 
-    if (event.allDay) {
-        line("DTSTART;VALUE=DATE:${formatDate(event.day)}")
-        line("DTEND;VALUE=DATE:${formatDate(event.endDay.plusDays(1))}")
-    } else {
-        appendTimedStart("DTSTART", event, event.date, event.startMinutes, event.startSeconds)
-        // RFC 5545 represents a zero-length timed event by leaving out DTEND/DURATION.
-        if (!event.isZeroDuration) {
-            appendTimedStart("DTEND", event, event.endDay.toString(), event.endMinutes, event.endSeconds)
-        }
-    }
+    appendTimeLine("DTSTART", event.start)
+    // RFC 5545 represents a zero-length timed event by leaving out DTEND/DURATION.
+    event.end?.let { appendTimeLine("DTEND", it) }
 
     line("SUMMARY:${escapeText(event.title)}")
     if (event.note.isNotBlank()) line("DESCRIPTION:${escapeText(event.note)}")
@@ -747,28 +556,19 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     line("END:VEVENT")
 }
 
-private fun StringBuilder.appendTimedStart(property: String, event: Event, dateText: String, minutes: Int, seconds: Int) {
-    val sourceValue = when (property) {
-        "DTSTART" -> event.sourceStart
-        else -> event.sourceEnd
-    }
-    val zone = event.timeZoneId
-    // A series must not mix an absolute DTSTART with a floating DTEND (RFC 5545 forbids it), so a
-    // missing end source is written in the zone the start already uses.
-    val startUsesTzid = zone != null &&
-        !zone.equals("UTC", ignoreCase = true) &&
-        event.sourceStart != null &&
-        !event.sourceStart.endsWith("Z", ignoreCase = true)
-    when {
-        sourceValue != null && sourceValue.endsWith("Z", ignoreCase = true) ->
-            line("$property:$sourceValue")
-        sourceValue != null && zone != null ->
-            line("$property;TZID=$zone:$sourceValue")
-        sourceValue != null ->
-            line("$property:$sourceValue")
-        startUsesTzid ->
-            line("$property;TZID=$zone:${formatDateTime(LocalDate.parse(dateText), minutes, seconds)}")
-        else -> line("$property:${formatDateTime(LocalDate.parse(dateText), minutes, seconds)}")
+/** Writes [value] as the property [name], in the value type its RFC time value declares. */
+internal fun StringBuilder.appendTimeLine(name: String, value: IcsTimeValue) {
+    when (value) {
+        is IcsTimeValue.Date -> line("$name;VALUE=DATE:${formatDate(value.date)}")
+        is IcsTimeValue.Floating -> line("$name:${formatIcsLocalDateTime(value.dateTime, utc = false)}")
+        is IcsTimeValue.Zoned -> {
+            if (value.tzid.equals("UTC", ignoreCase = true)) {
+                line("$name:${formatUtc(value.dateTime.toInstant(TimeZone.UTC))}")
+            } else {
+                line("$name;TZID=${value.tzid}:${formatIcsLocalDateTime(value.dateTime, utc = false)}")
+            }
+        }
+        is IcsTimeValue.Utc -> line("$name:${formatUtc(value.instant)}")
     }
 }
 
@@ -893,10 +693,9 @@ private fun StringBuilder.appendTodoExDate(todo: Todo, rule: RepeatRule) {
 
 private fun StringBuilder.appendRDate(event: Event, rule: RepeatRule) {
     if (rule.rDates.isEmpty()) return
-    val values = rule.rDates.mapNotNull(::parseDateText).sorted().map { date ->
-        formatOccurrenceValue(date, event)
-    }
-    if (values.isNotEmpty()) line("RDATE${occurrenceParameter(event)}:${values.joinToString(",")}")
+    val values = rule.rDates.mapNotNull(::parseDateText).sorted()
+        .map { date -> formatOccurrenceValue(event.wallDateFor(date), event.start) }
+    if (values.isNotEmpty()) line("RDATE${occurrenceParameter(event.start)}:${values.joinToString(",")}")
 }
 
 private fun StringBuilder.appendExDate(event: Event) {
@@ -906,41 +705,24 @@ private fun StringBuilder.appendExDate(event: Event) {
     val values = event.excludedDates
         .distinct()
         .sorted()
-        .mapNotNull { parseDateText(it) }
+        .mapNotNull(::parseDateText)
         .filter { date -> probe.occurrenceStartOn(date)?.let { it == date } == true }
-        .map { date -> formatOccurrenceValue(date, event) }
-    if (values.isNotEmpty()) line("EXDATE${occurrenceParameter(event)}:${values.joinToString(",")}")
+        .map { date -> formatOccurrenceValue(event.wallDateFor(date), event.start) }
+    if (values.isNotEmpty()) line("EXDATE${occurrenceParameter(event.start)}:${values.joinToString(",")}")
 }
 
-private fun occurrenceParameter(event: Event): String {
-    if (event.allDay) return ";VALUE=DATE"
-    if (event.sourceStart?.endsWith("Z", ignoreCase = true) == true) return ""
-    val id = event.timeZoneId ?: return ""
-    return if (id.equals("UTC", ignoreCase = true)) "" else ";TZID=$id"
+private fun occurrenceParameter(start: IcsTimeValue): String = when (start) {
+    is IcsTimeValue.Date -> ";VALUE=DATE"
+    is IcsTimeValue.Zoned -> if (start.tzid.equals("UTC", ignoreCase = true)) "" else ";TZID=${start.tzid}"
+    else -> ""
 }
 
-private fun formatOccurrenceValue(date: LocalDate, event: Event): String {
-    if (event.allDay) return formatDate(date)
-    val sourceTime = event.sourceStart?.substringAfter('T', "")?.take(6)
-    return buildString {
-        append(formatDate(date))
-        append('T')
-        append(sourceTime?.takeIf { it.length == 6 } ?: formatTime(event.startMinutes, event.startSeconds))
-        if (event.sourceStart?.endsWith("Z", ignoreCase = true) == true) append('Z')
-    }
-}
-
-private fun buildRecurrenceValue(
-    dateText: String,
-    startMinutes: Int,
-    startSeconds: Int,
-    source: String?,
-    zoneId: String?,
-): String {
-    val date = parseDateText(dateText) ?: return dateText
-    val time = source?.substringAfter('T', "")?.take(6)?.takeIf { it.length == 6 }
-        ?: formatTime(startMinutes, startSeconds)
-    return "${formatDate(date)}T$time" + if (source?.endsWith("Z", ignoreCase = true) == true) "Z" else ""
+private fun formatOccurrenceValue(date: LocalDate, start: IcsTimeValue): String = when (start) {
+    is IcsTimeValue.Date -> formatDate(date)
+    is IcsTimeValue.Floating -> formatIcsLocalDateTime(LocalDateTime(date, start.dateTime.time), utc = false)
+    is IcsTimeValue.Zoned -> formatIcsLocalDateTime(LocalDateTime(date, start.dateTime.time), utc = false)
+    is IcsTimeValue.Utc ->
+        formatUtc(LocalDateTime(date, start.instant.toLocalDateTime(TimeZone.UTC).time).toInstant(TimeZone.UTC))
 }
 
 /**
@@ -981,20 +763,22 @@ private fun ruleValue(rule: RepeatRule, formatUntil: (String) -> String?): Strin
 
 private fun formatUntil(untilText: String, event: Event): String? {
     val until = parseRepeatUntil(untilText) ?: return null
-    if (event.allDay) return formatDate(until.localDate())
+    if (event.start is IcsTimeValue.Date) return formatDate(until.localDate())
     until.instant?.let { return formatUtc(it) }
     until.localDateTime?.let { return formatIcsLocalDateTime(it, utc = false) }
     // Date-only UNTIL: the last occurrence on that date at the event's own wall-clock time.
-    val eventZone = resolveZone(event.timeZoneId, event.timeZoneDefinition)
-    val wallTime = event.sourceStart
-        ?.let(::parseSourceLocal)
-        ?.time
-        ?: LocalTime(event.startMinutes / 60, event.startMinutes % 60, event.startSeconds)
-    val last = LocalDateTime(until.date, wallTime)
-    return if (eventZone == null || eventZone is IcsZone.Floating) {
-        formatIcsLocalDateTime(last, utc = false)
-    } else {
-        formatUtc(eventZone.toInstant(last))
+    val last = LocalDateTime(until.date, event.start.wallDateTime.time)
+    return when (val start = event.start) {
+        is IcsTimeValue.Zoned -> {
+            val zone = resolveZone(start.tzid, start.definition)
+            if (zone == null || zone is IcsZone.Floating) {
+                formatIcsLocalDateTime(last, utc = false)
+            } else {
+                formatUtc(zone.toInstant(last))
+            }
+        }
+        is IcsTimeValue.Utc -> formatUtc(last.toInstant(TimeZone.UTC))
+        else -> formatIcsLocalDateTime(last, utc = false)
     }
 }
 
@@ -1255,6 +1039,18 @@ private fun resolveZone(tzid: String?, definition: String?): IcsZone? = when {
                 ?.let { IcsZone.Custom(it) }
         }
 }
+
+/** Platform zone a stored `TZID` resolves to, or null when only a custom definition knows it. */
+internal fun resolveIcsZoneOrNull(tzid: String, definition: String?): TimeZone? =
+    when (val zone = resolveZone(tzid, definition)) {
+        is IcsZone.Platform -> zone.zone
+        IcsZone.Utc -> TimeZone.UTC
+        else -> null
+    }
+
+/** Absolute instant of a value whose zone may only exist in a stored raw `VTIMEZONE`. */
+internal fun customZoneInstantOrNull(dateTime: LocalDateTime, tzid: String, definition: String?): Instant? =
+    resolveZone(tzid, definition)?.toInstant(dateTime)
 
 /** The zone a calendar declares for values without a `TZID`, if any. */
 private fun calendarFloatingZone(
@@ -1834,6 +1630,12 @@ private fun IcsTime.localDate(deviceZone: TimeZone): LocalDate = when (this) {
     is IcsTime.DateTime -> localDateTime(deviceZone).date
 }
 
+/** Date the calendar file itself names, independent of the device zone. */
+private fun IcsTime.localWallDate(): LocalDate = when (this) {
+    is IcsTime.AllDay -> date
+    is IcsTime.DateTime -> value.date
+}
+
 private fun IcsTime.localMinutes(deviceZone: TimeZone): Int? = when (this) {
     is IcsTime.AllDay -> null
     is IcsTime.DateTime -> localDateTime(deviceZone).time.let { it.hour * 60 + it.minute }
@@ -1977,7 +1779,6 @@ private fun mapSeries(
         val overrideRepeat = mapRule(
             override.rule,
             override.start ?: override.recurrenceId,
-            deviceZone,
             override.rDates,
             warnings,
         )
@@ -2047,7 +1848,7 @@ private fun mapSeries(
         splitDate?.plusDays(-1),
         cancelledFutureDate?.plusDays(-1),
     ).minOrNull()
-    val seriesDuration = series.day.daysTo(series.endDay) * 1440 + series.endMinutes - series.startMinutes
+    val seriesDuration = (series.occurrenceDurationSeconds / 60).toInt()
     // An RDATE PERIOD carries its own length. The single-duration model keeps it in the series only
     // when it matches, so differing periods become one-off events instead of silently changing.
     val periodRdates = if (base.rule == null) {
@@ -2125,16 +1926,11 @@ private fun mapPriorSplit(
         count = null,
         rDates = series.repeat.rDates.filter { parseDateText(it)?.let { date -> date <= priorRid } == true },
     )
-    val span = prior.day.daysTo(prior.endDay)
-    // The source text describes the exception slot, not the series anchor, so the date part has to
-    // move to the anchor. The override governs every past occurrence, which keeps its own wall time
-    // and zone: dropping them made the next export fall back to floating time.
+    // The override governs every past occurrence; the anchor moves from the overridden slot back to
+    // the series start while the override's own time of day and zone are kept.
     val pastDelta = priorRid.daysTo(series.day)
-    val pastStart = prior.sourceStart?.let { rewriteSourceDate(it, series.day) }
-    val past = prior.copy(
+    val past = prior.shiftedByDays(pastDelta).copy(
         id = null,
-        date = series.day.toString(),
-        endDate = series.day.plusDays(span).takeIf { span != 0 }?.toString(),
         repeat = pastRepeat,
         excludedDates = (series.excludedDates.filter { parseDateText(it)?.let { date -> date <= priorRid } == true } + cancelledBefore)
             .distinct()
@@ -2143,10 +1939,7 @@ private fun mapPriorSplit(
         recurrenceId = null,
         thisAndFuture = false,
         icsUid = pastUid,
-        sourceStart = pastStart,
-        sourceEnd = shiftSourceDate(prior.sourceEnd, pastDelta).takeIf { pastStart != null },
-        timeZoneId = prior.timeZoneId.takeIf { pastStart != null },
-        timeZoneDefinition = prior.timeZoneDefinition.takeIf { pastStart != null },
+        timeZoneDefinition = prior.timeZoneDefinition ?: series.timeZoneDefinition,
         created = series.created,
         lastModified = prior.lastModified ?: series.lastModified,
         sequence = prior.sequence,
@@ -2161,16 +1954,10 @@ private fun mapPriorSplit(
                 rDates = rule.rDates.filter { parseDateText(it)?.let { date -> date >= start } == true },
             )
         }
-        val futureSpan = series.day.daysTo(series.endDay)
         val cancelledAfter = overridesAfter.filter { (_, override) -> override.isCancelled() }
             .map { it.first.toString() }
-        // The anchor moved to a later occurrence, so the original DTSTART text no longer applies.
-        // The future occurrences keep the series' wall time and zone, so only the date part is
-        // rewritten; clearing the source here used to degrade the next export to floating time.
-        val futureStart = series.sourceStart?.let { rewriteSourceDate(it, start) }
-        series.copy(
-            date = start.toString(),
-            endDate = start.plusDays(futureSpan).takeIf { futureSpan != 0 }?.toString(),
+        // The anchor moves to a later occurrence; wall time and zone stay those of the series.
+        series.shiftedByDays(series.day.daysTo(start)).copy(
             repeat = futureRule,
             excludedDates = (series.excludedDates.filter { parseDateText(it)?.let { date -> date > priorRid } == true } + cancelledAfter)
                 .distinct(),
@@ -2178,10 +1965,7 @@ private fun mapPriorSplit(
             recurrenceId = null,
             thisAndFuture = false,
             icsUid = uid,
-            sourceStart = futureStart,
-            sourceEnd = shiftSourceDate(series.sourceEnd, series.day.daysTo(start)).takeIf { futureStart != null },
-            timeZoneId = series.timeZoneId.takeIf { futureStart != null },
-            timeZoneDefinition = series.timeZoneDefinition.takeIf { futureStart != null },
+            timeZoneDefinition = series.timeZoneDefinition,
         )
     }
 
@@ -2220,8 +2004,9 @@ private fun nextOccurrenceAfter(event: Event, after: LocalDate): LocalDate? {
     var guard = 0
     val untilDate = rule.until?.let(::parseRepeatUntil)?.localDate()
     while (guard < 100_000) {
-        if (untilDate != null && cursor > untilDate) return null
-        if (event.isOccurrenceStart(cursor, rule)) return cursor
+        val wallCursor = event.wallDateFor(cursor)
+        if (untilDate != null && wallCursor > untilDate) return null
+        if (event.isOccurrenceStart(wallCursor, rule)) return cursor
         cursor = cursor.plusDays(1)
         guard++
     }
@@ -2240,36 +2025,15 @@ private fun rDateEvent(
     deviceZone: TimeZone,
     seriesDuration: Int,
 ): Event {
-    val date = time.localDate(deviceZone)
+    val start = time.toValue(series.timeZoneDefinition)
     val duration = (time as? IcsTime.DateTime)?.periodMinutes ?: seriesDuration
-    val copy = if (series.allDay) {
-        val span = duration / (24 * 60)
-        series.copy(
-            date = date.toString(),
-            endDate = date.plusDays(span).takeIf { span != 0 }?.toString(),
-        )
-    } else {
-        val sourceTime = time.localDateTime(deviceZone).time
-        val startMinutes = sourceTime.hour * 60 + sourceTime.minute
-        val endTotal = date.toEpochDays() * 1440L + startMinutes + duration
-        val endDate = LocalDate.fromEpochDays(endTotal.floorDiv(1440L))
-        val endMinutes = endTotal.mod(1440L).toInt()
-        series.copy(
-            date = date.toString(),
-            startMinutes = startMinutes,
-            endMinutes = endMinutes,
-            startSeconds = sourceTime.second,
-            endDate = endDate.takeIf { it != date }?.toString(),
-        )
-    }
-    return copy.copy(
+    return series.copy(
+        start = start,
+        end = if (duration > 0) start.plusDuration(duration.minutes, deviceZone) else null,
         repeat = null,
         excludedDates = emptyList(),
         icsUid = "$uid#rdate-$index",
-        sourceStart = null,
-        sourceEnd = null,
-        timeZoneId = null,
-        timeZoneDefinition = null,
+        timeZoneDefinition = if (start is IcsTimeValue.Zoned) series.timeZoneDefinition else null,
     )
 }
 
@@ -2304,17 +2068,17 @@ private fun countOccurrencesBefore(event: Event, before: LocalDate): Int {
     // Splits always happen on an occurrence, so the ordinal is usually computable without walking
     // every day from a decades-old anchor.
     if (probe.isOccurrenceStart(before, rule)) {
-        occurrenceOrdinal(rule, event.day, before, rule.count)?.let { return (it - 1).coerceAtLeast(0) }
+        occurrenceOrdinal(rule, event.wallDay, before, rule.count)?.let { return (it - 1).coerceAtLeast(0) }
     }
     var count = 0
-    var cursor = event.day
+    var cursor = event.wallDay
     val limit = rule.count ?: Int.MAX_VALUE
     val untilDate = rule.until?.let(::parseRepeatUntil)?.localDate()
     while (cursor < before && count < limit) {
         if (untilDate != null && cursor > untilDate) break
         if (probe.isOccurrenceStart(cursor, rule)) count++
         cursor = cursor.plusDays(1)
-        if (event.day.daysTo(cursor) > 100_000) break
+        if (event.wallDay.daysTo(cursor) > 100_000) break
     }
     return count
 }
@@ -2325,121 +2089,24 @@ private fun mapSingle(
     untitledTitle: String,
     zones: Map<String, CustomZone>,
     warnings: MutableSet<IcsWarning>,
-    repeat: RepeatRule? = mapRule(raw.rule, raw.start, deviceZone, raw.rDates, warnings),
+    repeat: RepeatRule? = mapRule(raw.rule, raw.start, raw.rDates, warnings),
 ): Event? {
-    val start = raw.start ?: raw.recurrenceId
-    if (start == null) {
+    val parsedStart = raw.start ?: raw.recurrenceId
+    if (parsedStart == null) {
         // Saying only "invalid value" left the user with no way to find the record that vanished.
         warnings += IcsWarning.MissingStart
         return null
     }
     val title = raw.summary.ifBlank { untitledTitle }
-    val uid = raw.uid
-    val allDay = start is IcsTime.AllDay
-    val startLocal = start.localDateTime(deviceZone)
-    val startTimed = (start as? IcsTime.DateTime)?.takeIf { it.zone !is IcsZone.Floating }
-    val endTimed = (raw.end as? IcsTime.DateTime)?.takeIf { it.zone !is IcsZone.Floating }
-    val sourceStart = startTimed?.source
-    val sourceEnd = endTimed?.source
-    val timeZoneId = startTimed?.let { timed ->
-        when (val zone = timed.zone) {
-            IcsZone.Utc -> "UTC"
-            else -> zone.id
-        }
-    }
-
-    if (allDay) {
-        val endExclusive = when (val end = raw.end) {
-            is IcsTime.AllDay -> if (end.date > start.date) end.date else start.date.plusDays(1)
-            is IcsTime.DateTime -> end.localDate(deviceZone).takeIf { it > start.date } ?: start.date.plusDays(1)
-            null -> raw.durationMinutes?.let { minutes ->
-                start.date.plusDays((minutes / (24 * 60)).coerceAtLeast(1))
-            } ?: start.date.plusDays(1)
-        }
-        val endInclusive = if (endExclusive > start.date) endExclusive.plusDays(-1) else start.date
-        val exclusions = mappedExclusions(raw, deviceZone, allDay = true, startMinutes = 0, warnings = warnings)
-        return Event(
-            id = null,
-            title = title,
-            date = start.date.toString(),
-            startMinutes = 0,
-            endMinutes = 0,
-            startSeconds = 0,
-            endSeconds = 0,
-            note = raw.description,
-            endDate = endInclusive.takeIf { it != start.date }?.toString(),
-            allDay = true,
-            location = raw.location,
-            categories = raw.categories,
-            url = raw.url,
-            geo = raw.geo,
-            attachments = raw.attachments,
-            status = rawStatus(raw.status),
-            transparency = rawTransparency(raw.transparency),
-            eventClass = rawClass(raw.eventClass),
-            priority = raw.priority,
-            organizer = raw.organizer,
-            attendees = raw.attendees,
-            organizerRaw = raw.organizerRaw,
-            attendeeRaw = raw.attendeeRaw,
-            alarms = raw.alarms.map { it.toAlarm() },
-            repeat = repeat,
-            excludedDates = exclusions,
-            icsUid = uid,
-            timeZoneDefinition = raw.timeZoneDefinition,
-            created = raw.created,
-            lastModified = raw.lastModified,
-            dtStamp = raw.dtStamp,
-            sequence = raw.sequence,
-            extraProperties = raw.extraProperties,
-            sourceLine = raw.lineNumber,
-        )
-    }
-
-    val endLocal = when {
-        raw.end != null -> raw.end.localDateTime(deviceZone)
-        raw.durationMinutes != null -> startLocal.plusMinutes(raw.durationMinutes)
-        // RFC 5545: no DTEND and no DURATION means the event has zero length.
-        else -> startLocal
-    }
-    val safeStart = startLocal
-    val safeEnd = if (endLocal >= safeStart) endLocal else safeStart
-    val exclusions = mappedExclusions(
-        raw,
-        deviceZone,
-        allDay = false,
-        startMinutes = safeStart.time.hour * 60 + safeStart.time.minute,
-        warnings = warnings,
-    )
-    val eventEndSource = when {
-        // `source` is non-null, so `startTimed == null` is exactly `sourceStart == null`; checking
-        // startTimed directly lets the compiler smart-cast it below instead of a redundant `?.`.
-        startTimed == null -> null
-        sourceEnd != null -> sourceEnd
-        else -> {
-            // The end had no source text (it was floating or absent). Measure it against the start's
-            // own wall clock, not against the device-local conversion of a zoned start.
-            val startWall = (raw.start as? IcsTime.DateTime)?.value ?: startLocal
-            val endWall = (raw.end as? IcsTime.DateTime)?.value ?: endLocal
-            val duration = raw.durationMinutes ?: startWall.wallMinutesUntil(endWall)
-            if (duration > 0) {
-                formatIcsLocalDateTime(startTimed.value.plusMinutes(duration), startTimed.zone is IcsZone.Utc)
-            } else {
-                null
-            }
-        }
-    }
+    val start = parsedStart.toValue(raw.timeZoneDefinition)
+    val end = mapEnd(start, raw, deviceZone)
+    val exclusions = mappedExclusions(raw, deviceZone, start, warnings)
     return Event(
         id = null,
         title = title,
-        date = safeStart.date.toString(),
-        startMinutes = safeStart.time.hour * 60 + safeStart.time.minute,
-        endMinutes = safeEnd.time.hour * 60 + safeEnd.time.minute,
-        startSeconds = safeStart.time.second,
-        endSeconds = safeEnd.time.second,
+        start = start,
+        end = end,
         note = raw.description,
-        endDate = safeEnd.date.takeIf { it != safeStart.date }?.toString(),
-        allDay = false,
         location = raw.location,
         categories = raw.categories,
         url = raw.url,
@@ -2456,10 +2123,7 @@ private fun mapSingle(
         alarms = raw.alarms.map { it.toAlarm() },
         repeat = repeat,
         excludedDates = exclusions,
-        icsUid = uid,
-        sourceStart = sourceStart,
-        sourceEnd = eventEndSource,
-        timeZoneId = timeZoneId,
+        icsUid = raw.uid,
         timeZoneDefinition = raw.timeZoneDefinition,
         created = raw.created,
         lastModified = raw.lastModified,
@@ -2470,15 +2134,94 @@ private fun mapSingle(
     )
 }
 
+/** RFC 5545 value of a parsed time; [definition] is the record's stored `VTIMEZONE`, if any. */
+private fun IcsTime.toValue(definition: String?): IcsTimeValue = when (this) {
+    is IcsTime.AllDay -> IcsTimeValue.Date(date)
+    is IcsTime.DateTime -> when (val zone = zone) {
+        IcsZone.Floating -> IcsTimeValue.Floating(value)
+        IcsZone.Utc -> IcsTimeValue.Utc(value.toInstant(TimeZone.UTC))
+        is IcsZone.Platform -> IcsTimeValue.Zoned(value, zone.id, definition)
+        is IcsZone.Custom -> IcsTimeValue.Zoned(value, zone.zone.id, definition)
+    }
+}
+
+/**
+ * End of a record: `DTEND`, `DURATION`, or null for a zero-length timed event. Date-only records
+ * always get an exclusive one-day end so the all-day branch never has to special-case it.
+ */
+private fun mapEnd(start: IcsTimeValue, raw: RawEvent, deviceZone: TimeZone): IcsTimeValue? {
+    if (start is IcsTimeValue.Date) {
+        val exclusive = when (val end = raw.end) {
+            is IcsTime.AllDay -> if (end.date > start.date) end.date else start.date.plusDays(1)
+            is IcsTime.DateTime -> end.localDate(deviceZone).takeIf { it > start.date } ?: start.date.plusDays(1)
+            null -> raw.durationMinutes
+                ?.let { minutes -> start.date.plusDays((minutes / (24 * 60)).coerceAtLeast(1)) }
+                ?: start.date.plusDays(1)
+        }
+        return IcsTimeValue.Date(exclusive)
+    }
+    val parsedEnd = (raw.end as? IcsTime.DateTime)?.toValue(raw.timeZoneDefinition)
+    val resolved = when {
+        parsedEnd != null -> alignEndTo(start, parsedEnd, deviceZone)
+        raw.durationMinutes != null && raw.durationMinutes > 0 ->
+            start.plusDuration(raw.durationMinutes.minutes, deviceZone)
+        // RFC 5545: no DTEND and no DURATION means the event has zero length.
+        else -> null
+    } ?: return null
+    val startInstant = start.instantOrNull(deviceZone)
+    val endInstant = resolved.instantOrNull(deviceZone)
+    val positive = if (startInstant != null && endInstant != null) {
+        endInstant > startInstant
+    } else {
+        resolved.wallDateTime > start.wallDateTime
+    }
+    return resolved.takeIf { positive }
+}
+
+/** Keeps an end in the same value type as the start; RFC 5545 forbids mixing them. */
+private fun alignEndTo(start: IcsTimeValue, end: IcsTimeValue, deviceZone: TimeZone): IcsTimeValue {
+    if (end is IcsTimeValue.Date) return end
+    return when (start) {
+        is IcsTimeValue.Date -> end
+        is IcsTimeValue.Floating -> IcsTimeValue.Floating(end.wallDateTime)
+        is IcsTimeValue.Zoned -> {
+            // Same TZID on both values needs no conversion; this also keeps a custom zone, whose
+            // wall clock cannot be recovered from an instant without its rules.
+            if (end is IcsTimeValue.Zoned && end.tzid == start.tzid) {
+                return IcsTimeValue.Zoned(end.dateTime, start.tzid, start.definition)
+            }
+            val zone = icsZoneOrNull(start.tzid, start.definition) ?: deviceZone
+            val instant = when (end) {
+                is IcsTimeValue.Utc -> end.instant
+                is IcsTimeValue.Zoned -> end.instantOrNull(deviceZone) ?: end.dateTime.toInstant(zone)
+                is IcsTimeValue.Floating -> end.dateTime.toInstant(zone)
+                is IcsTimeValue.Date -> return end
+            }
+            IcsTimeValue.Zoned(instant.toLocalDateTime(zone), start.tzid, start.definition)
+        }
+        is IcsTimeValue.Utc -> {
+            val instant = when (end) {
+                is IcsTimeValue.Utc -> end.instant
+                is IcsTimeValue.Zoned -> end.instantOrNull(deviceZone) ?: end.dateTime.toInstant(TimeZone.UTC)
+                is IcsTimeValue.Floating -> end.dateTime.toInstant(TimeZone.UTC)
+                is IcsTimeValue.Date -> return end
+            }
+            IcsTimeValue.Utc(instant)
+        }
+    }
+}
+
 private fun mappedExclusions(
     raw: RawEvent,
     deviceZone: TimeZone,
-    allDay: Boolean,
-    startMinutes: Int,
+    start: IcsTimeValue,
     warnings: MutableSet<IcsWarning>,
 ): List<String> {
     val dates = mutableListOf<String>()
     var mismatched = false
+    val startLocal = start.displayDateTime(deviceZone)
+    val startMinutes = startLocal.hour * 60 + startLocal.minute
+    val allDay = start is IcsTimeValue.Date
     raw.exdates.forEach { time ->
         when (time) {
             is IcsTime.AllDay -> dates += time.date.toString()
@@ -2501,12 +2244,11 @@ private fun mappedExclusions(
 private fun mapRule(
     raw: RawRule?,
     start: IcsTime?,
-    deviceZone: TimeZone,
     rDates: List<IcsTime>,
     warnings: MutableSet<IcsWarning>,
 ): RepeatRule? {
     if (raw == null) return null
-    val anchor = start?.localDate(deviceZone) ?: LocalDate(1970, 1, 1)
+    val anchor = start?.localWallDate() ?: LocalDate(1970, 1, 1)
     val frequency = when (raw.frequency) {
         "DAILY" -> RepeatFrequency.Daily
         "WEEKLY" -> {
@@ -2545,12 +2287,7 @@ private fun mapRule(
             }
         }
     }
-    val rDatesText = rDates.mapNotNull { time ->
-        when (time) {
-            is IcsTime.AllDay -> time.date.toString()
-            is IcsTime.DateTime -> time.localDateTime(deviceZone).date.toString()
-        }
-    }
+    val rDatesText = rDates.map { it.localWallDate().toString() }
     return RepeatRule(
         frequency = frequency,
         weekdays = weekdays,
@@ -2742,7 +2479,7 @@ private fun readTodo(
     val record = title.ifBlank { uid }
     warnings.forEach { details += warningDetail(it, component.lineNumber, record) }
     // The series is anchored on DTSTART, falling back to DUE the way RFC 5545 anchors a VTODO.
-    val repeat = mapRule(rule, startValue ?: dueValue, deviceZone, rdates, warnings)
+    val repeat = mapRule(rule, startValue ?: dueValue, rdates, warnings)
     return Todo(
         id = "",
         title = title.ifBlank { uid ?: "" },
@@ -3087,40 +2824,6 @@ private fun parseUtcOffset(value: String): Int? {
     val seconds = if (digits.length >= 6) digits.substring(4, 6).toIntOrNull() ?: 0 else 0
     if (minutes !in 0..59 || seconds !in 0..59) return null
     return sign * (hours * 3600 + minutes * 60 + seconds)
-}
-
-/**
- * Rewrites the date part of an ICS DATE-TIME value, keeping the time of day and any `Z`. Used when
- * an event's anchor moves but its wall time and zone stay the same.
- */
-private fun rewriteSourceDate(source: String, date: LocalDate): String? {
-    val utc = source.endsWith("Z", ignoreCase = true)
-    val body = if (utc) source.dropLast(1) else source
-    if (body.length < 15 || body[8] != 'T') return null
-    return formatDate(date) + body.substring(8) + if (utc) "Z" else ""
-}
-
-/** Moves the date part of an ICS DATE-TIME value by [days]; null when [source] is not parseable. */
-private fun shiftSourceDate(source: String?, days: Int): String? {
-    if (source == null) return null
-    if (days == 0) return source
-    val utc = source.endsWith("Z", ignoreCase = true)
-    val body = if (utc) source.dropLast(1) else source
-    if (body.length < 15 || body[8] != 'T') return null
-    val date = parseDate(body.substring(0, 8)) ?: return null
-    return formatDate(date.plusDays(days)) + body.substring(8) + if (utc) "Z" else ""
-}
-
-private fun parseSourceLocal(source: String): LocalDateTime? {
-    val body = if (source.endsWith("Z", ignoreCase = true)) source.dropLast(1) else source
-    if (body.length < 13 || body[8] != 'T') return null
-    val date = parseDate(body.substring(0, 8)) ?: return null
-    val hour = body.substring(9, 11).toIntOrNull() ?: return null
-    val minute = body.substring(11, 13).toIntOrNull() ?: return null
-    val second = if (body.length >= 15) body.substring(13, 15).toIntOrNull() ?: 0 else 0
-    // RFC 5545 allows 24:00 as the exclusive end of a day.
-    if (hour == 24 && minute == 0 && second == 0) return LocalDateTime(date.plusDays(1), LocalTime(0, 0))
-    return runCatching { LocalDateTime(date, LocalTime(hour, minute, second)) }.getOrNull()
 }
 
 private fun formatDate(date: LocalDate): String = buildString {

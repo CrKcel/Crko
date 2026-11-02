@@ -17,8 +17,8 @@ import com.crko.domain.IcsWarningDetail
 import com.crko.domain.ItipDecision
 import com.crko.domain.ItipMethod
 import com.crko.domain.IcsPartStat
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.Journal
-import com.crko.domain.MaxEndMinutes
 import com.crko.domain.PersistedSettings
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
@@ -33,12 +33,13 @@ import com.crko.domain.daysTo
 import com.crko.domain.effectiveUid
 import com.crko.domain.fetchSubscription
 import com.crko.domain.importCalendarLines
+import com.crko.domain.instantOrNull
 import com.crko.domain.itipDecision
 import com.crko.domain.itipReply
 import com.crko.domain.localDate
+import com.crko.domain.shiftedByDays
 import com.crko.domain.todoForest
 import com.crko.domain.mergeBusyPeriods
-import com.crko.domain.normalizedForZone
 import com.crko.domain.occurrenceStartOn
 import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.occursOn
@@ -51,6 +52,10 @@ import com.crko.domain.safeAttachmentFileName
 import com.crko.domain.resolveSubscriptionUrl
 import com.crko.domain.today
 import com.crko.domain.unfold
+import com.crko.domain.wallDateFor
+import com.crko.domain.wallDateTime
+import kotlinx.datetime.toInstant
+import kotlinx.datetime.toLocalDateTime
 import com.crko.i18n.AppLanguage
 import com.crko.i18n.Strings
 import com.crko.i18n.languageFromTag
@@ -65,6 +70,7 @@ import com.crko.storage.newId
 import com.crko.storage.systemLocaleTag
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.LocalTime
 import kotlinx.datetime.TimeZone
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -188,8 +194,6 @@ class AppStateHolder(
     var today: LocalDate by mutableStateOf(today(clock))
         private set
 
-    private var lastZone: TimeZone = TimeZone.currentSystemDefault()
-
     private val messageChannel = Channel<AppMessage>(Channel.BUFFERED)
     val messages = messageChannel.receiveAsFlow()
 
@@ -200,15 +204,6 @@ class AppStateHolder(
         if (settings.agendaScrollHour < 0) {
             updateSettings { it.copy(agendaScrollHour = 8) }
         }
-        // Imported TZID events keep their ICS source, so wall-clock fields follow a moved device.
-        val stored = appState
-        val rebased = stored.copy(
-            events = stored.events.normalizedForZone(lastZone),
-        )
-        if (rebased != stored) {
-            appState = rebased
-            storage.saveState(rebased)
-        }
         // A payload that could only be read partially used to look like an empty calendar with no
         // explanation; the damaged copy is kept by the storage, so say what happened.
         val damage = storage.loadDamage()
@@ -217,14 +212,8 @@ class AppStateHolder(
     }
 
     fun refreshToday() {
-        val zone = TimeZone.currentSystemDefault()
-        if (zone != lastZone) {
-            lastZone = zone
-            val rebased = appState.copy(
-                events = appState.events.normalizedForZone(zone),
-            )
-            if (rebased != appState) persist(rebased)
-        }
+        // Event times are stored in their own RFC time value, so a device zone change only changes
+        // the display projection; the persisted records no longer need a rewrite.
         today = today(clock)
     }
 
@@ -264,7 +253,7 @@ class AppStateHolder(
     ): WriteResult {
         val normalized = normalize(event) ?: return validationError(event)
         val existing = appState.events.firstOrNull { it.id == normalized.id }
-        val validated = preserveSource(normalized, existing, occurrenceDate)
+        val validated = normalized
         val now = clock.now()
         if (validated.alarms.isNotEmpty()) ensureReminderPermission()
         return when {
@@ -303,8 +292,8 @@ class AppStateHolder(
     ): WriteResult {
         // The editor shows the occurrence's date, so the delta is relative to that occurrence.
         val shift = occurrenceDate.daysTo(edited.day)
-        val anchor = series.day.plusDays(shift)
-        val span = edited.day.daysTo(edited.endDay)
+        val anchorWall = series.wallDay.plusDays(shift)
+        val shiftToAnchor = edited.wallDay.daysTo(anchorWall)
         val shiftedExclusions = when {
             edited.repeat == null -> emptyList()
             shift == 0 -> series.excludedDates
@@ -322,9 +311,7 @@ class AppStateHolder(
                 rule
             }
         }
-        val saved = edited.copy(
-            date = anchor.toString(),
-            endDate = anchor.plusDays(span).takeIf { span != 0 }?.toString(),
+        val saved = edited.shiftedByDays(shiftToAnchor).copy(
             repeat = savedRepeat,
             excludedDates = shiftedExclusions,
             created = series.created ?: now.toString(),
@@ -384,25 +371,17 @@ class AppStateHolder(
         }
         // The editor starts on the occurrence date, so a different date is an intentional move.
         val moved = edited.day != occurrence
-        val span = edited.day.daysTo(edited.endDay)
-        val targetDate = if (moved) edited.day else occurrence
-        val targetEnd = if (moved) edited.endDay else occurrence.plusDays(span)
-        // The imported source text describes the first occurrence, so only that override can keep it.
-        val keepSource = targetDate == series.day
-        val override = edited.copy(
+        val slotWall = series.wallDateFor(occurrence)
+        val shiftToSlot = if (moved) 0 else edited.wallDay.daysTo(slotWall)
+        val placed = edited.shiftedByDays(shiftToSlot)
+        val override = placed.copy(
             id = existingOverride?.id ?: idProvider(),
             // RECURRENCE-ID stays on the original slot; DTSTART may move to another date.
-            date = targetDate.toString(),
-            endDate = targetEnd.takeIf { it != targetDate }?.toString(),
             repeat = null,
             excludedDates = emptyList(),
             seriesUid = seriesUid,
             recurrenceId = occurrenceKey,
             thisAndFuture = false,
-            sourceStart = if (keepSource) edited.sourceStart else null,
-            sourceEnd = if (keepSource) edited.sourceEnd else null,
-            timeZoneId = if (keepSource) edited.timeZoneId else null,
-            timeZoneDefinition = if (keepSource) edited.timeZoneDefinition else null,
             icsUid = seriesUid?.let { "$it#override-$occurrenceKey" } ?: existingOverride?.icsUid,
             created = existingOverride?.created ?: now.toString(),
             lastModified = now.toString(),
@@ -466,24 +445,17 @@ class AppStateHolder(
             else -> edited.repeat
         }
         val moved = edited.day != occurrence
-        val span = edited.day.daysTo(edited.endDay)
-        val targetDate = if (moved) edited.day else occurrence
-        val targetEnd = if (moved) edited.endDay else occurrence.plusDays(span)
+        val slotWall = series.wallDateFor(occurrence)
+        val shiftToSlot = if (moved) 0 else edited.wallDay.daysTo(slotWall)
         val newId = idProvider()
-        val newSeries = edited.copy(
+        val newSeries = edited.shiftedByDays(shiftToSlot).copy(
             id = newId,
-            date = targetDate.toString(),
-            endDate = targetEnd.takeIf { it != targetDate }?.toString(),
             repeat = futureRepeat,
             excludedDates = edited.excludedDates.filter { it >= occurrence.toString() },
             icsUid = null,
             seriesUid = null,
             recurrenceId = null,
             thisAndFuture = false,
-            sourceStart = null,
-            sourceEnd = null,
-            timeZoneId = null,
-            timeZoneDefinition = null,
             created = now.toString(),
             lastModified = now.toString(),
             dtStamp = now.toString(),
@@ -1319,35 +1291,9 @@ class AppStateHolder(
     }
 
     /**
-     * Keeps the imported TZID/source values when an edit did not touch the wall-clock fields.
-     * Otherwise they would no longer describe the event and are dropped.
+     * Validates and normalises an edit. The time values already carry RFC semantics, so only the
+     * fields that can be out of range (seconds, repeat counters) need coercing here.
      */
-    private fun preserveSource(event: Event, existing: Event?, occurrenceDate: LocalDate?): Event {
-        if (existing == null) {
-            return event.copy(sourceStart = null, sourceEnd = null, timeZoneId = null, timeZoneDefinition = null)
-        }
-        val sameDate = if (existing.repeat != null && occurrenceDate != null) {
-            event.day == occurrenceDate
-        } else {
-            event.day == existing.day
-        }
-        val sameTime = event.allDay == existing.allDay &&
-            event.startMinutes == existing.startMinutes &&
-            event.endMinutes == existing.endMinutes &&
-            event.startSeconds == existing.startSeconds &&
-            event.endSeconds == existing.endSeconds &&
-            event.day.daysTo(event.endDay) == existing.day.daysTo(existing.endDay)
-        if (!sameDate || !sameTime) {
-            return event.copy(sourceStart = null, sourceEnd = null, timeZoneId = null, timeZoneDefinition = null)
-        }
-        return event.copy(
-            sourceStart = existing.sourceStart,
-            sourceEnd = existing.sourceEnd,
-            timeZoneId = existing.timeZoneId,
-            timeZoneDefinition = existing.timeZoneDefinition,
-        )
-    }
-
     private fun normalize(event: Event): Event? {
         if (event.title.isBlank()) return null
         val repeat = event.repeat?.let { rule ->
@@ -1363,27 +1309,44 @@ class AppStateHolder(
                 until = rule.until?.takeIf { parseRepeatUntil(it) != null },
             )
         }
-        val allDay = event.allDay
-        val start = if (allDay) 0 else event.startMinutes.coerceIn(0, MaxEndMinutes)
-        val end = if (allDay) 0 else event.endMinutes.coerceIn(0, MaxEndMinutes)
-        val startSeconds = if (allDay) 0 else event.startSeconds.coerceIn(0, 59)
-        val endSeconds = if (allDay) 0 else event.endSeconds.coerceIn(0, 59)
-        val endDay = event.endDay
-        if (!allDay && endDay == event.day && end < start) return null
-        if (!allDay && endDay < event.day) return null
+        val start = normalizeTime(event.start) ?: return null
+        val end = event.end?.let { normalizeTime(it) ?: return null }
+        if (end != null && !end.isAfter(start)) return null
+        val normalizedEnd = if (start is IcsTimeValue.Date) {
+            (end as? IcsTimeValue.Date)?.takeIf { it.date > start.date }
+                ?: IcsTimeValue.Date(start.date.plusDays(1))
+        } else {
+            // A date-only end on a timed event cannot be represented; reject rather than silently
+            // change the event's length.
+            if (end is IcsTimeValue.Date) return null
+            end
+        }
         return event.copy(
             title = event.title.trim(),
-            startMinutes = start,
-            endMinutes = end,
-            startSeconds = startSeconds,
-            endSeconds = endSeconds,
-            endDate = endDay.takeIf { it != event.day }?.toString(),
-            allDay = allDay,
+            start = start,
+            end = normalizedEnd,
             repeat = repeat,
             // Skips only make sense for a series; a one-off event must not inherit stale ones.
             excludedDates = if (repeat == null) emptyList() else event.excludedDates.distinct(),
             status = if (event.status == EventStatus.Cancelled) EventStatus.Confirmed else event.status,
         )
+    }
+
+    private fun normalizeTime(value: IcsTimeValue): IcsTimeValue? {
+        fun clean(dateTime: LocalDateTime): LocalDateTime =
+            LocalDateTime(dateTime.date, LocalTime(dateTime.hour, dateTime.minute, dateTime.second.coerceIn(0, 59)))
+        return when (value) {
+            is IcsTimeValue.Date -> value
+            is IcsTimeValue.Floating -> IcsTimeValue.Floating(clean(value.dateTime))
+            is IcsTimeValue.Zoned -> value.copy(dateTime = clean(value.dateTime))
+            is IcsTimeValue.Utc -> IcsTimeValue.Utc(clean(value.instant.toLocalDateTime(TimeZone.UTC)).toInstant(TimeZone.UTC))
+        }
+    }
+
+    private fun IcsTimeValue.isAfter(other: IcsTimeValue): Boolean {
+        val start = other.instantOrNull(TimeZone.UTC)
+        val end = instantOrNull(TimeZone.UTC)
+        return if (start != null && end != null) end > start else wallDateTime > other.wallDateTime
     }
 
     private fun persist(next: AppState) {
@@ -1531,20 +1494,13 @@ private fun shiftRepeatUntil(text: String, days: Int): String? {
 /** Moves an event (and its associated series/exception dates) by whole calendar days. */
 private fun Event.shiftedBy(days: Int): Event {
     if (days == 0) return this
-    val newDay = day.plusDays(days)
-    val newEnd = endDay.plusDays(days)
-    return copy(
-        date = newDay.toString(),
-        endDate = newEnd.takeIf { it != newDay }?.toString(),
+    return shiftedByDays(days).copy(
         excludedDates = excludedDates.mapNotNull { shiftDateText(it, days) },
         recurrenceId = recurrenceId?.let { shiftDateText(it, days) ?: it },
         repeat = repeat?.copy(
             until = repeat.until?.let { shiftRepeatUntil(it, days) },
             rDates = repeat.rDates.mapNotNull { shiftDateText(it, days) },
         ),
-        sourceStart = null,
-        sourceEnd = null,
-        timeZoneId = null,
-        timeZoneDefinition = null,
+        timeZoneDefinition = timeZoneDefinition,
     )
 }

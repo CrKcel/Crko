@@ -7,6 +7,7 @@ import com.crko.domain.EventTransparency
 import com.crko.domain.IcsWarning
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.RepeatFrequency
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.RepeatRule
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
@@ -14,6 +15,8 @@ import com.crko.domain.exportCalendar
 import com.crko.domain.exportIcs
 import com.crko.domain.importCalendar
 import com.crko.domain.importIcs
+import com.crko.domain.localEnd
+import com.crko.domain.localStart
 import com.crko.domain.occurrenceRangesOn
 import com.crko.domain.occursOn
 import com.crko.domain.nextOccurrenceDate
@@ -355,9 +358,8 @@ class IcsTest {
             baseEvent.copy(
                 id = "e2",
                 title = "每天, 会议; 讨论",
-                date = "2026-10-28",
-                startMinutes = 0,
-                endMinutes = MaxEndMinutes,
+                start = IcsTimeValue.Floating(LocalDateTime(2026, 10, 28, 0, 0)),
+                end = IcsTimeValue.Floating(LocalDateTime(2026, 10, 28, 23, 59)),
                 note = "first\nsecond\\third",
                 repeat = RepeatRule(RepeatFrequency.Custom, listOf(0, 3, 5)),
                 icsUid = null,
@@ -505,8 +507,8 @@ class IcsTest {
             """,
         )
         val event = importIcs(text, utc, "Untitled").single()
-        assertEquals(6 * 60, event.startMinutes)
-        assertEquals(7 * 60, event.endMinutes)
+        assertEquals(6 * 60, event.localStart(utc).hour * 60 + event.localStart(utc).minute)
+        assertEquals(7 * 60, event.localEnd(utc)?.let { it.hour * 60 + it.minute })
         assertEquals("Custom/Plus3", event.timeZoneId)
         assertTrue(event.timeZoneDefinition?.contains("TZOFFSETTO:+0300") == true)
     }
@@ -1055,10 +1057,10 @@ class IcsTest {
         assertFalse(IcsWarning.UnresolvedTimeZone in imported.warnings, imported.warnings.toString())
         val windows = imported.events.first { it.icsUid == "windows-zone" }
         assertEquals("Asia/Shanghai", windows.timeZoneId)
-        assertEquals(60, windows.startMinutes)
+        assertEquals(60, windows.localStart(utc).hour * 60 + windows.localStart(utc).minute)
         val prefixed = imported.events.first { it.icsUid == "prefixed-zone" }
         assertEquals("America/New_York", prefixed.timeZoneId)
-        assertEquals(13 * 60, prefixed.startMinutes)
+        assertEquals(13 * 60, prefixed.localStart(utc).hour * 60 + prefixed.localStart(utc).minute)
         assertEquals("20261027T090000", prefixed.sourceStart)
     }
 
@@ -1078,11 +1080,11 @@ class IcsTest {
         val events = importIcs(text, utc, "Untitled")
         assertEquals(3, events.size)
         val hour = events.first { it.date == "2026-11-05" }
-        assertEquals(14 * 60, hour.startMinutes)
-        assertEquals(15 * 60, hour.endMinutes)
+        assertEquals(14 * 60, hour.localStart(utc).hour * 60 + hour.localStart(utc).minute)
+        assertEquals(15 * 60, hour.localEnd(utc)?.let { it.hour * 60 + it.minute })
         val threeHours = events.first { it.date == "2026-11-06" }
-        assertEquals(9 * 60, threeHours.startMinutes)
-        assertEquals(12 * 60, threeHours.endMinutes)
+        assertEquals(9 * 60, threeHours.localStart(utc).hour * 60 + threeHours.localStart(utc).minute)
+        assertEquals(12 * 60, threeHours.localEnd(utc)?.let { it.hour * 60 + it.minute })
     }
 
     @Test
@@ -1105,8 +1107,8 @@ class IcsTest {
         assertTrue(series.repeat?.rDates.isNullOrEmpty(), series.repeat?.rDates.toString())
         val extra = events.first { it.date == "2026-11-05" }
         assertNull(extra.repeat)
-        assertEquals(14 * 60, extra.startMinutes)
-        assertEquals(14 * 60 + 30, extra.endMinutes)
+        assertEquals(14 * 60, extra.localStart(utc).hour * 60 + extra.localStart(utc).minute)
+        assertEquals(14 * 60 + 30, extra.localEnd(utc)?.let { it.hour * 60 + it.minute })
     }
 
     @Test
@@ -1408,7 +1410,10 @@ class IcsTest {
     fun zoneAwareEndIsWrittenWhenStoredDataHasNoEndSource() {
         // Reachable through the tolerant state decoder, which can restore a record whose end text is
         // missing; RFC 5545 forbids mixing an absolute DTSTART with a floating DTEND.
-        val event = baseEvent.copy(sourceStart = "20261027T090000", timeZoneId = "Europe/Berlin")
+        val event = baseEvent.copy(
+            start = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 9, 0), "Europe/Berlin"),
+            end = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 10, 0), "Europe/Berlin"),
+        )
         val exported = exportIcs(listOf(event), now)
         assertTrue(exported.contains("DTSTART;TZID=Europe/Berlin:20261027T090000\r\n"), exported)
         assertTrue(exported.contains("DTEND;TZID=Europe/Berlin:20261027T100000\r\n"), exported)
@@ -1709,8 +1714,8 @@ class IcsTest {
         val event = importIcs(text, utc, "Untitled").single()
         assertEquals("Europe/Berlin", event.timeZoneId)
         // 27 October 2026 is after the DST change, so Berlin is UTC+1.
-        assertEquals(8 * 60, event.startMinutes)
-        assertEquals(9 * 60, event.endMinutes)
+        assertEquals(8 * 60, event.localStart(utc).hour * 60 + event.localStart(utc).minute)
+        assertEquals(9 * 60, event.localEnd(utc)?.let { it.hour * 60 + it.minute })
         assertEquals("20261027T090000", event.sourceStart)
         val exported = exportIcs(listOf(event), now)
         assertTrue(exported.contains("DTSTART;TZID=Europe/Berlin:20261027T090000\r\n"), exported)
@@ -1745,10 +1750,10 @@ class IcsTest {
         )
         val event = importIcs(text, utc, "Untitled").single()
         // The RDATE transition applies +01:00:30 before the observance's own 2030 DTSTART.
-        assertEquals(7 * 60 + 59, event.startMinutes)
-        assertEquals(30, event.startSeconds)
-        assertEquals(8 * 60 + 59, event.endMinutes)
-        assertEquals(30, event.endSeconds)
+        assertEquals(7 * 60 + 59, event.localStart(utc).hour * 60 + event.localStart(utc).minute)
+        assertEquals(30, event.localStart(utc).second)
+        assertEquals(8 * 60 + 59, event.localEnd(utc)?.let { it.hour * 60 + it.minute })
+        assertEquals(30, event.localEnd(utc)?.second)
     }
 
     @Test
@@ -1780,7 +1785,7 @@ class IcsTest {
         val event = importIcs(text, utc, "Untitled").single()
         // UNTIL ended the daylight transitions in 2020; an ignored bound would add March 2026
         // and move this event one hour earlier.
-        assertEquals(12 * 60, event.startMinutes)
+        assertEquals(12 * 60, event.localStart(utc).hour * 60 + event.localStart(utc).minute)
     }
 
     @Test
@@ -2131,8 +2136,8 @@ class IcsTest {
         // The zero-offset observance repeats on the 15th of every month, including January 1970, and
         // that transition is later than the daylight start of 1970-01-10. Dropping the anchor year
         // from the generated transitions would leave the +0100 start as the newest one.
-        assertEquals(720, events.first { it.title == "Anchor year" }.startMinutes)
-        assertEquals(720, events.first { it.title == "Next year" }.startMinutes)
+        assertEquals(720, events.first { it.title == "Anchor year" }.localStart(utc).hour * 60 + events.first { it.title == "Anchor year" }.localStart(utc).minute)
+        assertEquals(720, events.first { it.title == "Next year" }.localStart(utc).hour * 60 + events.first { it.title == "Next year" }.localStart(utc).minute)
     }
 
     @Test
@@ -2182,7 +2187,7 @@ class IcsTest {
         val event = importCalendar(text, utc, "Untitled").events.single()
         // A rule without UNTIL or COUNT would otherwise generate three thousand years of
         // transitions; the last one before the horizon (+0100) is what the value keeps.
-        assertEquals(660, event.startMinutes)
+        assertEquals(660, event.localStart(utc).hour * 60 + event.localStart(utc).minute)
     }
 
     @Test
