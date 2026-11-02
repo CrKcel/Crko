@@ -4,6 +4,7 @@ import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.EndOfDayMinutes
 import com.crko.domain.Event
+import com.crko.domain.legacyEvent
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.OrdinalWeekday
 import com.crko.domain.Recurrence
@@ -152,7 +153,7 @@ class RecurrenceTest {
     fun monthlyOrdinalWeekdayFindsTheLastFriday() {
         // 2026-10-30 is the last Friday of October.
         val friday = LocalDate(2026, 10, 30)
-        val event = Event(
+        val event = legacyEvent(
             id = "e1",
             title = "Retro",
             date = friday.toString(),
@@ -172,7 +173,7 @@ class RecurrenceTest {
     @Test
     fun monthlySetPositionPicksTheLastWeekday() {
         val friday = LocalDate(2026, 10, 30)
-        val event = Event(
+        val event = legacyEvent(
             id = "e1",
             title = "Report",
             date = friday.toString(),
@@ -234,7 +235,7 @@ class RecurrenceTest {
 
     @Test
     fun excludedOccurrenceStartSkipsTheWholeMultiDaySpan() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e1",
             title = "Trip",
             date = anchor.toString(),
@@ -261,7 +262,7 @@ class RecurrenceTest {
     @Test
     fun monthlyByMonthDayAndByDayLimitEachOther() {
         // 2026-11-13 is a Friday, 2026-12-13 is a Sunday.
-        val event = Event(
+        val event = legacyEvent(
             id = "f13",
             title = "Friday 13",
             date = "2026-10-13",
@@ -279,7 +280,7 @@ class RecurrenceTest {
 
     @Test
     fun monthlyCountOnlyCountsMatchingMonths() {
-        val event = Event(
+        val event = legacyEvent(
             id = "jan",
             title = "January",
             date = "2026-01-15",
@@ -297,7 +298,7 @@ class RecurrenceTest {
 
     @Test
     fun floatingUntilKeepsTheTimeOfDay() {
-        val event = Event(
+        val event = legacyEvent(
             id = "u",
             title = "Late",
             date = "2026-10-25",
@@ -314,7 +315,7 @@ class RecurrenceTest {
 
     @Test
     fun occurrenceStartOnFindsTheFirstDayOfAMultiDaySeries() {
-        val event = Event(
+        val event = legacyEvent(
             id = "trip",
             title = "Trip",
             date = anchor.toString(),
@@ -348,7 +349,7 @@ class RecurrenceTest {
 
     @Test
     fun weeklyCountIgnoresDatesFilteredOutByMonth() {
-        val event = Event(
+        val event = legacyEvent(
             id = "march",
             title = "March Mondays",
             date = "2026-01-05",
@@ -369,7 +370,7 @@ class RecurrenceTest {
 
     @Test
     fun byWeekNoHonoursASundayWeekStart() {
-        val event = Event(
+        val event = legacyEvent(
             id = "week53",
             title = "Week 1",
             date = "2024-12-29",
@@ -389,7 +390,7 @@ class RecurrenceTest {
 
     @Test
     fun byWeekNoFindsWeekOneStartingInThePreviousYear() {
-        val event = Event(
+        val event = legacyEvent(
             id = "week-one",
             title = "Week one",
             date = "2024-01-01",
@@ -408,7 +409,7 @@ class RecurrenceTest {
 
     @Test
     fun byWeekNoCountIncludesAWeekOneStartingInThePreviousYear() {
-        val event = Event(
+        val event = legacyEvent(
             id = "week-one-count",
             title = "Week one",
             date = "2024-01-01",
@@ -573,7 +574,7 @@ class RecurrenceTest {
         rules.forEach { rule ->
             // A decades-old anchor is exactly what made every cell query walk hundreds of periods.
             val start = LocalDate(1971, 3, 15)
-            val record = Event(
+            val record = legacyEvent(
                 id = "old",
                 title = "Old",
                 date = start.toString(),
@@ -617,7 +618,7 @@ class RecurrenceTest {
 
     @Test
     fun byHourExpandsOneDayIntoSeveralStarts() {
-        val event = Event(
+        val event = legacyEvent(
             id = "rounds",
             title = "Rounds",
             date = anchor.toString(),
@@ -635,7 +636,7 @@ class RecurrenceTest {
 
     @Test
     fun byMinuteCombinesWithByHourAndFallsBackToTheAnchorTime() {
-        val event = Event(
+        val event = legacyEvent(
             id = "pulse",
             title = "Pulse",
             date = anchor.toString(),
@@ -676,7 +677,7 @@ class RecurrenceTest {
 
     @Test
     fun aDtstartThatMissesTheByFiltersKeepsItsOwnStart() {
-        val event = Event(
+        val event = legacyEvent(
             id = "anchor",
             title = "Anchor",
             date = anchor.toString(),
@@ -693,7 +694,7 @@ class RecurrenceTest {
     fun byHourExpandsAcrossTheAnchorSpan() {
         // A two-day occurrence keeps covering the next day while that day also holds its own
         // starts; the tail slices of earlier instances must survive next to the day's own ones.
-        val event = Event(
+        val event = legacyEvent(
             id = "rounds",
             title = "Rounds",
             date = anchor.toString(),

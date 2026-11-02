@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Event
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.LocalClock
 import com.crko.domain.minutesOfDay
 import com.crko.domain.mondayIndex
@@ -277,8 +278,8 @@ private fun WeekDayColumn(
 ) {
     val scheme = MiuixTheme.colorScheme
     val tones = eventTones()
-    val timed = remember(events) { events.filterNot { it.allDay } }
-    val allDay = remember(events) { events.filter { it.allDay } }
+    val timed = remember(events) { events.filterNot { it.start is IcsTimeValue.Date } }
+    val allDay = remember(events) { events.filter { it.start is IcsTimeValue.Date } }
     val placed = remember(timed, date) { layoutEvents(timed, date) }
     Box(
         modifier = modifier.drawWithContent {

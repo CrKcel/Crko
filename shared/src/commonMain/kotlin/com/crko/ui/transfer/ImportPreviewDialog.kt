@@ -86,7 +86,7 @@ internal fun importSelection(imported: IcsImport): ImportSelection = ImportSelec
                 ImportRow(
                     kind = ImportRowKind.Event,
                     title = event.title.ifBlank { event.icsUid ?: "…" },
-                    date = event.date,
+                    date = event.day.toString(),
                     line = event.sourceLine.takeIf { it > 0 },
                 ),
             )

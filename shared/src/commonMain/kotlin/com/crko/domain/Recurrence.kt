@@ -743,7 +743,9 @@ fun Event.occurrenceRangesOn(
     val rule = recurrence.rule
     val expands = rule?.let { it.byHour.isNotEmpty() || it.byMinute.isNotEmpty() || it.bySecond.isNotEmpty() }
         ?: false
-    if (allDay || (!expands && recurrence.rdates.isEmpty())) return listOf(timeRangeOn(date, zone))
+    if (start is IcsTimeValue.Date || (!expands && recurrence.rdates.isEmpty())) {
+        return listOf(timeRangeOn(date, zone))
+    }
     val anchor = day
     val span = anchor.daysTo(lastOccupiedDay).coerceAtLeast(0)
     // An instance occupies as many days as the anchor, so the covering instance may start up to a

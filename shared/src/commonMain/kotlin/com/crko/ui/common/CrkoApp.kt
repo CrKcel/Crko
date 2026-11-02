@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.crko.domain.Event
 import com.crko.domain.IcsImportFailure
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.IcsWarning
 import com.crko.domain.IcsWarningDetail
 import com.crko.domain.ItipMethod
@@ -66,6 +67,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.LocalTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Duration.Companion.seconds
@@ -434,12 +437,17 @@ private fun Modifier.swallowTouches(): Modifier = pointerInput(Unit) {
 private fun newEvent(state: AppStateHolder, now: LocalClock): Event {
     val start = ((now.time.hour * 60 + now.time.minute) / 30 + 1) * 30
     val startMinutes = start.coerceAtMost(23 * 60 + 30)
+    val endMinutes = (startMinutes + 60).coerceAtMost(MaxEndMinutes)
+    val date = state.today
     return Event(
         id = null,
         title = "",
-        date = state.today.toString(),
-        startMinutes = startMinutes,
-        endMinutes = (startMinutes + 60).coerceAtMost(MaxEndMinutes),
+        start = IcsTimeValue.Floating(
+            LocalDateTime(date, LocalTime(startMinutes / 60, startMinutes % 60)),
+        ),
+        end = IcsTimeValue.Floating(
+            LocalDateTime(date, LocalTime(endMinutes / 60, endMinutes % 60)),
+        ),
     )
 }
 

@@ -507,46 +507,6 @@ data class Event(
     /** The exception was imported from `RECURRENCE-ID;RANGE=THISANDFUTURE`. */
     val thisAndFuture: Boolean get() = recurrenceRange == RecurrenceRange.ThisAndFuture
 
-    /*
-     * Read-only views of the pre-migration fields. Nothing here is stored: each value is projected
-     * from [start]/[end] on demand, so display code keeps working while the RFC values stay the
-     * single source of truth.
-     */
-
-    val allDay: Boolean get() = start is IcsTimeValue.Date
-
-    val date: String get() = day.toString()
-
-    val endDate: String? get() = endDay.takeIf { it != day }?.toString()
-
-    val startMinutes: Int
-        get() = if (allDay) 0 else localStart().time.let { it.hour * 60 + it.minute }
-
-    val endMinutes: Int
-        get() {
-            if (allDay) return 0
-            val local = localEnd() ?: return startMinutes
-            return local.time.hour * 60 + local.time.minute
-        }
-
-    val startSeconds: Int get() = if (allDay) 0 else localStart().second
-
-    val endSeconds: Int get() = if (allDay) 0 else localEnd()?.second ?: startSeconds
-
-    /** `TZID` of the start, `UTC` for a UTC value, null for floating/date values. */
-    val timeZoneId: String?
-        get() = when (val value = start) {
-            is IcsTimeValue.Zoned -> value.tzid
-            is IcsTimeValue.Utc -> "UTC"
-            else -> null
-        }
-
-    /** Original ICS local start text (compact form, `Z` for UTC), for legacy call sites. */
-    val sourceStart: String? get() = legacySourceText(start)
-
-    /** Original ICS local end text (compact form, `Z` for UTC), for legacy call sites. */
-    val sourceEnd: String? get() = legacySourceText(end)
-
     /**
      * Rule-generated occurrence days of a `COUNT` series, cached with the rule instance they were
      * built from, so a cell query answers by lookup instead of walking the periods from the anchor.
@@ -558,103 +518,6 @@ data class Event(
         rule to index
     }
 
-    /**
-     * Pre-migration constructor kept for fixtures and the legacy decoder. It converts the former
-     * device-local fields into an RFC time value; new code must pass [start]/[end] instead.
-     */
-    constructor(
-        id: String?,
-        title: String,
-        date: String,
-        startMinutes: Int,
-        endMinutes: Int,
-        startSeconds: Int = 0,
-        endSeconds: Int = 0,
-        note: String = "",
-        endDate: String? = null,
-        allDay: Boolean = false,
-        location: String = "",
-        categories: List<String> = emptyList(),
-        url: String = "",
-        geo: String? = null,
-        attachments: List<Attachment> = emptyList(),
-        status: EventStatus = EventStatus.Confirmed,
-        transparency: EventTransparency = EventTransparency.Opaque,
-        eventClass: EventClass? = null,
-        priority: Int? = null,
-        organizer: String? = null,
-        attendees: List<String> = emptyList(),
-        alarms: List<Alarm> = emptyList(),
-        repeat: RepeatRule? = null,
-        excludedDates: List<String> = emptyList(),
-        icsUid: String? = null,
-        seriesUid: String? = null,
-        recurrenceId: String? = null,
-        thisAndFuture: Boolean = false,
-        sourceStart: String? = null,
-        sourceEnd: String? = null,
-        timeZoneId: String? = null,
-        created: String? = null,
-        lastModified: String? = null,
-        dtStamp: String? = null,
-        sequence: Int = 0,
-        extraProperties: List<String> = emptyList(),
-        organizerRaw: String? = null,
-        attendeeRaw: List<String> = emptyList(),
-        importSource: String? = null,
-        sourceLine: Int = 0,
-    ) : this(
-        id = id,
-        title = title,
-        start = legacyIcsTimeValue(
-            date = date,
-            minutes = startMinutes,
-            seconds = startSeconds,
-            allDay = allDay,
-            source = sourceStart,
-            tzid = timeZoneId,
-            definition = null,
-        ),
-        end = legacyEndValue(
-            date = date,
-            endDate = endDate,
-            startMinutes = startMinutes,
-            endMinutes = endMinutes,
-            startSeconds = startSeconds,
-            endSeconds = endSeconds,
-            allDay = allDay,
-            startSource = sourceStart,
-            endSource = sourceEnd,
-            tzid = timeZoneId,
-            definition = null,
-        ),
-        note = note,
-        location = location,
-        categories = categories,
-        url = url,
-        geo = geo,
-        attachments = attachments,
-        status = status,
-        transparency = transparency,
-        eventClass = eventClass,
-        priority = priority,
-        organizer = legacyCalAddress(organizerRaw, organizer),
-        attendees = legacyCalAddresses(attendeeRaw, attendees),
-        alarms = alarms,
-        recurrence = legacyRecurrence(repeat, excludedDates),
-        // An old exception stored its series UID separately; the RFC identity is the shared UID.
-        icsUid = seriesUid ?: stripSyntheticSeriesUid(icsUid),
-        recurrenceId = recurrenceId?.let { text ->
-            parseStoredDate(text)?.let(IcsTimeValue::Date)
-        },
-        recurrenceRange = if (thisAndFuture) RecurrenceRange.ThisAndFuture else null,
-        created = created,
-        lastModified = lastModified,
-        dtStamp = dtStamp,
-        sequence = sequence,
-        extraProperties = extraProperties,
-        local = LocalRecordMeta(importSource, sourceLine),
-    )
 }
 
 /** Old payloads stored an organizer as a bare value and, separately, its original line. */
@@ -914,7 +777,7 @@ internal fun Event.displayLastOccupiedDayOf(
     wallStart: LocalDate,
     zone: TimeZone,
 ): LocalDate {
-    if (allDay) return displayStart.plusDays(wallDay.daysTo(wallLastOccupiedDay()))
+    if (start is IcsTimeValue.Date) return displayStart.plusDays(wallDay.daysTo(wallLastOccupiedDay()))
     val startInstant = occurrenceStartInstant(wallStart, wallStartTime(), zone)
     val endInstant = startInstant + occurrenceDurationOn(wallStart)
     val startLocal = startInstant.toLocalDateTime(zone)
@@ -933,7 +796,7 @@ fun List<Event>.occurringOn(
     zone: TimeZone = TimeZone.currentSystemDefault(),
 ): List<Event> = filter { it.occursOn(date, zone) }
     .sortedWith(
-        compareBy<Event> { !it.allDay }
+        compareBy<Event> { it.start !is IcsTimeValue.Date }
             .thenBy { it.localStart(zone).time.let { time -> time.hour * 60 + time.minute } },
     )
 
@@ -942,10 +805,12 @@ fun Event.timeRangeOn(
     date: LocalDate,
     zone: TimeZone = TimeZone.currentSystemDefault(),
 ): Pair<Int, Int> {
-    if (allDay) return 0 to EndOfDayMinutes
+    if (start is IcsTimeValue.Date) return 0 to EndOfDayMinutes
+    val rawStart = localStart(zone).time.let { it.hour * 60 + it.minute }
+    val rawEnd = localEnd(zone)?.time?.let { it.hour * 60 + it.minute } ?: rawStart
     // Slicing past the occurrence (or an uncovered date) has no meaningful clip, so the raw range is
     // returned for callers that bypass occursOn.
-    val displayStart = occurrenceStartOn(date, zone) ?: return startMinutes to endMinutes
+    val displayStart = occurrenceStartOn(date, zone) ?: return rawStart to rawEnd
     val wallStart = wallDateFor(displayStart, zone)
     val startInstant = occurrenceStartInstant(wallStart, wallStartTime(), zone)
     val endInstant = startInstant + occurrenceDurationOn(wallStart)
@@ -957,7 +822,7 @@ fun Event.timeRangeOn(
     } else {
         endLocal.date
     }
-    if (date > lastDisplay) return startMinutes to endMinutes
+    if (date > lastDisplay) return rawStart to rawEnd
     val start = if (date == startLocal.date) startLocal.hour * 60 + startLocal.minute else 0
     val end = when {
         date < lastDisplay -> EndOfDayMinutes

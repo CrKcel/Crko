@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.crko.domain.Event
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.LocalClock
 import com.crko.domain.minutesOfDay
 import com.crko.domain.occurrenceRangesOn
@@ -122,8 +123,8 @@ internal fun DayTimelineGrid(
     val alarmColor = MiuixTheme.colorScheme.error
     val hourLineColor = hourDividerColor()
     val currentOnAdd by rememberUpdatedState(onAdd)
-    val timedEvents = remember(events) { events.filterNot { it.allDay } }
-    val allDayEvents = remember(events) { events.filter { it.allDay } }
+    val timedEvents = remember(events) { events.filterNot { it.start is IcsTimeValue.Date } }
+    val allDayEvents = remember(events) { events.filter { it.start is IcsTimeValue.Date } }
 
     Row(
         modifier = Modifier

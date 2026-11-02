@@ -36,6 +36,25 @@ shared/src/commonMain/kotlin/com/crko/
   ui/         主题、组件、日程/待办/更多三个页面
 ```
 
+## 数据模型
+
+`domain` 以 RFC 5545 的值为唯一事实来源，导入/导出接近 1:1：
+
+- `DTSTART` / `DTEND` / `DUE` / `COMPLETED` / `RECURRENCE-ID` 使用 `IcsTimeValue`（`Date`、`Floating`、`Zoned`、`Utc`）。结束时间排他；没有结束表示零时长定时事件；全天由 `Date` 推导，不再单独存储。
+- 重复集合是 `Recurrence`（`RRULE` + `RDATE` + `EXDATE`）。主事件与例外共享同一个 `UID`，通过 `RECURRENCE-ID` 区分；`RDATE;VALUE=PERIOD` 保留每次实例长度。
+- `VTIMEZONE` 属于 `CalendarMetadata`，事件只保存 `TZID`；未解析的未知时区由日历级定义兜底。
+- 设备时区只通过 `day` / `endDay` / `localStart` / `localEnd` / `occursOn` / `timeRangeOn` 等展示投影参与界面，不写回持久化模型。
+- `importSource` / `sourceLine` 等本地归属放在 `LocalRecordMeta`，不与 RFC 属性混在一起。
+- 旧版持久化 JSON 由 `LegacyModels` 与 `Platform.decodeStateWithReport` 迁移；新版本只写当前结构（`schemaVersion = 5`）。
+
+防回归：
+
+```bash
+./gradlew :shared:verifyDomainModel
+```
+
+检查 `commonMain` 中是否重新出现旧 `Event` 字段、合成 UID（`#override-` / `#future-` / `#prior-`）或 ICS 导入导出路径上的设备时区。
+
 约定：
 
 - 莫奈与自选色盘由 `ThemeController` 以 `MonetSystem` 模式驱动，无配色使用 `ColorSchemeMode.System`（即 miuix 自带的默认色板）；所有 miuix 组件与 Material `TimePicker` 共享同一套颜色。

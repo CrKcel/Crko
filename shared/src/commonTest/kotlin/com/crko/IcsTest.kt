@@ -3,6 +3,7 @@ package com.crko
 import com.crko.domain.Attachment
 import com.crko.domain.CalAddress
 import com.crko.domain.Event
+import com.crko.domain.legacyEvent
 import com.crko.domain.EventStatus
 import com.crko.domain.EventTransparency
 import com.crko.domain.IcsWarning
@@ -49,7 +50,7 @@ class IcsTest {
     private val shanghai = TimeZone.of("Asia/Shanghai")
     private val now = LocalDateTime(2026, 10, 27, 9, 0).toInstant(utc)
 
-    private val baseEvent = Event(
+    private val baseEvent = legacyEvent(
         id = "e1",
         title = "Team sync",
         date = "2026-10-27",
@@ -131,7 +132,7 @@ class IcsTest {
         )
         val event = importIcs(text, utc, "Untitled").single()
         assertEquals(
-            Event(
+            legacyEvent(
                 id = null,
                 title = "Standup",
                 date = "2026-10-27",
@@ -468,7 +469,7 @@ class IcsTest {
 
     @Test
     fun exportAllDayUsesDateValuesAndAnExclusiveEnd() {
-        val event = Event(
+        val event = legacyEvent(
             id = "a1",
             title = "Trip",
             date = "2026-10-27",
@@ -487,7 +488,7 @@ class IcsTest {
 
     @Test
     fun midnightEndRoundTripsAsTheNextDay() {
-        val event = Event(
+        val event = legacyEvent(
             id = "m1",
             title = "Late",
             date = "2026-10-27",
@@ -1070,7 +1071,7 @@ class IcsTest {
 
     @Test
     fun allDayExceptionUsesADateRecurrenceId() {
-        val series = Event(
+        val series = legacyEvent(
             id = "all-day-series",
             title = "Holiday",
             date = "2026-10-27",

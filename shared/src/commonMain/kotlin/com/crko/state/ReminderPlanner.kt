@@ -4,10 +4,12 @@ import com.crko.domain.Alarm
 import com.crko.domain.AlarmRelated
 import com.crko.domain.AlarmTrigger
 import com.crko.domain.Event
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.OccurrenceTime
 import com.crko.domain.Todo
 import com.crko.domain.daysTo
 import com.crko.domain.instantOrNull
+import com.crko.domain.localStart
 import com.crko.domain.occurrenceDate
 import com.crko.domain.occurrenceEndInstant
 import com.crko.domain.occurrenceStartInstant
@@ -110,7 +112,15 @@ private fun collectEventReminders(
             key = "e:${event.id}:$index:abs",
             triggerAtMillis = at,
             title = title,
-            body = alarm.description.ifBlank { alarmMoment(event.allDay, event.day, event.startMinutes, strings) },
+            body = alarm.description.ifBlank {
+                val start = event.localStart(zone)
+                alarmMoment(
+                    allDay = event.start is IcsTimeValue.Date,
+                    date = event.day,
+                    startMinutes = start.hour * 60 + start.minute,
+                    strings = strings,
+                )
+            },
         )
     }
     if (relative.isEmpty()) return
@@ -188,7 +198,9 @@ private fun emitWithRepeat(
             triggerAtMillis = at,
             title = event.title.ifBlank { strings.untitledEvent },
             body = alarm.description.ifBlank {
-                "${strings.alarmLabel((-trigger.duration).inWholeMinutes.toInt(), trigger.related == AlarmRelated.End)} · ${alarmMoment(event.allDay, occurrence, startMinutes, strings)}"
+                "${strings.alarmLabel((-trigger.duration).inWholeMinutes.toInt(), trigger.related == AlarmRelated.End)} · ${
+                    alarmMoment(event.start is IcsTimeValue.Date, occurrence, startMinutes, strings)
+                }"
             },
         )
     }
@@ -288,9 +300,6 @@ private fun alarmMoment(allDay: Boolean, date: LocalDate, startMinutes: Int, str
 }
 
 private fun Int.toLocalTime(seconds: Int): LocalTime = LocalTime(this / 60, this % 60, seconds)
-
-/** Stored `startTime`/`dueTime` values are ISO-8601 instants; broken ones are ignored. */
-private fun parseStoredInstant(text: String): Instant? = runCatching { Instant.parse(text) }.getOrNull()
 
 /**
  * Parses an absolute `TRIGGER;VALUE=DATE-TIME` value: the ICS basic form (`20261028T090000Z`,

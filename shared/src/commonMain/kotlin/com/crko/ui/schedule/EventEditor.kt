@@ -50,6 +50,8 @@ import com.crko.domain.RepeatRule
 import com.crko.domain.attachmentMimeType
 import com.crko.domain.attachmentBytes
 import com.crko.domain.daysTo
+import com.crko.domain.localEnd
+import com.crko.domain.localStart
 import com.crko.domain.mondayIndex
 import com.crko.domain.plusDays
 import com.crko.domain.safeAttachmentFileName
@@ -110,14 +112,19 @@ private fun EventEditorContent(
 ) {
     val startDate = occurrenceDate ?: event.day
     val initialEndDate = startDate.plusDays(event.day.daysTo(event.endDay))
+    val deviceZone = TimeZone.currentSystemDefault()
+    val eventStartLocal = event.localStart(deviceZone)
+    val eventEndLocal = event.localEnd(deviceZone)
+    val eventStartMinutes = eventStartLocal.hour * 60 + eventStartLocal.minute
+    val eventEndMinutes = eventEndLocal?.let { it.hour * 60 + it.minute } ?: eventStartMinutes
     // Re-key by the full event so switching between events resets every field.
     var title by remember(event, occurrenceDate) { mutableStateOf(event.title) }
     var note by remember(event, occurrenceDate) { mutableStateOf(event.note) }
     var date by remember(event, occurrenceDate) { mutableStateOf(startDate) }
     var endDate by remember(event, occurrenceDate) { mutableStateOf(initialEndDate) }
-    var allDay by remember(event) { mutableStateOf(event.allDay) }
-    var start by remember(event) { mutableStateOf(minutesToTime(event.startMinutes)) }
-    var end by remember(event) { mutableStateOf(minutesToTime(event.endMinutes)) }
+    var allDay by remember(event) { mutableStateOf(event.start is IcsTimeValue.Date) }
+    var start by remember(event) { mutableStateOf(minutesToTime(eventStartMinutes)) }
+    var end by remember(event) { mutableStateOf(minutesToTime(eventEndMinutes)) }
     var repeatFrequency by remember(event) { mutableStateOf(event.repeat?.frequency) }
     var repeatDays by remember(event) {
         mutableStateOf(
@@ -554,12 +561,12 @@ private fun EventEditorContent(
                     val startTime = LocalTime(
                         start.hour,
                         start.minute,
-                        if (startMinutes == event.startMinutes) event.startSeconds else 0,
+                        if (startMinutes == eventStartMinutes) eventStartLocal.second else 0,
                     )
                     val endTime = LocalTime(
                         end.hour,
                         end.minute,
-                        if (endMinutes == event.endMinutes) event.endSeconds else 0,
+                        if (endMinutes == eventEndMinutes) eventEndLocal?.second ?: eventStartLocal.second else 0,
                     )
                     val newStart: IcsTimeValue
                     val newEnd: IcsTimeValue?

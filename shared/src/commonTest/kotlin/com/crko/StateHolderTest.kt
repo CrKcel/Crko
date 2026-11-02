@@ -7,6 +7,7 @@ import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.Attachment
 import com.crko.domain.Event
+import com.crko.domain.legacyEvent
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.IcsWarning
@@ -32,7 +33,7 @@ import com.crko.domain.occursOn
 import com.crko.domain.plusDays
 import com.crko.domain.relatedToEnd
 import com.crko.domain.recurrenceSlotOn
-import com.crko.domain.shiftedByDays
+import com.crko.domain.movedByWallDays
 import com.crko.domain.triggerMinutes
 import com.crko.domain.wallDate
 import com.crko.domain.wallDateTime
@@ -115,7 +116,7 @@ class StateHolderTest {
     @Test
     fun eventValidationRejectsBlankTitlesAndNegativeDurations() {
         val f = Fixture()
-        val base = Event(null, "Meeting", "2026-10-27", 540, 600)
+        val base = legacyEvent(null, "Meeting", "2026-10-27", 540, 600)
         assertEquals(WriteResult.EmptyTitle, f.holder.saveEvent(base.copy(title = "   ")))
         // A zero-length timed event is valid RFC 5545; only an end before the start is rejected.
         assertEquals(WriteResult.Success, f.holder.saveEvent(base.copy(end = null)))
@@ -129,7 +130,7 @@ class StateHolderTest {
     @Test
     fun savingAnExistingIdUpdatesInsteadOfDuplicating() {
         val f = Fixture()
-        val event = Event("e1", "Draft", "2026-10-27", 60, 120)
+        val event = legacyEvent("e1", "Draft", "2026-10-27", 60, 120)
         f.holder.saveEvent(event)
         f.holder.saveEvent(event.copy(title = "Final").withTimes(event.wallDay, 90, 150))
         val stored = f.holder.appState.events.single()
@@ -141,7 +142,7 @@ class StateHolderTest {
     @Test
     fun deletingAnUnsavedEventIsANoOp() {
         val f = Fixture()
-        f.holder.saveEvent(Event("e1", "Keep", "2026-10-27", 60, 120))
+        f.holder.saveEvent(legacyEvent("e1", "Keep", "2026-10-27", 60, 120))
         f.holder.deleteEvent(null)
         assertEquals(1, f.holder.appState.events.size)
         f.holder.deleteEvent("e1")
@@ -151,7 +152,7 @@ class StateHolderTest {
     @Test
     fun endTimeIsClampedBeforeMidnight() {
         val f = Fixture()
-        f.holder.saveEvent(Event("e1", "Late", "2026-10-27", 1400, 2000))
+        f.holder.saveEvent(legacyEvent("e1", "Late", "2026-10-27", 1400, 2000))
         // 24:00 is not representable as LocalTime; the editor would crash recomposing it.
         assertEquals(MaxEndMinutes, f.holder.appState.events.single().endMinutes)
     }
@@ -161,7 +162,7 @@ class StateHolderTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            Event("e1", "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
+            legacyEvent("e1", "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
         )
         assertEquals(1, f.holder.eventsOn(start).size)
         assertEquals(1, f.holder.eventsOn(start.plusDays(1)).size)
@@ -176,7 +177,7 @@ class StateHolderTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            Event("e1", "Review", start.toString(), 600, 660, repeat = RepeatRule(RepeatFrequency.Weekly)),
+            legacyEvent("e1", "Review", start.toString(), 600, 660, repeat = RepeatRule(RepeatFrequency.Weekly)),
         )
         assertTrue(f.holder.eventsOn(start.plusDays(1)).isEmpty())
         assertEquals(1, f.holder.eventsOn(start.plusDays(7)).size)
@@ -189,7 +190,7 @@ class StateHolderTest {
         val start = f.holder.today
         // Tuesday, repeated on Monday and Thursday.
         f.holder.saveEvent(
-            Event(
+            legacyEvent(
                 "e1",
                 "Gym",
                 start.toString(),
@@ -210,7 +211,7 @@ class StateHolderTest {
     fun weeklyRepeatWithoutSelectedDaysUsesTheStartWeekday() {
         val f = Fixture()
         val result = f.holder.saveEvent(
-            Event("e1", "Gym", "2026-10-27", 420, 480, repeat = RepeatRule(RepeatFrequency.Weekly)),
+            legacyEvent("e1", "Gym", "2026-10-27", 420, 480, repeat = RepeatRule(RepeatFrequency.Weekly)),
         )
         assertEquals(WriteResult.Success, result)
         assertEquals(1, f.holder.appState.events.size)
@@ -222,7 +223,7 @@ class StateHolderTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            Event("e1", "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
+            legacyEvent("e1", "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
         )
         f.holder.deleteEventsOn(start.plusDays(1))
         assertTrue(f.holder.eventsOn(start.plusDays(1)).isEmpty())
@@ -234,7 +235,7 @@ class StateHolderTest {
     fun clearingADayRemovesOneOffEvents() {
         val f = Fixture()
         val start = f.holder.today
-        f.holder.saveEvent(Event("e1", "Dentist", start.toString(), 540, 600))
+        f.holder.saveEvent(legacyEvent("e1", "Dentist", start.toString(), 540, 600))
         f.holder.deleteEventsOn(start)
         assertTrue(f.holder.appState.events.isEmpty())
     }
@@ -407,7 +408,7 @@ class StateHolderTest {
     @Test
     fun importingEventsAssignsIdsAndSkipsKnownUids() {
         val f = Fixture()
-        val imported = Event(null, "Imported", "2026-10-27", 540, 600, icsUid = "ics-1")
+        val imported = legacyEvent(null, "Imported", "2026-10-27", 540, 600, icsUid = "ics-1")
         assertEquals(1, f.holder.importEvents(listOf(imported)))
         assertEquals(0, f.holder.importEvents(listOf(imported)))
         val stored = f.holder.appState.events.single()
@@ -418,8 +419,8 @@ class StateHolderTest {
     @Test
     fun reimportingAnExportOfNativeEventsDoesNotDuplicateThem() {
         val f = Fixture()
-        f.holder.saveEvent(Event("native-1", "Native", "2026-10-27", 540, 600))
-        val exported = Event(null, "Native", "2026-10-27", 540, 600, icsUid = "native-1@crko")
+        f.holder.saveEvent(legacyEvent("native-1", "Native", "2026-10-27", 540, 600))
+        val exported = legacyEvent(null, "Native", "2026-10-27", 540, 600, icsUid = "native-1@crko")
         assertEquals(0, f.holder.importEvents(listOf(exported)))
         assertEquals(1, f.holder.appState.events.size)
     }
@@ -427,7 +428,7 @@ class StateHolderTest {
     private fun Fixture.dailySeries(id: String = "series", count: Int? = null): Event {
         val start = holder.today
         holder.saveEvent(
-            Event(id, "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily, count = count)),
+            legacyEvent(id, "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily, count = count)),
         )
         return holder.appState.events.first { it.id == id }
     }
@@ -562,7 +563,7 @@ class StateHolderTest {
         val f = Fixture()
         val start = f.holder.today
         val result = f.holder.saveEvent(
-            Event(
+            legacyEvent(
                 id = "trip",
                 title = "Trip",
                 date = start.toString(),
@@ -587,7 +588,7 @@ class StateHolderTest {
         val f = Fixture()
         val start = f.holder.today
         val result = f.holder.saveEvent(
-            Event("late", "Late", start.toString(), 23 * 60, 0, endDate = start.plusDays(1).toString()),
+            legacyEvent("late", "Late", start.toString(), 23 * 60, 0, endDate = start.plusDays(1).toString()),
         )
         assertEquals(WriteResult.Success, result)
         val stored = f.holder.appState.events.single()
@@ -632,7 +633,7 @@ class StateHolderTest {
             end = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 1, 0), "Asia/Shanghai"),
             recurrence = Recurrence(rule = RepeatRule(RepeatFrequency.Daily)),
         )
-        val moved = series.shiftedByDays(2)
+        val moved = series.movedByWallDays(2)
         assertEquals(IcsTimeValue.Zoned(LocalDateTime(2026, 10, 29, 0, 30), "Asia/Shanghai"), moved.start)
         assertEquals("Asia/Shanghai", moved.timeZoneId)
     }
@@ -686,7 +687,7 @@ class StateHolderTest {
     fun movingOneOccurrenceMovesItsStartDate() {
         val f = Fixture()
         val start = f.holder.today
-        f.holder.saveEvent(Event("week", "Weekly", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Weekly)))
+        f.holder.saveEvent(legacyEvent("week", "Weekly", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Weekly)))
         val series = f.holder.appState.events.single()
         val occurrence = start.plusDays(7)
         val moved = start.plusDays(2)
@@ -702,7 +703,7 @@ class StateHolderTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            Event("week", "Weekly", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Weekly)),
+            legacyEvent("week", "Weekly", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Weekly)),
         )
         val series = f.holder.appState.events.single()
         val occurrence = start.plusDays(7)
@@ -724,7 +725,7 @@ class StateHolderTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            Event("daily", "Daily", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
+            legacyEvent("daily", "Daily", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
         )
         val series = f.holder.appState.events.single()
         f.holder.saveEvent(
@@ -752,7 +753,7 @@ class StateHolderTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            Event("daily", "Daily", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
+            legacyEvent("daily", "Daily", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
         )
         val series = f.holder.appState.events.single()
 
@@ -772,7 +773,7 @@ class StateHolderTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            Event(
+            legacyEvent(
                 "bounded",
                 "Bounded",
                 start.toString(),
@@ -840,7 +841,7 @@ class StateHolderTest {
         val start = f.holder.today
         f.holder.importEvents(
             listOf(
-                Event(
+                legacyEvent(
                     id = null,
                     title = "Zoned",
                     date = start.toString(),
@@ -875,7 +876,7 @@ class StateHolderTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            Event(
+            legacyEvent(
                 "trip",
                 "Trip",
                 start.toString(),
@@ -917,7 +918,7 @@ class StateHolderTest {
     fun importingAFileWritesEventsAndTodosTogether() {
         val f = Fixture()
         val import = IcsImport(
-            events = listOf(Event(null, "Imported", "2026-10-27", 540, 600, icsUid = "file-1")),
+            events = listOf(legacyEvent(null, "Imported", "2026-10-27", 540, 600, icsUid = "file-1")),
             todos = listOf(Todo(id = "", title = "File todo", icsUid = "file-2")),
         )
         val writesBefore = f.storage.writes
@@ -935,7 +936,7 @@ class StateHolderTest {
     @Test
     fun reimportingTheSameFileStillCollapsesOwnExportsAndDuplicates() {
         val f = Fixture()
-        val first = Event(null, "Meeting", "2026-10-27", 540, 600, icsUid = "uid-a")
+        val first = legacyEvent(null, "Meeting", "2026-10-27", 540, 600, icsUid = "uid-a")
         assertEquals(1, f.holder.importEvents(listOf(first, first.copy())))
         assertEquals(1, f.holder.appState.events.size)
         // An event created here is exported as "<id>@crko"; re-importing must not duplicate it.
@@ -968,7 +969,7 @@ class StateHolderTest {
     @Test
     fun reimportingANewerCopyUpdatesTheStoredRecord() {
         val f = Fixture()
-        val first = Event(
+        val first = legacyEvent(
             null,
             "Old",
             "2026-10-27",
@@ -995,8 +996,8 @@ class StateHolderTest {
     @Test
     fun reimportingACancelledCopyRemovesTheLocalSeries() {
         val f = Fixture()
-        val series = Event(null, "Cancelled", "2026-10-27", 540, 600, icsUid = "cancel-uid")
-        val exception = Event(
+        val series = legacyEvent(null, "Cancelled", "2026-10-27", 540, 600, icsUid = "cancel-uid")
+        val exception = legacyEvent(
             null,
             "Moved",
             "2026-10-28",
@@ -1014,15 +1015,15 @@ class StateHolderTest {
         val f = Fixture()
         val journal = Journal(id = "", title = "Note", icsUid = "j-1")
         assertEquals(ImportOutcome(journals = 1), f.holder.importCalendar(IcsImport(journals = listOf(journal))))
-        assertEquals(1, f.holder.importEvents(listOf(Event(null, "Gone", "2026-10-27", 540, 600, icsUid = "gone"))))
+        assertEquals(1, f.holder.importEvents(listOf(legacyEvent(null, "Gone", "2026-10-27", 540, 600, icsUid = "gone"))))
         assertEquals(ImportOutcome(removed = 1), f.holder.importCalendar(IcsImport(cancelledUids = setOf("gone"))))
     }
 
     @Test
     fun reimportingTheSameSourceRemovesRecordsTheFileNoLongerLists() {
         val f = Fixture()
-        val kept = Event(null, "Kept", "2026-10-27", 540, 600, icsUid = "kept-1")
-        val gone = Event(null, "Gone", "2026-10-28", 540, 600, icsUid = "gone-1")
+        val kept = legacyEvent(null, "Kept", "2026-10-27", 540, 600, icsUid = "kept-1")
+        val gone = legacyEvent(null, "Gone", "2026-10-28", 540, 600, icsUid = "gone-1")
         assertEquals(ImportOutcome(events = 2), f.holder.importCalendar(IcsImport(events = listOf(kept, gone)), "plan.ics"))
         // The file still carries one of the two records, so the other one was removed upstream.
         assertEquals(
@@ -1035,9 +1036,9 @@ class StateHolderTest {
     @Test
     fun recordsFromOtherSourcesSurviveAReimport() {
         val f = Fixture()
-        f.holder.importEvents(listOf(Event(null, "Mine", "2026-10-27", 540, 600, icsUid = "mine-1")))
+        f.holder.importEvents(listOf(legacyEvent(null, "Mine", "2026-10-27", 540, 600, icsUid = "mine-1")))
         f.holder.importCalendar(
-            IcsImport(events = listOf(Event(null, "Other", "2026-10-28", 540, 600, icsUid = "other-1"))),
+            IcsImport(events = listOf(legacyEvent(null, "Other", "2026-10-28", 540, 600, icsUid = "other-1"))),
             "other.ics",
         )
         // An empty file of a source says nothing about records the source does not own.
@@ -1048,10 +1049,10 @@ class StateHolderTest {
     @Test
     fun locallyCreatedRecordsSurviveSourceReconciliation() {
         val f = Fixture()
-        assertEquals(1, f.holder.importEvents(listOf(Event(null, "Mine", "2026-10-27", 540, 600))))
-        val first = Event(null, "Imported", "2026-10-28", 540, 600, icsUid = "imp-1")
+        assertEquals(1, f.holder.importEvents(listOf(legacyEvent(null, "Mine", "2026-10-27", 540, 600))))
+        val first = legacyEvent(null, "Imported", "2026-10-28", 540, 600, icsUid = "imp-1")
         f.holder.importCalendar(IcsImport(events = listOf(first)), "plan.ics")
-        val second = Event(null, "Imported", "2026-10-29", 540, 600, icsUid = "imp-2")
+        val second = legacyEvent(null, "Imported", "2026-10-29", 540, 600, icsUid = "imp-2")
         assertEquals(
             ImportOutcome(events = 1, removed = 1),
             f.holder.importCalendar(IcsImport(events = listOf(second)), "plan.ics"),
@@ -1062,8 +1063,8 @@ class StateHolderTest {
     @Test
     fun uncheckingAPreviewRowDoesNotRemoveTheRecordTheFileStillLists() {
         val f = Fixture()
-        val first = Event(null, "First", "2026-10-27", 540, 600, icsUid = "e-1")
-        val second = Event(null, "Second", "2026-10-28", 540, 600, icsUid = "e-2")
+        val first = legacyEvent(null, "First", "2026-10-27", 540, 600, icsUid = "e-1")
+        val second = legacyEvent(null, "Second", "2026-10-28", 540, 600, icsUid = "e-2")
         assertEquals(
             ImportOutcome(events = 2),
             f.holder.importCalendar(IcsImport(events = listOf(first, second)), "plan.ics"),
@@ -1109,8 +1110,8 @@ class StateHolderTest {
     @Test
     fun decliningACancellationDoesNotRemoveTheSeriesThroughTheVanishedPass() {
         val f = Fixture()
-        val cancelled = Event(null, "Cancelled", "2026-10-27", 540, 600, icsUid = "c-1")
-        val live = Event(null, "Live", "2026-10-28", 540, 600, icsUid = "c-2")
+        val cancelled = legacyEvent(null, "Cancelled", "2026-10-27", 540, 600, icsUid = "c-1")
+        val live = legacyEvent(null, "Live", "2026-10-28", 540, 600, icsUid = "c-2")
         f.holder.importCalendar(IcsImport(events = listOf(cancelled, live)), "plan.ics")
         // The new file cancels one series and keeps the other; the user declines the removal row,
         // so the declined series must survive the reconciliation of the same import as well.
@@ -1127,7 +1128,7 @@ class StateHolderTest {
     @Test
     fun aRenamedSourceTakesOverProvenanceEvenWhenNothingElseChanges() {
         val f = Fixture()
-        val original = Event(
+        val original = legacyEvent(
             null,
             "Same",
             "2026-10-27",
@@ -1161,7 +1162,7 @@ class StateHolderTest {
             ),
             binary = true,
         )
-        val event = Event(null, "With file", "2026-10-27", 540, 600, icsUid = "att-1", attachments = listOf(attachment))
+        val event = legacyEvent(null, "With file", "2026-10-27", 540, 600, icsUid = "att-1", attachments = listOf(attachment))
         f.holder.importCalendar(IcsImport(events = listOf(event)), "plan.ics")
         val stored = f.holder.appState.events.single().attachments.single()
         assertEquals("", stored.data)
@@ -1189,7 +1190,7 @@ class StateHolderTest {
     @Test
     fun reimportingAnOwnExportExceptionDoesNotReplaceItsMaster() {
         val f = Fixture()
-        val master = Event(
+        val master = legacyEvent(
             null,
             "Base",
             "2026-10-27",
@@ -1197,7 +1198,7 @@ class StateHolderTest {
             600,
             icsUid = "native-1@crko",
         )
-        val exception = Event(
+        val exception = legacyEvent(
             null,
             "Moved",
             "2026-10-28",
@@ -1351,7 +1352,7 @@ class StateHolderTest {
 /** Moves a floating fixture to [date], keeping its wall clock and length. */
 private fun Event.movedTo(date: LocalDate): Event {
     val delta = start.wallDateTime.date.daysTo(date)
-    return shiftedByDays(delta)
+    return movedByWallDays(delta)
 }
 
 /** Floating fixture at [date] with new wall-clock minutes; end equal to start is zero length. */

@@ -10,6 +10,8 @@ import com.crko.domain.TodoStatus
 import com.crko.domain.plusDays
 import com.crko.domain.toIcsPriority
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.LocalTime
 import kotlin.time.Clock
 
 /**
@@ -22,9 +24,15 @@ fun sampleState(
     nowMillis: Long = Clock.System.now().toEpochMilliseconds(),
 ): AppState {
     val yesterday = today.plusDays(-1)
+    fun Int.toLocalTime(): LocalTime = LocalTime(this / 60, this % 60)
     var eventId = 0
-    fun event(title: String, day: LocalDate, startMinutes: Int, endMinutes: Int, note: String = "") =
-        Event("sample-event-${eventId++}", title, day.toString(), startMinutes, endMinutes, note = note)
+    fun event(title: String, day: LocalDate, startMinutes: Int, endMinutes: Int, note: String = "") = Event(
+        id = "sample-event-${eventId++}",
+        title = title,
+        start = IcsTimeValue.Floating(LocalDateTime(day, startMinutes.toLocalTime())),
+        end = IcsTimeValue.Floating(LocalDateTime(day, endMinutes.toLocalTime())),
+        note = note,
+    )
 
     var todoId = 0
     fun todo(

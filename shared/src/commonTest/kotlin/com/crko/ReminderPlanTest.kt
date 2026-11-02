@@ -4,6 +4,7 @@ import com.crko.domain.Alarm
 import com.crko.domain.AlarmRelated
 import com.crko.domain.AlarmTrigger
 import com.crko.domain.Event
+import com.crko.domain.legacyEvent
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
@@ -51,7 +52,7 @@ class ReminderPlanTest {
 
     @Test
     fun aSimpleReminderFiresBeforeTheStart() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e1",
             title = "Meeting",
             date = "2026-10-28",
@@ -69,7 +70,7 @@ class ReminderPlanTest {
 
     @Test
     fun anEndRelatedReminderFiresBeforeTheEnd() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e2",
             title = "Workshop",
             date = "2026-10-28",
@@ -88,7 +89,7 @@ class ReminderPlanTest {
 
     @Test
     fun aNegativeTriggerFiresAfterTheStart() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e3",
             title = "Late",
             date = "2026-10-28",
@@ -103,7 +104,7 @@ class ReminderPlanTest {
 
     @Test
     fun anAllDayReminderFiresBeforeMidnight() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e4",
             title = "Holiday",
             date = "2026-10-28",
@@ -119,7 +120,7 @@ class ReminderPlanTest {
 
     @Test
     fun aZeroDurationEndRelatedReminderFiresAtTheStart() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e5",
             title = "Point",
             date = "2026-10-28",
@@ -139,7 +140,7 @@ class ReminderPlanTest {
 
     @Test
     fun recurringOccurrencesAreScheduledUntilTheHorizon() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e6",
             title = "Standup",
             date = "2026-10-20",
@@ -159,7 +160,7 @@ class ReminderPlanTest {
 
     @Test
     fun anEventBeyondTheHorizonIsNotScheduledYet() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e7",
             title = "Far away",
             date = "2027-03-01",
@@ -172,7 +173,7 @@ class ReminderPlanTest {
 
     @Test
     fun repeatWithDurationExpandsIntoContinuations() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e8",
             title = "Nagging",
             date = "2026-10-28",
@@ -189,7 +190,7 @@ class ReminderPlanTest {
 
     @Test
     fun repeatWithoutDurationDoesNotStackZeroLengthContinuations() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e9",
             title = "Once",
             date = "2026-10-28",
@@ -202,7 +203,7 @@ class ReminderPlanTest {
 
     @Test
     fun anAbsoluteTriggerFiresOnceAtItsOwnInstant() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e10",
             title = "Absolute",
             date = "2026-10-01",
@@ -247,7 +248,7 @@ class ReminderPlanTest {
 
     @Test
     fun emailAlarmsAndPastTriggersAreDropped() {
-        val past = Event(
+        val past = legacyEvent(
             id = "e11",
             title = "Already gone",
             date = "2026-10-27",
@@ -255,7 +256,7 @@ class ReminderPlanTest {
             endMinutes = 9 * 60,
             alarms = listOf(Alarm(trigger = reminder(15))),
         )
-        val email = Event(
+        val email = legacyEvent(
             id = "e12",
             title = "Mailed",
             date = "2026-10-28",
@@ -270,7 +271,7 @@ class ReminderPlanTest {
     @Test
     fun theCapKeepsTheEarliestReminders() {
         val events = (1..10).map { index ->
-            Event(
+            legacyEvent(
                 id = "cap-$index",
                 title = "E$index",
                 date = "2026-10-28",
@@ -328,7 +329,7 @@ class ReminderPlanTest {
 
     @Test
     fun byHourAlarmsFireForEveryStartOfTheDay() {
-        val event = Event(
+        val event = legacyEvent(
             id = "rounds",
             title = "Rounds",
             date = "2026-10-28",
@@ -366,7 +367,7 @@ class ReminderPlanTest {
 
     @Test
     fun multiDayEndRelatedAlarmsFollowEachOccurrence() {
-        val event = Event(
+        val event = legacyEvent(
             id = "e13",
             title = "Retreat",
             date = "2026-10-01",

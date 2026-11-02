@@ -44,7 +44,7 @@ import com.crko.domain.importCalendarLines
 import com.crko.domain.instantOrNull
 import com.crko.domain.itipDecision
 import com.crko.domain.itipReply
-import com.crko.domain.shiftedByDays
+import com.crko.domain.movedByWallDays
 import com.crko.domain.toIcsPriority
 import com.crko.domain.todoForest
 import com.crko.domain.todoPriorityRank
@@ -327,7 +327,7 @@ class AppStateHolder(
             }
             if (shift == 0) merged else merged.shiftedByWallDays(shift)
         }
-        val saved = edited.shiftedByDays(shiftToAnchor).copy(
+        val saved = edited.movedByWallDays(shiftToAnchor).copy(
             recurrence = savedRecurrence,
             created = series.created ?: now.toString(),
             lastModified = now.toString(),
@@ -371,7 +371,7 @@ class AppStateHolder(
         // The editor starts on the occurrence date, so a different date is an intentional move.
         val moved = edited.day != occurrence
         val shiftToSlot = if (moved) 0 else edited.wallDay.daysTo(series.wallDateFor(occurrence))
-        val placed = edited.shiftedByDays(shiftToSlot)
+        val placed = edited.movedByWallDays(shiftToSlot)
         val override = placed.copy(
             id = existingOverride?.id ?: idProvider(),
             // RECURRENCE-ID stays on the original slot; DTSTART may move to another date.
@@ -445,11 +445,11 @@ class AppStateHolder(
         val slotWall = series.wallDateFor(occurrence)
         val shiftToSlot = if (moved) 0 else edited.wallDay.daysTo(slotWall)
         val newId = idProvider()
-        val newSeries = edited.shiftedByDays(shiftToSlot).copy(
+        val newSeries = edited.movedByWallDays(shiftToSlot).copy(
             id = newId,
             recurrence = futureRecurrence,
             // A genuine new UID: this is a separate series rather than an exception, never a
-            // synthetic `#future-…` id derived from the old one.
+            // synthetic id glued onto the old one.
             icsUid = null,
             recurrenceId = null,
             recurrenceRange = null,
@@ -1485,7 +1485,7 @@ private fun parseInstantOrNull(value: String?): kotlin.time.Instant? =
 /** Moves an event (and its associated recurrence values) by whole calendar days. */
 private fun Event.shiftedBy(days: Int): Event {
     if (days == 0) return this
-    return shiftedByDays(days).copy(
+    return movedByWallDays(days).copy(
         recurrence = recurrence?.shiftedByWallDays(days),
         recurrenceId = recurrenceId?.plusWallDays(days),
     )

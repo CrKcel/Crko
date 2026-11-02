@@ -39,6 +39,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.crko.domain.Event
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.LocalClock
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.minutesOfDay
@@ -52,6 +53,8 @@ import com.crko.state.AppStateHolder
 import com.crko.ui.components.PopupListLayout
 import com.crko.ui.components.PopupTitle
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.LocalTime
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -123,13 +126,17 @@ fun ScheduleTab(
                 else -> state.settings.agendaScrollHour * 60
             }
             val startMinutes = start.coerceAtMost(24 * 60 - SlotMinutes)
+            val endMinutes = (startMinutes + 60).coerceAtMost(MaxEndMinutes)
             currentOnOpenEvent(
                 Event(
                     id = null,
                     title = "",
-                    date = date.toString(),
-                    startMinutes = startMinutes,
-                    endMinutes = (startMinutes + 60).coerceAtMost(MaxEndMinutes),
+                    start = IcsTimeValue.Floating(
+                        LocalDateTime(date, LocalTime(startMinutes / 60, startMinutes % 60)),
+                    ),
+                    end = IcsTimeValue.Floating(
+                        LocalDateTime(date, LocalTime(endMinutes / 60, endMinutes % 60)),
+                    ),
                 ),
                 date,
             )

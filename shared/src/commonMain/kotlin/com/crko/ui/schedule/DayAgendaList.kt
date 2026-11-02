@@ -24,6 +24,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Event
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.mondayIndex
 import com.crko.domain.occurrenceRangesOn
 import com.crko.i18n.Strings
@@ -74,7 +75,7 @@ internal fun AgendaEventRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = timeRangeText(event.allDay, entry.range, strings),
+            text = timeRangeText(event.start is IcsTimeValue.Date, entry.range, strings),
             style = MiuixTheme.textStyles.footnote1,
             fontSize = 12.sp,
             color = content,

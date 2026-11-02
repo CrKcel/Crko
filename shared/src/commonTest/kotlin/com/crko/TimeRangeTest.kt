@@ -1,6 +1,7 @@
 package com.crko
 
 import com.crko.domain.Event
+import com.crko.domain.legacyEvent
 import com.crko.domain.EndOfDayMinutes
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
@@ -18,7 +19,7 @@ class TimeRangeTest {
         end: Int,
         endDate: String? = null,
         repeat: RepeatRule? = null,
-    ) = Event(id = "e", title = "e", date = date, startMinutes = start, endMinutes = end, endDate = endDate, repeat = repeat)
+    ) = legacyEvent(id = "e", title = "e", date = date, startMinutes = start, endMinutes = end, endDate = endDate, repeat = repeat)
 
     @Test
     fun aCrossMidnightEventIsClippedToEachDay() {

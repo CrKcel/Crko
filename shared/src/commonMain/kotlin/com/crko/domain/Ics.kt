@@ -250,7 +250,7 @@ private fun Event.referencedTimeZoneIds(): Set<String> = buildSet {
  */
 fun importCalendar(
     text: String,
-    timeZone: TimeZone = TimeZone.currentSystemDefault(),
+    timeZone: TimeZone,
     untitledTitle: String,
 ): IcsImport = importCalendarLines(unfold(text).asSequence(), timeZone, untitledTitle)
 
@@ -260,7 +260,7 @@ fun importCalendar(
  */
 internal fun importCalendarLines(
     lines: Sequence<UnfoldedLine>,
-    timeZone: TimeZone = TimeZone.currentSystemDefault(),
+    timeZone: TimeZone,
     untitledTitle: String,
 ): IcsImport {
     val warnings = linkedSetOf<IcsWarning>()
@@ -432,7 +432,7 @@ private fun mergeWarnings(
 
 fun importIcs(
     text: String,
-    timeZone: TimeZone = TimeZone.currentSystemDefault(),
+    timeZone: TimeZone,
     untitledTitle: String,
 ): List<Event> = importCalendar(text, timeZone, untitledTitle).events
 
@@ -693,7 +693,7 @@ private fun StringBuilder.appendRecurrence(recurrence: Recurrence, event: Event)
 
 private fun StringBuilder.appendRecurrenceDates(rdates: List<RecurrenceDate>) {
     if (rdates.isEmpty()) return
-    rdates.groupBy { occurrenceParameter(it.value, period = it.duration != null) }
+    rdates.groupBy { recurrenceValueParameters(it.value, period = it.duration != null) }
         .forEach { (params, group) ->
             val values = group.map { rdate ->
                 val value = formatTimeValue(rdate.value)
@@ -706,7 +706,7 @@ private fun StringBuilder.appendRecurrenceDates(rdates: List<RecurrenceDate>) {
 private fun StringBuilder.appendExDate(recurrence: Recurrence, event: Event) {
     if (recurrence.exdates.isEmpty()) return
     val values = recurrence.exdates.flatMap { it.exclusionFor(event, recurrence) }
-    values.groupBy { occurrenceParameter(it) }.forEach { (params, group) ->
+    values.groupBy { recurrenceValueParameters(it) }.forEach { (params, group) ->
         line("EXDATE$params:${group.distinct().sortedBy { it.wallDateTime }.joinToString(",") { formatTimeValue(it) }}")
     }
 }
@@ -728,7 +728,7 @@ private fun IcsTimeValue.exclusionFor(event: Event, recurrence: Recurrence): Lis
     }
 }
 
-private fun occurrenceParameter(value: IcsTimeValue, period: Boolean = false): String = when {
+private fun recurrenceValueParameters(value: IcsTimeValue, period: Boolean = false): String = when {
     period -> ";VALUE=PERIOD"
     value is IcsTimeValue.Date -> ";VALUE=DATE"
     value is IcsTimeValue.Zoned -> if (value.tzid.equals("UTC", ignoreCase = true)) "" else ";TZID=${value.tzid}"
@@ -2297,7 +2297,7 @@ private fun StringBuilder.appendJournalRecurrence(recurrence: Recurrence) {
     }
     appendRecurrenceDates(recurrence.rdates)
     if (recurrence.exdates.isEmpty()) return
-    recurrence.exdates.groupBy { occurrenceParameter(it) }.forEach { (params, group) ->
+    recurrence.exdates.groupBy { recurrenceValueParameters(it) }.forEach { (params, group) ->
         line("EXDATE$params:${group.distinct().sortedBy { it.wallDateTime }.joinToString(",") { formatTimeValue(it) }}")
     }
 }

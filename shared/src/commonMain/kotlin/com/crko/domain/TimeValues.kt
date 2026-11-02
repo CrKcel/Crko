@@ -260,7 +260,7 @@ internal fun Event.displayEndDay(zone: TimeZone): LocalDate = displayLastOccupie
 }
 
 /** Moves the event by whole wall days, keeping the times of day and zones. */
-fun Event.shiftedByDays(days: Int): Event {
+fun Event.movedByWallDays(days: Int): Event {
     if (days == 0) return this
     return copy(start = start.plusWallDays(days), end = end?.plusWallDays(days))
 }
