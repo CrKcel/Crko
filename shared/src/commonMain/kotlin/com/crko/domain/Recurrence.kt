@@ -26,6 +26,9 @@ internal fun Event.isOccurrenceStart(candidate: LocalDate, rule: RepeatRule?): B
         candidate = candidate,
         startTime = wallStartTime(),
         count = count,
+        // The occurrence's own value type decides where its start instant lies; the device zone
+        // may name a different one for a TZID series.
+        anchorValue = start,
         // The index belongs to this exact rule instance; a modified copy keeps the ordinal walk.
         countIndex = index?.takeIf { it.first === rule }?.second,
     )
@@ -62,8 +65,9 @@ private fun repeatsOnDate(recurrence: Recurrence?, candidate: LocalDate): List<R
  * Whether [candidate] holds an occurrence of the recurrence set. The rule is expanded on the anchor
  * date; `RDATE` adds instances (even without a rule and even before the anchor) and `EXDATE`
  * removes individual starts. [startTime] is the anchor's time of day, used for `UNTIL` and for
- * matching timed exclusions. [countIndex] holds the rule-generated days of a `COUNT` series,
- * replacing the ordinal walk when it matches.
+ * matching timed exclusions. [anchorValue] is the component's own `DTSTART`: a UTC `UNTIL` bounds
+ * the instants the series produces in that value's zone, not the device's. [countIndex] holds the
+ * rule-generated days of a `COUNT` series, replacing the ordinal walk when it matches.
  */
 internal fun isRuleOccurrence(
     anchor: LocalDate,
@@ -72,6 +76,7 @@ internal fun isRuleOccurrence(
     candidate: LocalDate,
     startTime: OccurrenceTime? = null,
     count: Int? = null,
+    anchorValue: IcsTimeValue? = null,
     countIndex: LongArray? = null,
     zone: TimeZone = TimeZone.currentSystemDefault(),
 ): Boolean {
@@ -88,7 +93,7 @@ internal fun isRuleOccurrence(
     }
     if (rule == null) return rdateMatch
     val until = rule.until
-    if (until != null && !occursBeforeUntil(until, candidate, startTime, zone)) return rdateMatch
+    if (until != null && !occursBeforeUntil(until, candidate, startTime, anchorValue, zone)) return rdateMatch
     val generated = if (countIndex != null) {
         // The index was built from the same rule's matches, so membership decides without matching again.
         countIndex.binaryFind(candidate.toEpochDays()) >= 0
@@ -172,6 +177,7 @@ private fun occursBeforeUntil(
     until: IcsTimeValue,
     candidate: LocalDate,
     startTime: OccurrenceTime?,
+    anchorValue: IcsTimeValue?,
     zone: TimeZone,
 ): Boolean {
     if (until is IcsTimeValue.Date) return candidate <= until.date
@@ -182,7 +188,10 @@ private fun occursBeforeUntil(
         is IcsTimeValue.Date -> candidate <= until.date
         is IcsTimeValue.Floating -> start <= until.dateTime
         is IcsTimeValue.Zoned -> start <= until.dateTime
-        is IcsTimeValue.Utc -> start.toInstant(zone) <= until.instant
+        // A UTC `UNTIL` bounds instants; the occurrence's own instant is the one its `DTSTART`
+        // type names, not the same wall clock folded into the device zone.
+        is IcsTimeValue.Utc -> (anchorValue?.withWallDateTime(start)?.instantOrNull(zone)
+            ?: start.toInstant(zone)) <= until.instant
     }
 }
 
@@ -827,7 +836,7 @@ fun Todo.occursOn(date: LocalDate): Boolean {
     val recurrence = recurrenceSet()
     if (rule == null && recurrence == null) return date == occurrenceDate(anchor)
     val occStart = date.plusDays(-displayOffset(anchor))
-    return isRuleOccurrence(anchor, rule, recurrence, occStart, count = rule?.count)
+    return isRuleOccurrence(anchor, rule, recurrence, occStart, count = rule?.count, anchorValue = start ?: due)
 }
 
 /**
@@ -844,7 +853,9 @@ fun Todo.occurrenceStartsBetween(from: LocalDate, to: LocalDate): List<LocalDate
     val last = to.plusDays(-offset)
     var steps = 0
     while (candidate <= last && steps <= NextOccurrenceSearchDays) {
-        if (isRuleOccurrence(anchor, rule, recurrenceSet(), candidate, count = rule.count)) dates += candidate
+        if (isRuleOccurrence(anchor, rule, recurrenceSet(), candidate, count = rule.count, anchorValue = start ?: due)) {
+            dates += candidate
+        }
         candidate = candidate.plusDays(1)
         steps++
     }
@@ -864,7 +875,7 @@ fun Todo.nextOccurrenceDate(today: LocalDate): LocalDate? {
     var candidate = maxOf(anchor, today.plusDays(-offset))
     var steps = 0
     while (steps <= NextOccurrenceSearchDays) {
-        if (isRuleOccurrence(anchor, rule, recurrenceSet(), candidate, count = rule.count)) {
+        if (isRuleOccurrence(anchor, rule, recurrenceSet(), candidate, count = rule.count, anchorValue = start ?: due)) {
             return candidate.plusDays(offset)
         }
         candidate = candidate.plusDays(1)

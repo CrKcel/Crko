@@ -3,18 +3,34 @@ package com.crko
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.Calendar
+import com.crko.domain.CalendarMetadata
 import com.crko.domain.CalendarSubscription
+import com.crko.domain.CalendarTimeZone
 import com.crko.domain.CurrentSchemaVersion
+import com.crko.domain.IcsTimeValue
+import com.crko.domain.LocalCalendarId
 import com.crko.domain.LocalRecordMeta
 import com.crko.domain.PersistedSettings
 import com.crko.domain.StageFiveAppState
+import com.crko.domain.icsTimeZoneConflicts
+import com.crko.domain.icsTimeZoneDefinition
+import com.crko.domain.instantOrNull
 import com.crko.domain.legacyEvent
+import com.crko.domain.registerIcsTimeZones
+import com.crko.domain.replaceIcsTimeZones
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.runBlocking
 import com.crko.storage.HttpRequest
 import com.crko.storage.HttpResponse
 import com.crko.storage.StateStorage
 import com.crko.storage.SubscriptionHttp
 import com.crko.storage.decodeStateWithReport
 import com.crko.state.AppStateHolder
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
 import kotlin.coroutines.ContinuationInterceptor
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -25,6 +41,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Instant
 
 private class ScopeStorage(var state: AppState = AppState()) : StateStorage {
     override fun loadState() = state
@@ -54,6 +71,46 @@ private fun scopeFeed(vararg events: Pair<String, String>, stamp: String = "2026
     }
 
 private fun AppState.calendar(id: String): Calendar = calendars.single { it.id == id }
+
+/** A raw `VTIMEZONE` block for a zone the platform does not know, at a fixed [offset]. */
+private fun zoneText(tzid: String, offset: String): String = """
+    BEGIN:VTIMEZONE
+    TZID:$tzid
+    BEGIN:STANDARD
+    DTSTART:19700101T000000
+    TZOFFSETFROM:$offset
+    TZOFFSETTO:$offset
+    END:STANDARD
+    END:VTIMEZONE
+""".trimIndent().trimEnd()
+
+/** [zoneText] as CRLF lines, wrapped in a one-event feed. */
+private fun zoneFeed(tzid: String, offset: String, uid: String): String = buildString {
+    append("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//feed//EN\r\n")
+    zoneText(tzid, offset).split("\n").forEach { append(it.trim()).append("\r\n") }
+    append("BEGIN:VEVENT\r\nUID:$uid\r\nDTSTAMP:20260101T000000Z\r\n")
+    append("DTSTART;TZID=$tzid:20260301T100000\r\nSUMMARY:Feed event\r\nEND:VEVENT\r\n")
+    append("END:VCALENDAR\r\n")
+}
+
+/** A `VTIMEZONE` whose observances expand yearly, so offset lookups grow the transition cache. */
+private fun dstZoneText(tzid: String, offset: String): String = """
+    BEGIN:VTIMEZONE
+    TZID:$tzid
+    BEGIN:STANDARD
+    DTSTART:19701025T020000
+    RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU
+    TZOFFSETFROM:$offset
+    TZOFFSETTO:+0000
+    END:STANDARD
+    BEGIN:DAYLIGHT
+    DTSTART:19700329T010000
+    RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU
+    TZOFFSETFROM:+0000
+    TZOFFSETTO:$offset
+    END:DAYLIGHT
+    END:VTIMEZONE
+""".trimIndent().trimEnd()
 
 class CalendarScopeTest {
 
@@ -225,5 +282,164 @@ class CalendarScopeTest {
         assertEquals(listOf("Remote"), decoded.state.calendar("s1").events.map { it.title })
         assertEquals("Feed", decoded.state.calendar("s1").name)
         assertEquals(subscription.url, decoded.state.calendar("s1").syncState?.url)
+    }
+
+    @Test
+    fun aDamagedRecordInAStageFivePayloadKeepsItsSubscriptionsAndZones() {
+        val local = legacyEvent(
+            id = "local-1",
+            title = "Local",
+            date = "2026-10-27",
+            startMinutes = 540,
+            endMinutes = 600,
+            icsUid = "local@example.com",
+        )
+        val remote = legacyEvent(
+            id = "remote-1",
+            title = "Remote",
+            date = "2026-10-28",
+            startMinutes = 600,
+            endMinutes = 660,
+            icsUid = "remote@example.com",
+        ).copy(local = LocalRecordMeta(importSource = "sub:s1"))
+        val subscription = CalendarSubscription(id = "s1", name = "Feed", url = "https://example.com/cal.ics")
+        val flat = StageFiveAppState(
+            events = listOf(local, remote),
+            subscriptions = listOf(subscription),
+            calendar = CalendarMetadata(
+                name = "My Crko",
+                timeZones = listOf(CalendarTimeZone("Kept/Zone", zoneText("Kept/Zone", "+0300"))),
+            ),
+        )
+        // One unreadable record breaks the strict read of the whole flat payload.
+        val payload = AppJson.encodeToString(StageFiveAppState.serializer(), flat)
+            .replaceFirst("\"events\":[", "\"events\":[{\"id\":\"bad\",\"start\":{\"type\":\"nope\"}},")
+            .replaceFirst("{", "{\"schemaVersion\":5,")
+
+        val decoded = decodeStateWithReport(payload)
+
+        assertEquals(1, decoded.damage.droppedRecords, decoded.damage.toString())
+        assertEquals(listOf("Local"), decoded.state.localCalendar?.events?.map { it.title })
+        assertEquals("My Crko", decoded.state.localCalendar?.name)
+        // The subscription's own calendar and records survive, so its updates and deletions stay scoped.
+        assertEquals(listOf("Remote"), decoded.state.calendar("s1").events.map { it.title })
+        assertNotNull(decoded.state.calendar("s1").syncState)
+        assertEquals("Kept/Zone", decoded.state.localCalendar?.timeZones?.single()?.tzid)
+        assertTrue(
+            icsTimeZoneDefinition("Kept/Zone").orEmpty().contains("TZID:Kept/Zone"),
+            icsTimeZoneDefinition("Kept/Zone").toString(),
+        )
+    }
+
+    @Test
+    fun aCurrentPayloadWhoseCalendarsCannotBeReadIsReportedAsUnreadable() {
+        val decoded = decodeStateWithReport("""{"schemaVersion":6,"calendars":{"local":[]}}""")
+
+        // Silently answering with an empty state left no damage to report, so the next edit overwrote
+        // the only copy of the user's data without even a corrupt backup.
+        assertTrue(decoded.damage.unreadable, decoded.damage.toString())
+    }
+
+    @Test
+    fun twoCalendarsNamingTheSameZoneDoNotRedefineEachOther() {
+        val east = zoneText("Shared/Name", "+0300")
+        val west = zoneText("Shared/Name", "-0500")
+        val storage = ScopeStorage(
+            AppState(
+                calendars = listOf(
+                    Calendar.local().copy(timeZones = listOf(CalendarTimeZone("Shared/Name", east))),
+                    Calendar(id = "west", name = "West").copy(timeZones = listOf(CalendarTimeZone("Shared/Name", west))),
+                ),
+            ),
+        )
+        AppStateHolder(
+            scope = TestScope(StandardTestDispatcher()),
+            initialSystemLocale = "en-US",
+            idProvider = { "unused" },
+            storage = storage,
+        )
+
+        // Each calendar's own definition stays readable for its own export.
+        assertEquals(east, icsTimeZoneDefinition("Shared/Name", calendarId = LocalCalendarId))
+        assertEquals(west, icsTimeZoneDefinition("Shared/Name", calendarId = "west"))
+        assertTrue("Shared/Name" in icsTimeZoneConflicts(), icsTimeZoneConflicts().toString())
+        // A reference whose calendar is not known resolves through the first declaring one — the state
+        // order — so loading the second calendar no longer moves the first calendar's events.
+        val instant = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 9, 0), "Shared/Name")
+            .instantOrNull(TimeZone.UTC)
+        assertEquals(Instant.parse("2026-10-27T06:00:00Z"), instant)
+    }
+
+    @Test
+    fun aDeletedSubscriptionZoneStopsResolving() = runTest {
+        val storage = ScopeStorage(AppState(calendars = listOf(Calendar.local())))
+        val http = ScopeHttp {
+            HttpResponse(200, emptyMap(), zoneFeed("Gone/After", "+0300", "gone@example.com").encodeToByteArray())
+        }
+        val scope = TestScope(StandardTestDispatcher(testScheduler))
+        val holder = AppStateHolder(
+            scope = scope,
+            initialSystemLocale = "en-US",
+            idProvider = { "sub-1" },
+            storage = storage,
+            subscriptionHttp = http,
+            parseDispatcher = scope.coroutineContext[ContinuationInterceptor] as kotlinx.coroutines.CoroutineDispatcher,
+        )
+        val subscription = assertNotNull(holder.addSubscription("Feed", "https://example.com/cal.ics"))
+        holder.syncSubscription(subscription.id)
+        scope.advanceUntilIdle()
+        assertNotNull(icsTimeZoneDefinition("Gone/After"))
+
+        holder.removeSubscription(subscription.id)
+
+        // The lookup cache is a derived index of the stored calendars: a definition no calendar
+        // declares any more must not keep steering later imports of the same zone name.
+        assertNull(icsTimeZoneDefinition("Gone/After"))
+        assertTrue(icsTimeZoneConflicts().isEmpty(), icsTimeZoneConflicts().toString())
+    }
+
+    @Test
+    fun concurrentZoneLookupsSurviveARebuiltCache() {
+        // Subscription parses and exports run on Dispatchers.Default while the main thread persists;
+        // the lookup cache used to be a shared mutable map (and a lazily grown transition list) that a
+        // rebuild could tear out from under an iterating reader.
+        val first = dstZoneText("Race/Zone", "+0300")
+        val second = dstZoneText("Race/Zone", "-0500")
+        val wide = (1..60).map { index ->
+            Calendar(id = "c$index", name = "Cal $index")
+                .copy(timeZones = listOf(CalendarTimeZone("Race/Zone", if (index % 2 == 0) second else first)))
+        }
+        val value = IcsTimeValue.Zoned(LocalDateTime(2026, 7, 1, 12, 0), "Race/Zone")
+        replaceIcsTimeZones(wide)
+
+        runBlocking {
+            coroutineScope {
+                val readers = List(3) {
+                    async(Dispatchers.Default) {
+                        repeat(3000) {
+                            icsTimeZoneDefinition("Race/Zone")
+                            value.instantOrNull(TimeZone.UTC)
+                        }
+                    }
+                }
+                val writer = async(Dispatchers.Default) {
+                    repeat(2000) { round ->
+                        replaceIcsTimeZones(if (round % 2 == 0) wide.take(30) else wide)
+                        registerIcsTimeZones(listOf(CalendarTimeZone("Preview/Zone", first)), "preview")
+                    }
+                }
+                (readers + writer).awaitAll()
+            }
+        }
+
+        // Every snapshot is a complete map: after the last write the definitions still resolve, and
+        // the yearly rule still yields the right offset for a July instant.
+        replaceIcsTimeZones(wide)
+        assertNotNull(icsTimeZoneDefinition("Race/Zone"))
+        assertEquals(
+            kotlin.time.Instant.parse("2026-07-01T09:00:00Z"),
+            value.instantOrNull(TimeZone.UTC),
+        )
+        replaceIcsTimeZones(emptyList())
     }
 }

@@ -62,9 +62,18 @@ object InstantIso8601Serializer : KSerializer<Instant> {
     override fun deserialize(decoder: Decoder): Instant = Instant.parse(decoder.decodeString())
 }
 
-/** Whole seconds of a duration, the granularity an `RDATE;VALUE=PERIOD` length has. */
+/**
+ * Whole seconds of a duration, the granularity an `RDATE;VALUE=PERIOD` length has.
+ *
+ * The descriptor name must not be the class name of the value it serializes: `kotlin.time.Duration`
+ * is already registered by kotlinx.serialization's own `DurationSerializer`, and two serializers for
+ * one serial name make the JVM implementation throw while initializing this object — which, since
+ * every relative `VALARM` and every period length goes through it, would break saving and reading
+ * the whole state, not one record.
+ */
 object DurationSecondsSerializer : KSerializer<Duration> {
-    override val descriptor = PrimitiveSerialDescriptor("kotlin.time.Duration", PrimitiveKind.LONG)
+    override val descriptor =
+        PrimitiveSerialDescriptor("com.crko.domain.DurationSeconds", PrimitiveKind.LONG)
 
     override fun serialize(encoder: Encoder, value: Duration) = encoder.encodeLong(value.inWholeSeconds)
 
@@ -148,8 +157,13 @@ fun IcsTimeValue.withWallDateTime(dateTime: LocalDateTime): IcsTimeValue = when 
  */
 fun IcsTimeValue.withDeviceDateTime(dateTime: LocalDateTime, deviceZone: TimeZone): IcsTimeValue = when (this) {
     is IcsTimeValue.Zoned -> {
-        val zone = icsZoneOrNull(tzid) ?: deviceZone
-        IcsTimeValue.Zoned(dateTime.toInstant(deviceZone).toLocalDateTime(zone), tzid)
+        // The picked clock is the device's, so it first becomes the instant the user meant and then
+        // the wall clock of the event's own zone — including a zone only a calendar-level
+        // `VTIMEZONE` describes. Reading it through the device instead kept the picked numbers as
+        // the zone's wall clock, which moved the event by the difference of the two offsets every
+        // time it was saved.
+        val instant = dateTime.toInstant(deviceZone)
+        IcsTimeValue.Zoned(zoneDateTimeOrNull(instant, tzid) ?: instant.toLocalDateTime(deviceZone), tzid)
     }
     is IcsTimeValue.Utc -> IcsTimeValue.Utc(dateTime.toInstant(deviceZone))
     else -> IcsTimeValue.Floating(dateTime)
@@ -162,21 +176,41 @@ fun IcsTimeValue.plusWallDays(days: Int): IcsTimeValue =
 /** Moves a timed value by [duration]; date-only values move by whole days. */
 fun IcsTimeValue.plusDuration(duration: Duration, fallbackZone: TimeZone): IcsTimeValue = when (this) {
     is IcsTimeValue.Date -> IcsTimeValue.Date(date.plusDays(duration.inWholeDays.toInt().coerceAtLeast(1)))
-    is IcsTimeValue.Floating -> IcsTimeValue.Floating(
-        (instantOrNull(fallbackZone) ?: wallDateTime.toInstant(fallbackZone)).plus(duration)
-            .toLocalDateTime(fallbackZone),
-    )
+    // A floating value has no instant of its own: resolving it through a zone first would let the
+    // device's daylight-saving rules decide where the `DURATION` ends, so the same file would
+    // import with a different length on a different device.
+    is IcsTimeValue.Floating -> IcsTimeValue.Floating(wallDateTime.plusWallClock(duration))
     is IcsTimeValue.Zoned -> {
         val zone = icsZoneOrNull(tzid) ?: fallbackZone
         val end = (instantOrNull(fallbackZone) ?: dateTime.toInstant(zone)) + duration
-        IcsTimeValue.Zoned(end.toLocalDateTime(zone), tzid)
+        IcsTimeValue.Zoned(zoneDateTimeOrNull(end, tzid) ?: end.toLocalDateTime(zone), tzid)
     }
     is IcsTimeValue.Utc -> IcsTimeValue.Utc(instant + duration)
+}
+
+/** Adds [duration] to a wall clock, without any zone in between. */
+private fun LocalDateTime.plusWallClock(duration: Duration): LocalDateTime {
+    val total = date.toEpochDays() * 86_400L +
+        time.hour * 3_600L + time.minute * 60L + time.second +
+        duration.inWholeSeconds
+    val day = total.floorDiv(86_400L)
+    val secondOfDay = total.mod(86_400L).toInt()
+    return LocalDateTime(
+        LocalDate.fromEpochDays(day.toInt()),
+        LocalTime(secondOfDay / 3_600, secondOfDay % 3_600 / 60, secondOfDay % 60),
+    )
 }
 
 /** Duration from [this] to [other]; instants when both carry one, wall clock otherwise. */
 fun IcsTimeValue.durationUntil(other: IcsTimeValue?, zone: TimeZone): Duration {
     if (other == null) return Duration.ZERO
+    // Two floating values describe one wall clock and have no instant of their own: folding them
+    // through the device zone let that zone's daylight-saving rules shrink or stretch the length
+    // (the 02:30-03:30 occurrence on a spring-forward day became zero). Same call as the DURATION
+    // and `UNTIL` decisions in stage 1: floating arithmetic stays on the wall clock.
+    if (this is IcsTimeValue.Floating && other is IcsTimeValue.Floating) {
+        return wallDateTime.wallSecondsUntil(other.wallDateTime).seconds
+    }
     val start = instantOrNull(zone)
     val end = other.instantOrNull(zone)
     if (start != null && end != null) return end - start

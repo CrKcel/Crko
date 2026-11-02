@@ -20,6 +20,9 @@
 # 单元测试（JVM host）
 ./gradlew :shared:testAndroidHostTest
 
+# shared 的 iOS Kotlin 编译（完整 iOS 构建需 Xcode）
+./gradlew :shared:compileKotlinIosSimulatorArm64
+
 # iOS（需要 Xcode）
 cd iosApp && xcodebuild -project iosApp.xcodeproj -scheme iosApp \
   -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 18 Pro' build
@@ -54,7 +57,7 @@ shared/src/commonMain/kotlin/com/crko/
 ./gradlew :shared:verifyDomainModel
 ```
 
-检查 `commonMain` 中是否重新出现旧 `Event` 字段、合成 UID（`#override-` / `#future-` / `#prior-`）或 ICS 导入导出路径上的设备时区。
+检查：旧 `Event` / `Todo` 字段名是否以属性声明形式重新出现在 `domain` 或 `state` 的任意非迁移文件中（不只 `Models.kt`，也含 `Event.date` 与 `RepeatRule.weekdays` / `rDates`）、合成 UID 标记（`#override-` / `#future-` / `#prior-`）或 `sub:` 身份前缀是否回到 `Legacy*` 迁移代码之外、ICS 与 iTIP 导入导出路径（`Ics.kt` / `Itip.kt`）是否重新读取设备时区。`verifyDomainModel` 已挂到 `:shared:check`。
 
 约定：
 

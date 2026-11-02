@@ -1,5 +1,6 @@
 package com.crko
 
+import com.crko.domain.AlarmTrigger
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.CurrentSchemaVersion
@@ -9,6 +10,8 @@ import com.crko.domain.OrdinalWeekday
 import com.crko.domain.PersistedSettings
 import com.crko.domain.RecurrenceDate
 import com.crko.domain.RepeatFrequency
+import com.crko.domain.exportCalendar
+import com.crko.domain.instantOrNull
 import com.crko.domain.isZeroDuration
 import com.crko.storage.FileStateStorage
 import com.crko.storage.KeyValueStore
@@ -23,10 +26,14 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 private class MemoryStore(initial: Map<String, String> = emptyMap()) : KeyValueStore {
     val values: MutableMap<String, String> = initial.toMutableMap()
@@ -42,6 +49,8 @@ private class MemoryStore(initial: Map<String, String> = emptyMap()) : KeyValueS
 private const val MIXED_PAYLOAD =
     """{"events":[{"id":null,"title":"Kept","date":"2026-10-27","startMinutes":540,"endMinutes":600},""" +
         """{"id":null,"title":"Broken"}],"todos":[]}"""
+
+private val utc = TimeZone.UTC
 
 class StorageTest {
 
@@ -81,6 +90,82 @@ class StorageTest {
         val decoded = decodeStateWithReport(encoded)
         assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
         assertEquals(events, decoded.state.events)
+    }
+
+    @Test
+    fun storedAlarmsAndPeriodLengthsRoundTripThroughJson() {
+        // Stage 4 put a `Duration` on the always-written path: every relative `VALARM` and every
+        // `RDATE;VALUE=PERIOD` length is one. A serializer whose descriptor reuses the serial name of
+        // the value type it stands for makes the JVM registry throw, so saving such a state failed and
+        // reading it back dropped the record instead.
+        val events = listOf(
+            Event(
+                id = "alarmed",
+                title = "With alarm",
+                start = IcsTimeValue.Utc(Instant.parse("2026-10-27T09:00:00Z")),
+                end = IcsTimeValue.Utc(Instant.parse("2026-10-27T10:00:00Z")),
+                alarms = listOf(
+                    com.crko.domain.Alarm(trigger = AlarmTrigger.Relative((-15).minutes)),
+                ),
+                recurrence = com.crko.domain.Recurrence(
+                    rule = com.crko.domain.RepeatRule(RepeatFrequency.Daily, count = 3),
+                    rdates = listOf(
+                        RecurrenceDate(
+                            IcsTimeValue.Utc(Instant.parse("2026-11-02T09:00:00Z")),
+                            45.minutes,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val todos = listOf(
+            com.crko.domain.Todo(
+                id = "chore",
+                title = "Repeating alarm",
+                alarms = listOf(
+                    com.crko.domain.Alarm(
+                        trigger = AlarmTrigger.Relative((-5).minutes),
+                        repeat = 2,
+                        duration = 30.seconds,
+                    ),
+                ),
+            ),
+        )
+        val state = AppState(
+            calendars = listOf(com.crko.domain.Calendar.local().copy(events = events, todos = todos)),
+        )
+        val encoded = AppJson.encodeToString(AppState.serializer(), state)
+        val decoded = decodeStateWithReport(encoded)
+        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
+        assertEquals(state, decoded.state)
+    }
+
+    @Test
+    fun aStageThreePayloadKeepsTheZoneNestedInItsTodoValues() {
+        // Before stage 3 the `VTIMEZONE` text of an unknown zone lived inside the time value that
+        // referenced it. A `VTODO` rule's `UNTIL` and its added `RDATE` carried one just like an event
+        // did; collecting the definitions from the events only left those `TZID` references dangling.
+        val definition = "BEGIN:VTIMEZONE\\r\\nTZID:Custom/TodoZone3\\r\\n" +
+            "BEGIN:STANDARD\\r\\nDTSTART:19700101T000000\\r\\n" +
+            "TZOFFSETFROM:+0300\\r\\nTZOFFSETTO:+0300\\r\\nEND:STANDARD\\r\\nEND:VTIMEZONE\\r\\n"
+        val payload = """{"schemaVersion":3,"todos":[{"id":"t","title":"Zone todo",""" +
+            """"repeat":{"frequency":"Daily","until":{"type":"zoned",""" +
+            """"dateTime":"2026-12-31T09:00:00","tzid":"Custom/TodoZone3","definition":"$definition"}},""" +
+            """"rDates":[{"value":{"type":"zoned","dateTime":"2026-11-20T09:00:00",""" +
+            """"tzid":"Custom/TodoZone3","definition":"$definition"}}]}]}"""
+        val decoded = decodeStateWithReport(payload)
+        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
+        val todo = decoded.state.todos.single()
+        assertEquals(
+            IcsTimeValue.Zoned(LocalDateTime(2026, 12, 31, 9, 0), "Custom/TodoZone3"),
+            todo.repeat?.until,
+        )
+        assertEquals(Instant.parse("2026-12-31T06:00:00Z"), todo.repeat?.until?.instantOrNull(utc))
+        assertEquals(Instant.parse("2026-11-20T06:00:00Z"), todo.rDates.single().value.instantOrNull(utc))
+        assertTrue(
+            decoded.state.calendar.timeZones.any { it.tzid == "Custom/TodoZone3" },
+            decoded.state.calendar.timeZones.toString(),
+        )
     }
 
     @Test
@@ -165,6 +250,34 @@ class StorageTest {
         )
         assertEquals(listOf("2026-10-12"), todo.excludedDates)
         assertEquals("Journal", decoded.state.journals.single().title)
+    }
+
+    @Test
+    fun aStageOnePayloadKeepsTheZoneDefinitionNestedInItsTimeValue() {
+        // Stage 1 stored the VTIMEZONE text of an unknown zone as `definition` inside the typed
+        // value. The current Zoned only keeps the TZID, so decoding must lift that text onto the
+        // calendar level; otherwise the zone id survives without its offset and every instant of
+        // the record is silently wrong.
+        val definition = "BEGIN:VTIMEZONE\\r\\nTZID:Custom/StageOne5\\r\\n" +
+            "BEGIN:STANDARD\\r\\nDTSTART:19700101T000000\\r\\n" +
+            "TZOFFSETFROM:+0500\\r\\nTZOFFSETTO:+0500\\r\\nEND:STANDARD\\r\\nEND:VTIMEZONE\\r\\n"
+        val payload = """{"schemaVersion":2,"events":[{""" +
+            """"id":"early","title":"Early",""" +
+            """"start":{"type":"zoned","dateTime":"2026-10-27T09:00:00","tzid":"Custom/StageOne5","definition":"$definition"},""" +
+            """"end":{"type":"zoned","dateTime":"2026-10-27T10:00:00","tzid":"Custom/StageOne5","definition":"$definition"}}]}"""
+        val decoded = decodeStateWithReport(payload)
+        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
+        val event = decoded.state.events.single()
+        assertEquals(IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 9, 0), "Custom/StageOne5"), event.start)
+        assertEquals(Instant.parse("2026-10-27T04:00:00Z"), event.start.instantOrNull(utc))
+
+        val zone = decoded.state.calendar.timeZones.single()
+        assertEquals("Custom/StageOne5", zone.tzid)
+        assertTrue("TZOFFSETTO:+0500" in zone.definition, zone.definition)
+
+        val exported = exportCalendar(decoded.state.events, timeZones = decoded.state.calendar.timeZones)
+        assertTrue("DTSTART;TZID=Custom/StageOne5:20261027T090000" in exported, exported)
+        assertTrue("BEGIN:VTIMEZONE" in exported, exported)
     }
 
     @Test

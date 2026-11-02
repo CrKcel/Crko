@@ -17,6 +17,7 @@ import com.crko.domain.occurrenceStartsBetween
 import com.crko.domain.occurrenceTimesOn
 import com.crko.domain.plusDays
 import com.crko.domain.wallDateFor
+import com.crko.domain.withWallDate
 import com.crko.i18n.Strings
 import com.crko.i18n.alarmLabel
 import kotlinx.datetime.LocalDate
@@ -194,7 +195,7 @@ private fun emitWithRepeat(
         val at = first + round * step
         if (at <= nowMillis) continue
         output += ScheduledReminder(
-            key = "e:${event.id}:$index:${at / 60_000L}",
+            key = "e:${event.id}:$index:$at",
             triggerAtMillis = at,
             title = event.title.ifBlank { strings.untitledEvent },
             body = alarm.description.ifBlank {
@@ -245,16 +246,18 @@ private fun collectTodoReminders(
             )
             return@forEachIndexed
         }
-        // A series plans one trigger per occurrence inside the window; the time of day comes from
-        // the stored instant of the first one.
-        val wall = anchor.toLocalDateTime(zone).time
+        // A series plans one trigger per occurrence inside the window. The occurrence dates a rule
+        // expands are dates of the todo's *own* wall clock (`seriesAnchor` is a wall date), so each
+        // one resolves as the due/start value's own time of day on that date. Reading the anchor
+        // through the device zone first and re-folding it moved the whole series by a day whenever
+        // the todo's zone and the device's fell on opposite sides of midnight, and by the offset
+        // difference whenever one of them changed daylight saving.
+        val value = if (relative.related == AlarmRelated.End) todo.due ?: todo.start else todo.start ?: todo.due
         val lookback = minOf(ReminderHorizonDays, MaxLookbackDays)
         val windowStart = today.plusDays(-1 - lookback)
         todo.occurrenceStartsBetween(windowStart, horizonEnd).forEach { occStart ->
-            val base = when {
-                relative.related == AlarmRelated.End -> LocalDateTime(todo.occurrenceDate(occStart), wall)
-                else -> LocalDateTime(occStart, wall)
-            }.toInstant(zone)
+            val day = if (relative.related == AlarmRelated.End) todo.occurrenceDate(occStart) else occStart
+            val base = value?.withWallDate(day)?.instantOrNull(zone) ?: return@forEach
             emitTodoReminder(
                 todo,
                 index,
@@ -280,18 +283,28 @@ private fun emitTodoReminder(
     strings: Strings,
     output: MutableList<ScheduledReminder>,
 ) {
-    if (triggerMillis <= nowMillis) return
     val relative = alarm.trigger as? AlarmTrigger.Relative
-    output += ScheduledReminder(
-        key = "t:${todo.id}:$index:${occurrence ?: "once"}:${triggerMillis / 60_000L}",
-        triggerAtMillis = triggerMillis,
-        title = todo.title,
-        body = alarm.description.ifBlank {
-            relative?.let {
-                strings.alarmLabel((-it.duration).inWholeMinutes.toInt(), it.related == AlarmRelated.End)
-            }.orEmpty()
-        },
-    )
+    // `REPEAT` counts the firings after the first one, spaced by `DURATION`. Reading only the first
+    // trigger dropped every continuation, so an imported todo alarm that repeats fired once.
+    val extra = alarm.repeat?.takeIf { it > 0 } ?: 0
+    // REPEAT without a positive DURATION has no spacing; the extra firings would collapse onto the
+    // first one, so they are ignored.
+    val step = alarm.duration?.inWholeMilliseconds?.takeIf { it > 0 } ?: 0L
+    val firings = if (extra > 0 && step > 0L) extra else 0
+    for (round in 0..firings) {
+        val at = triggerMillis + round * step
+        if (at <= nowMillis) continue
+        output += ScheduledReminder(
+            key = "t:${todo.id}:$index:${occurrence ?: "once"}:$at",
+            triggerAtMillis = at,
+            title = todo.title,
+            body = alarm.description.ifBlank {
+                relative?.let {
+                    strings.alarmLabel((-it.duration).inWholeMinutes.toInt(), it.related == AlarmRelated.End)
+                }.orEmpty()
+            },
+        )
+    }
 }
 
 private fun alarmMoment(allDay: Boolean, date: LocalDate, startMinutes: Int, strings: Strings): String = when {

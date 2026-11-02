@@ -44,6 +44,7 @@ import com.crko.domain.importCalendarLines
 import com.crko.domain.instantOrNull
 import com.crko.domain.itipDecision
 import com.crko.domain.itipReply
+import com.crko.domain.matchesReplyTarget
 import com.crko.domain.movedByWallDays
 import com.crko.domain.toIcsPriority
 import com.crko.domain.todoForest
@@ -59,7 +60,9 @@ import com.crko.domain.parseStoredDate
 import com.crko.domain.plusWallDays
 import com.crko.domain.recurrenceSlotDate
 import com.crko.domain.recurrenceSlotOn
+import com.crko.domain.icsTimeZoneConflicts
 import com.crko.domain.registerIcsTimeZones
+import com.crko.domain.replaceIcsTimeZones
 import com.crko.domain.shiftedByWallDays
 import com.crko.domain.subscription
 import com.crko.domain.toCalendar
@@ -217,13 +220,22 @@ class AppStateHolder(
     private val messageChannel = Channel<AppMessage>(Channel.BUFFERED)
     val messages = messageChannel.receiveAsFlow()
 
+    /**
+     * `TZID` names that two or more calendars declare with different definitions. RFC 5545 scopes a
+     * `TZID` to its own `VCALENDAR`, so record-level projections resolve such a name through the
+     * first declaring calendar and may be wrong for the others; callers can surface a warning from
+     * this set. Per-calendar exports are always exact because each `Calendar` keeps its own blocks.
+     */
+    val timeZoneConflicts: Set<String> get() = icsTimeZoneConflicts()
+
     private var reminderJob: Job? = null
     private val reminderMutex = Mutex()
 
     init {
-        // Unknown zones are stored once at the calendar level; registering them here makes the
-        // restored events resolve their wall clock and absolute instant on the first frame.
-        registerIcsTimeZones(appState.calendar.timeZones)
+        // Unknown zones are stored once at the calendar level; registering them per calendar here
+        // makes the restored events resolve their wall clock and absolute instant on the first frame,
+        // and keeps two calendars naming the same TZID apart.
+        replaceIcsTimeZones(appState.calendars)
         if (settings.agendaScrollHour < 0) {
             updateSettings { it.copy(agendaScrollHour = 8) }
         }
@@ -663,11 +675,13 @@ class AppStateHolder(
         val hasCalendarMeta = import.calendarName != null || import.refreshMinutes != null ||
             import.timeZones.isNotEmpty()
         if (!hasContent && !hasCalendarMeta && source.isNullOrBlank()) return ImportOutcome()
-        registerIcsTimeZones(import.timeZones)
         val calendarIndex = calendarId
             ?.let { id -> appState.calendars.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
             ?: localCalendarIndex
         val baseCalendar = appState.calendars[calendarIndex]
+        // Registered under the calendar the records land in, so a file naming a TZID its own way
+        // cannot redefine a same-named zone of another calendar.
+        registerIcsTimeZones(import.timeZones, baseCalendar.id)
         val sourceName = source?.takeIf { it.isNotBlank() }
         // The vanished-record pass compares against every UID the file describes, not against the
         // kept rows alone: unchecking a preview row skips that one update without deleting the
@@ -742,12 +756,10 @@ class AppStateHolder(
     private fun applyItipReply(import: IcsImport): ImportOutcome {
         val reply = import.itipReply() ?: return ImportOutcome()
         val calendarIndex = calendarIndexContaining { calendar ->
-            calendar.events.any { event -> event.uid == reply.uid && event.recurrenceId == reply.recurrenceId }
+            calendar.events.any { event -> event.matchesReplyTarget(reply) }
         } ?: return ImportOutcome().also { notify(AppMessage.ItipReplyUnknown(reply.attendee.displayName)) }
         val storedEvents = appState.calendars[calendarIndex].events
-        val target = storedEvents.firstOrNull { event ->
-            event.uid == reply.uid && event.recurrenceId == reply.recurrenceId
-        }
+        val target = storedEvents.firstOrNull { event -> event.matchesReplyTarget(reply) }
         if (target == null) {
             notify(AppMessage.ItipReplyUnknown(reply.attendee.displayName))
             return ImportOutcome()
@@ -1329,9 +1341,11 @@ class AppStateHolder(
                 strings.untitledEvent,
             )
         }
-        registerIcsTimeZones(parsed.timeZones)
         val index = calendarIndexContaining { it.id == subscription.id && !it.isLocal }
             ?: return SubscriptionApply(ImportOutcome(), null)
+        // The feed's own zones belong to its calendar: registering them globally would let one feed
+        // redefine a same-named TZID another calendar declares differently.
+        registerIcsTimeZones(parsed.timeZones, subscription.id)
         val baseCalendar = appState.calendars[index]
         // A subscription owns its whole calendar, so no per-record provenance marker is needed;
         // merges and vanished-record detection are scoped to this calendar alone.
@@ -1453,7 +1467,9 @@ class AppStateHolder(
     }
 
     private fun persist(next: AppState) {
-        registerIcsTimeZones(next.calendar.timeZones)
+        // The lookup cache is a derived index of the stored calendars: rebuilding it per write drops
+        // the definitions of a deleted calendar and of an import preview that was never applied.
+        replaceIcsTimeZones(next.calendars)
         appState = next
         storage.saveState(next)
         scheduleReminders()

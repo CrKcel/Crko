@@ -1429,6 +1429,61 @@ class IcsTest {
     }
 
     @Test
+    fun utcExdateOnATzidSeriesStillSkipsItsInstance() {
+        // Real feeds mix UTC exclusions into a TZID series. The wall-clock exclusion match has
+        // to read the value in the master's own zone, or the deleted instance keeps appearing.
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:utc-exdate
+            SUMMARY:Daily
+            DTSTART;TZID=America/New_York:20261027T090000
+            DTEND;TZID=America/New_York:20261027T100000
+            RRULE:FREQ=DAILY;COUNT=3
+            EXDATE:20261028T130000Z
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        val event = imported.events.single()
+        assertFalse(IcsWarning.ExdateMismatch in imported.warnings, imported.warnings.toString())
+        assertTrue(event.occursOn(LocalDate(2026, 10, 27)))
+        assertFalse(event.occursOn(LocalDate(2026, 10, 28)))
+        assertTrue(event.occursOn(LocalDate(2026, 10, 29)))
+    }
+
+    @Test
+    fun utcRecurrenceIdOnATzidSeriesReplacesItsInstanceOnce() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:utc-slot
+            SUMMARY:Daily
+            DTSTART;TZID=America/New_York:20261027T090000
+            DTEND;TZID=America/New_York:20261027T100000
+            RRULE:FREQ=DAILY;COUNT=3
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:utc-slot
+            RECURRENCE-ID:20261028T130000Z
+            SUMMARY:Moved
+            DTSTART;TZID=America/New_York:20261028T110000
+            DTEND;TZID=America/New_York:20261028T120000
+            END:VEVENT
+            """,
+        )
+        val imported = importCalendar(text, utc, "Untitled")
+        val master = imported.events.first { it.recurrenceId == null }
+        // The exception replaces the master's instance instead of joining it on the same slot.
+        assertFalse(master.occursOn(LocalDate(2026, 10, 28)))
+        assertEquals(1, imported.events.count { it.occursOn(LocalDate(2026, 10, 28)) })
+        // The shared identity and the single visible occurrence survive a re-export and re-import.
+        val reparsed = importCalendar(exportIcs(imported.events, now), utc, "Untitled")
+        assertEquals(2, reparsed.events.size)
+        assertEquals(1, reparsed.events.count { it.occursOn(LocalDate(2026, 10, 28)) })
+    }
+
+    @Test
     fun exportsNeverWriteSyntheticSeriesUids() {
         val text = calendar(
             """
@@ -1712,6 +1767,11 @@ class IcsTest {
         assertEquals(2, slots.size)
         assertEquals(slots.size, slots.distinct().size, slots.toString())
         assertFalse(IcsWarning.AmbiguousRecurrenceId in imported.warnings, imported.warnings.toString())
+        // The expansion engine drops each replaced instance by its full slot: the master holds
+        // nothing on the 29th and the two exceptions cover that day exactly once each.
+        assertFalse(events.first { it.recurrenceId == null }.occursOn(LocalDate(2026, 10, 29)))
+        assertEquals(2, events.count { it.occursOn(LocalDate(2026, 10, 29)) })
+        assertEquals(1, events.count { it.occursOn(LocalDate(2026, 10, 29)) && it.recurrenceId == slots.first() })
         val reparsed = importCalendar(exportIcs(events, now), utc, "Untitled")
         assertEquals(3, reparsed.events.size)
         assertEquals(2, reparsed.events.mapNotNull { it.recurrenceId }.distinct().size)

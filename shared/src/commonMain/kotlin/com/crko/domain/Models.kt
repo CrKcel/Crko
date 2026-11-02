@@ -115,9 +115,15 @@ data class CalAddress(
         cutype?.takeIf { it.isNotBlank() }?.let { append(";CUTYPE=").append(it) }
         partStat?.let { append(";PARTSTAT=").append(it.wireName) }
         rsvp?.let { append(";RSVP=").append(if (it) "TRUE" else "FALSE") }
-        sentBy?.let { append(";SENT-BY=\"").append(it).append('"') }
-        delegatedFrom.forEach { append(";DELEGATED-FROM=\"").append(it).append('"') }
-        delegatedTo.forEach { append(";DELEGATED-TO=\"").append(it).append('"') }
+        sentBy?.let { append(";SENT-BY=").append(icsParameterValue(it)) }
+        // A list parameter is one parameter with comma-separated quoted values; writing it as
+        // several `DELEGATED-TO=…` parameters would let the next import keep only the last one.
+        if (delegatedFrom.isNotEmpty()) {
+            append(";DELEGATED-FROM=").append(delegatedFrom.joinToString(",") { icsParameterValue(it) })
+        }
+        if (delegatedTo.isNotEmpty()) {
+            append(";DELEGATED-TO=").append(delegatedTo.joinToString(",") { icsParameterValue(it) })
+        }
         parameters.forEach { (parameter, value) ->
             if (parameter.trim().uppercase() !in KnownCalAddressParameters) {
                 append(';').append(parameter).append('=').append(icsParameterValue(value))
@@ -151,8 +157,14 @@ data class CalAddress(
             parameters = line.params.filterKeys { it !in KnownCalAddressParameters },
         )
 
+        /**
+         * Values of a list parameter. A single-valued one arrives with its quotes already removed by
+         * [parseContentLine]; a list keeps them, because the pair wrapping the whole value is not one
+         * quoted string and removing it would hide which commas separate elements and which sit inside
+         * a quoted address.
+         */
         private fun addressList(value: String?): List<String> =
-            value.orEmpty().split(',').map { it.trim().removeSurrounding("\"") }.filter { it.isNotEmpty() }
+            value?.let { splitParameterList(it) }.orEmpty()
     }
 }
 
@@ -672,10 +684,6 @@ data class Journal(
 ) : CalendarComponent {
     /** Display date of [start] in the device zone; null for an undated journal. */
     val date: String? get() = start?.displayDate(TimeZone.currentSystemDefault())?.toString()
-
-    /** ISO-8601 instant of a timed [start], for display code that expects one. */
-    val startTime: String?
-        get() = start?.instantOrNull(TimeZone.currentSystemDefault())?.toString()
 }
 
 /** Current persisted layout; stage 5 moved records into calendar containers. */
@@ -782,7 +790,12 @@ data class AppState(
     /** The calendar new local records go into, falling back to whatever calendar exists. */
     val localCalendar: Calendar? get() = calendars.firstOrNull { it.isLocal } ?: calendars.firstOrNull()
 
-    /** Legacy display/export projection: the local calendar's properties plus every known zone. */
+    /**
+     * Legacy display/export projection: the local calendar's properties plus every known zone. A
+     * `TZID` two calendars declare differently keeps the first calendar's definition, matching how an
+     * unscoped `TZID` reference resolves at runtime — see `icsTimeZoneConflicts()` for the names that
+     * are ambiguous this way.
+     */
     val calendar: CalendarMetadata
         get() {
             val primary = localCalendar
@@ -790,7 +803,9 @@ data class AppState(
             calendars.forEach { calendar ->
                 calendar.timeZones.forEach { zone ->
                     val id = normalizeTimeZoneId(zone.tzid)
-                    if (id.isNotEmpty() && zone.definition.isNotBlank()) zones[id] = zone.copy(tzid = id)
+                    if (id.isNotEmpty() && zone.definition.isNotBlank() && id !in zones) {
+                        zones[id] = zone.copy(tzid = id)
+                    }
                 }
             }
             return CalendarMetadata(

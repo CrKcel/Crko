@@ -66,10 +66,44 @@ internal fun sameCalendarAddress(a: String, b: String): Boolean {
 /**
  * Quotes a content line parameter value when it contains characters (`;`, `:`, `,`) that would
  * otherwise split the head of the line. Plain values stay unquoted, like every mainstream exporter
- * writes them.
+ * writes them. A value that carries a double quote has to be quoted *and* have that quote escaped:
+ * an unescaped one would close the quoted section early, and the line the reader gets from it is a
+ * parameter list whose value separator sits in the wrong place.
  */
 internal fun icsParameterValue(value: String): String =
-    if (value.none { it == ';' || it == ':' || it == ',' }) value else "\"$value\""
+    if (value.none { it == ';' || it == ':' || it == ',' || it == '"' }) value
+    else "\"${value.replace("\"", "\\\"")}\""
+
+/**
+ * Values of a comma-separated parameter list. The commas that separate the elements are the ones
+ * outside the quotes; a comma inside a quoted address, and a `\"` inside a quoted element, belong to
+ * the element they sit in.
+ */
+internal fun splitParameterList(value: String): List<String> {
+    val parts = mutableListOf<String>()
+    val current = StringBuilder()
+    var quoted = false
+    var index = 0
+    while (index < value.length) {
+        val ch = value[index]
+        when {
+            quoted && ch == '\\' && index + 1 < value.length -> {
+                current.append(value[index + 1])
+                index += 2
+                continue
+            }
+            ch == '"' -> quoted = !quoted
+            ch == ',' && !quoted -> {
+                parts += current.toString()
+                current.clear()
+            }
+            else -> current.append(ch)
+        }
+        index++
+    }
+    parts += current.toString()
+    return parts.map { it.trim() }.filter { it.isNotEmpty() }
+}
 
 /** The answer one attendee gave in an imported `METHOD:REPLY` calendar. */
 data class ItipReply(
@@ -130,7 +164,7 @@ data class ItipReplyResult(val events: List<Event>, val applied: Boolean)
  * record leaves the list untouched.
  */
 fun List<Event>.applyingReply(reply: ItipReply, now: Instant = Clock.System.now()): ItipReplyResult {
-    val index = indexOfFirst { event -> matchesReplyTarget(event, reply) }
+    val index = indexOfFirst { event -> event.matchesReplyTarget(reply) }
     if (index < 0) return ItipReplyResult(this, false)
     val event = this[index]
     val attendeeIndex = event.attendees.indexOfFirst { attendee ->
@@ -156,5 +190,31 @@ fun List<Event>.applyingReply(reply: ItipReply, now: Instant = Clock.System.now(
  * Whether [event] is the record [reply] talks about: the exception for a reply with a
  * `RECURRENCE-ID`, the series master otherwise.
  */
-private fun matchesReplyTarget(event: Event, reply: ItipReply): Boolean =
-    event.uid == reply.uid && event.recurrenceId == reply.recurrenceId
+internal fun Event.matchesReplyTarget(reply: ItipReply): Boolean =
+    uid == reply.uid && sameRecurrenceSlot(recurrenceId, reply.recurrenceId)
+
+/**
+ * Whether the two values name the same occurrence slot. A reply may well write the slot in another
+ * RFC value type than the stored exception does — `RECURRENCE-ID:20260305T140000Z` answering a
+ * `TZID=America/New_York` series is the common shape — because the reply is built from the
+ * organizer's own copy and carries no master to align against. Comparing the values verbatim made
+ * such a reply find no record at all, so the attendee's answer was dropped.
+ */
+internal fun sameRecurrenceSlot(stored: IcsTimeValue?, incoming: IcsTimeValue?): Boolean {
+    if (stored == incoming) return true
+    if (stored == null || incoming == null) return false
+    // A date-only slot only ever names its own day, in any zone.
+    if (stored is IcsTimeValue.Date || incoming is IcsTimeValue.Date) return false
+    val left = stored.instantBearingValue()
+    val right = incoming.instantBearingValue()
+    if (left != null && right != null) return left.instant == right.instant
+    // Without an instant on one side (floating) the wall clock the two files name is all there is.
+    return stored.wallDateTime == incoming.wallDateTime
+}
+
+/** The value with its own instant, or null when it names none (`Floating`). */
+private fun IcsTimeValue.instantBearingValue(): IcsTimeValue.Utc? = when (this) {
+    is IcsTimeValue.Utc -> this
+    is IcsTimeValue.Zoned -> zonedInstantOrNull(dateTime, tzid)?.let(IcsTimeValue::Utc)
+    else -> null
+}

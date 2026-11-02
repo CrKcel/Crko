@@ -219,6 +219,50 @@ class ItipTest {
     }
 
     @Test
+    fun aReplyThatNamesItsSlotInUtcStillReachesThatException() = runTest {
+        val f = holder()
+        f.importCalendar(
+            import(
+                calendar(
+                    "REQUEST",
+                    "BEGIN:VEVENT\r\nUID:series-tz@x\r\nDTSTAMP:20260101T000000Z\r\n" +
+                        "DTSTART;TZID=America/New_York:20260304T090000\r\nRRULE:FREQ=DAILY;COUNT=3\r\n" +
+                        "SUMMARY:Standup\r\nORGANIZER:mailto:org@x\r\n" +
+                        "ATTENDEE;CN=Jane;PARTSTAT=NEEDS-ACTION:mailto:jane@x\r\nEND:VEVENT\r\n" +
+                        "BEGIN:VEVENT\r\nUID:series-tz@x\r\nDTSTAMP:20260101T000000Z\r\n" +
+                        "RECURRENCE-ID;TZID=America/New_York:20260305T090000\r\n" +
+                        "DTSTART;TZID=America/New_York:20260305T110000\r\nSUMMARY:Standup moved\r\n" +
+                        "ORGANIZER:mailto:org@x\r\n" +
+                        "ATTENDEE;CN=Jane;PARTSTAT=NEEDS-ACTION:mailto:jane@x\r\nEND:VEVENT\r\n",
+                ),
+            ),
+        )
+        val stored = f.appState.events.first { it.recurrenceId != null }
+        assertEquals(IcsTimeValue.Zoned(LocalDateTime(2026, 3, 5, 9, 0), "America/New_York"), stored.recurrenceId)
+
+        // The reply is built from the attendee's copy and carries no master, so it may well name the
+        // very same slot as a UTC instant. Matching the values verbatim found no record and dropped the
+        // answer; the slot now compares by the instant the two files mean.
+        val reply = calendar(
+            "REPLY",
+            "BEGIN:VEVENT\r\nUID:series-tz@x\r\nDTSTAMP:20260301T010000Z\r\n" +
+                "RECURRENCE-ID:20260305T140000Z\r\n" +
+                "DTSTART;TZID=America/New_York:20260305T110000\r\nORGANIZER:mailto:org@x\r\n" +
+                "ATTENDEE;CN=Jane;PARTSTAT=ACCEPTED:mailto:jane@x\r\nEND:VEVENT\r\n",
+        )
+        val message = assertNotNull(import(reply).itipReply())
+        assertEquals(IcsTimeValue.Utc(kotlin.time.Instant.parse("2026-03-05T14:00:00Z")), message.recurrenceId)
+        assertEquals(1, f.importCalendar(import(reply)).events)
+        val answered = f.appState.events.first { it.recurrenceId != null }
+        assertEquals(IcsPartStat.Accepted, answered.attendees.single().partStat)
+        // The master's own attendee list is untouched: the reply answered one instance.
+        assertEquals(
+            IcsPartStat.NeedsAction,
+            f.appState.events.first { it.recurrenceId == null }.attendees.single().partStat,
+        )
+    }
+
+    @Test
     fun replyForAnUnknownEventLeavesTheCalendarUntouchedAndReportsIt() = runTest {
         val f = holder()
         val before = f.appState

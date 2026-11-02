@@ -31,7 +31,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Journal
 import com.crko.domain.IcsTimeValue
-import com.crko.domain.wallDate
 import com.crko.i18n.Strings
 import com.crko.state.AppStateHolder
 import com.crko.state.WriteResult
@@ -146,11 +145,16 @@ private fun parseJournalDate(text: String): LocalDate? =
 /**
  * The journal with the editor's changes applied. The editor picks a date only; keeping the
  * original `DTSTART` when the date did not move preserves an imported time value.
+ *
+ * "Did not move" is decided in the space the editor shows — the display projection — because that is
+ * the date it hands back. Against the value's own wall date, every save of a journal whose instant
+ * falls on another calendar day in the display zone replaced its `DTSTART` with a date-only value of
+ * that other day, losing the time and the zone.
  */
 internal fun journalWithEdits(journal: Journal, title: String, note: String, date: LocalDate?): Journal {
     val start = when {
         date == null -> null
-        journal.start?.wallDate == date -> journal.start
+        journal.date?.let(::parseJournalDate) == date -> journal.start
         else -> IcsTimeValue.Date(date)
     }
     return journal.copy(title = title.trim(), note = note, start = start)

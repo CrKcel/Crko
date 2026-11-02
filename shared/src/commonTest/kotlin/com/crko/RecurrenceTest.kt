@@ -7,12 +7,15 @@ import com.crko.domain.Event
 import com.crko.domain.legacyEvent
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.OrdinalWeekday
+import com.crko.domain.OccurrenceTime
 import com.crko.domain.Recurrence
 import com.crko.domain.RecurrenceDate
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
 import com.crko.domain.matchesRule
+import com.crko.domain.durationUntil
+import com.crko.domain.isRuleOccurrence
 import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.occurrenceDate
 import com.crko.domain.occurrenceRangesOn
@@ -27,7 +30,9 @@ import com.crko.domain.plusYears
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.LocalTime
+import kotlinx.datetime.TimeZone
 import kotlinx.datetime.number
+import kotlin.time.Duration.Companion.hours
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -618,6 +623,39 @@ class RecurrenceTest {
         assertTrue(record.occursOn(LocalDate(2026, 12, 1)))
         assertFalse(record.occursOn(LocalDate(2027, 1, 1)))
         assertTrue(record.occursOn(LocalDate(2026, 11, 20)))
+    }
+
+    @Test
+    fun utcUntilBoundsTheSeriesByTheEventsOwnInstantsNotTheDeviceClock() {
+        // A New York 09:00 daily stopped with UNTIL=2026-11-01T08:00Z. The 11-01 instance starts
+        // 14:00Z (EST), past the bound; folding its wall clock into a Shanghai device first
+        // (01:00Z) would let one extra day through.
+        val anchorValue = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 9, 0), "America/New_York")
+        val rule = RepeatRule(
+            RepeatFrequency.Daily,
+            until = IcsTimeValue.Utc(kotlin.time.Instant.parse("2026-11-01T08:00:00Z")),
+        )
+        fun occurs(day: LocalDate) = isRuleOccurrence(
+            anchor = LocalDate(2026, 10, 27),
+            rule = rule,
+            recurrence = Recurrence(rule = rule),
+            candidate = day,
+            startTime = OccurrenceTime(9 * 60, 0),
+            anchorValue = anchorValue,
+            zone = TimeZone.of("Asia/Shanghai"),
+        )
+        assertTrue(occurs(LocalDate(2026, 10, 31)))
+        assertFalse(occurs(LocalDate(2026, 11, 1)))
+    }
+
+    @Test
+    fun aFloatingSeriesLengthIsItsWallClockLengthAcrossDst() {
+        // 2026-03-08 is New York's spring-forward day; the occurrence 02:30-03:30 exists on the
+        // wall clock only. Folding the pair into instants in the device zone collapses the series
+        // length to zero, while the wall clock the file names is one hour.
+        val start = IcsTimeValue.Floating(LocalDateTime(2026, 3, 8, 2, 30))
+        val end = IcsTimeValue.Floating(LocalDateTime(2026, 3, 8, 3, 30))
+        assertEquals(1.hours, start.durationUntil(end, TimeZone.of("America/New_York")))
     }
 
     @Test

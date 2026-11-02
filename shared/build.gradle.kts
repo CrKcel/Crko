@@ -77,10 +77,12 @@ dependencies {
 /**
  * Source-level guard for the RFC 5545 domain model. The parser's private `Raw*` types and the
  * persisted-payload DTOs in `Legacy*.kt` are allowed to mention the old shape; nothing else is.
+ * Legacy field names that double as legitimate locals (`endMinutes = when { … }`) are matched in
+ * property-declaration form (`val|var name:` , including `val Event.name:` compat getters).
  */
 val verifyDomainModel = tasks.register("verifyDomainModel") {
     group = "verification"
-    description = "Rejects legacy Event fields, synthetic UIDs and device-zone use in ICS I/O."
+    description = "Rejects legacy Event fields, synthetic UIDs and device-zone use in ICS and iTIP I/O."
     val commonMain = layout.projectDirectory.dir("src/commonMain/kotlin/com/crko")
     inputs.dir(commonMain.asFile)
 
@@ -114,6 +116,33 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
                 violations += "domain/Models.kt: RepeatRule.$field is back; use Recurrence"
             }
         }
+        val eventWindow = modelsText
+            .substringAfter("data class Event(")
+            .substringBefore("data class Todo(")
+        if (Regex("""\bval\s+(?:\w+\.)?date\b""").containsMatchIn(eventWindow)) {
+            violations += "domain/Models.kt: Event.date is back; derive the day from the IcsTimeValue"
+        }
+
+        // The same names must not reappear as stored/derived properties anywhere in the data layer,
+        // not just in Models.kt; declaration shape (`val name: Type` / `val Event.name: Type`) keeps
+        // identically-named locals out of the way.
+        val legacyFieldNames = legacyEventFields + listOf("startTime", "dueTime", "completedTime")
+        listOf(root.resolve("domain"), root.resolve("state")).forEach { dir ->
+            dir.walkTopDown()
+                .filter { it.isFile && it.extension == "kt" && !it.name.startsWith("Legacy") }
+                .forEach { file ->
+                    file.lines().forEachIndexed { index, line ->
+                        val code = line.trim()
+                        val comment = code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")
+                        if (comment) return@forEachIndexed
+                        legacyFieldNames.forEach { field ->
+                            if (Regex("""\b(val|var)\s+(?:[\w.]+\.)?$field\s*:""").containsMatchIn(line)) {
+                                report(file, index, "legacy field '$field' is back outside migration code")
+                            }
+                        }
+                    }
+                }
+        }
 
         val syntheticMarkers = listOf("#override-", "#future-", "#prior-")
         root.walkTopDown()
@@ -133,10 +162,12 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
                 }
             }
 
-        val ics = root.resolve("domain/Ics.kt")
-        ics.lines().forEachIndexed { index, line ->
-            if ("TimeZone.currentSystemDefault()" in line) {
-                report(ics, index, "device zone must not be used on the ICS import/export path")
+        listOf("domain/Ics.kt", "domain/Itip.kt").forEach { relative ->
+            val file = root.resolve(relative)
+            file.lines().forEachIndexed { index, line ->
+                if ("TimeZone.currentSystemDefault()" in line) {
+                    report(file, index, "device zone must not be used on the import/export path")
+                }
             }
         }
 

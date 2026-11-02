@@ -26,6 +26,7 @@ class TimeValueStageOneTest {
 
     private val utc = TimeZone.UTC
     private val shanghai = TimeZone.of("Asia/Shanghai")
+    private val newYork = TimeZone.of("America/New_York")
     private val now = Instant.parse("2026-10-27T09:00:00Z")
 
     @Test
@@ -106,6 +107,65 @@ class TimeValueStageOneTest {
         assertTrue(exported.contains("DTEND;VALUE=DATE:20261029\r\n"), exported)
         assertEquals(event.start, importIcs(exported, utc, "Untitled").single().start)
         assertEquals(event.end, importIcs(exported, utc, "Untitled").single().end)
+    }
+
+    @Test
+    fun anAllDayEndGivenAsADateTimeKeepsTheDayTheFileNames() {
+        // A `DTEND` date-time on a DATE `DTSTART` names its own day; projecting it through the
+        // device zone first would lose the last day for every user west of the written zone.
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:allday-tzend
+            SUMMARY:All day with a TZID end
+            DTSTART;VALUE=DATE:20260310
+            DTEND;TZID=Asia/Shanghai:20260312T000000
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:allday-utcend
+            SUMMARY:All day with a UTC end
+            DTSTART;VALUE=DATE:20260310
+            DTEND:20260312T000000Z
+            END:VEVENT
+            """,
+        )
+        val zones = listOf(newYork, shanghai, utc)
+        zones.forEach { device ->
+            val imported = importIcs(text, device, "Untitled").associateBy { it.icsUid }
+            assertEquals(IcsTimeValue.Date(LocalDate(2026, 3, 12)), imported.getValue("allday-tzend").end)
+            assertEquals(IcsTimeValue.Date(LocalDate(2026, 3, 12)), imported.getValue("allday-utcend").end)
+            assertEquals(
+                listOf(LocalDate(2026, 3, 10), LocalDate(2026, 3, 11)),
+                (9..13).map { LocalDate(2026, 3, it) }.filter { imported.getValue("allday-tzend").occursOn(it, device) },
+            )
+        }
+        // The normalized exclusive date is what comes back out again.
+        val exported = exportIcs(importIcs(text, newYork, "Untitled"), now)
+        assertEquals(2, Regex("DTEND;VALUE=DATE:20260312").findAll(exported).count(), exported)
+    }
+
+    @Test
+    fun aFloatingDurationEndDoesNotDependOnTheDeviceZone() {
+        // A floating DTSTART has no instant, so a DURATION is added to its wall clock; resolving it
+        // through the device zone first made the New York daylight-saving jump move the stored end.
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:float-duration
+            SUMMARY:Floating duration
+            DTSTART:20260308T013000
+            DURATION:PT1H
+            END:VEVENT
+            """,
+        )
+        val expected = IcsTimeValue.Floating(LocalDateTime(2026, 3, 8, 2, 30))
+        listOf(utc, newYork, shanghai).forEach { device ->
+            val event = importIcs(text, device, "Untitled").single()
+            assertEquals(expected, event.end, device.id)
+            // Export writes the end as DTEND, so the wall-clock length has to survive the round trip.
+            assertEquals(expected, importIcs(exportIcs(listOf(event), now), device, "Untitled").single().end, device.id)
+        }
+        assertEquals(60, importIcs(text, utc, "Untitled").single().timeRangeOn(LocalDate(2026, 3, 8), utc).let { (s, e) -> e - s })
     }
 
     @Test
