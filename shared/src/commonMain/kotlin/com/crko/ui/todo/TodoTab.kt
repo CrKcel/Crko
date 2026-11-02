@@ -218,7 +218,7 @@ private fun TodoCard(
             .padding(start = 12.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CheckCircle(checked = todo.done, priority = todo.priority, onClick = onToggle)
+        CheckCircle(checked = todo.done, priority = todo.priorityLevel, onClick = onToggle)
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -245,14 +245,14 @@ private fun TodoCard(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (todo.due != null || todo.repeat != null) {
+            if (todo.dueDay != null || todo.repeat != null) {
                 Spacer(Modifier.height(3.dp))
                 // A series is shown under its next occurrence; an ended one falls back to the
                 // stored due date.
                 val shown = if (todo.repeat != null) {
                     todo.nextOccurrenceDate(today)
                 } else {
-                    todo.due?.let { LocalDate.parse(it) }
+                    todo.dueDay
                 }
                 if (shown != null) {
                     val overdue = isOverdue(todo, today)
@@ -313,7 +313,7 @@ private fun TodoCard(
             }
         }
         Spacer(Modifier.width(8.dp))
-        PriorityTag(todo.priority, strings)
+        PriorityTag(todo.priorityLevel, strings)
         Spacer(Modifier.width(4.dp))
         IconButton(onClick = onAddSubtask, backgroundColor = Color.Transparent) {
             Icon(

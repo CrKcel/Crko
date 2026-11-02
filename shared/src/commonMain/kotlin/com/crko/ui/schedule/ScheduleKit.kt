@@ -133,7 +133,7 @@ internal fun rememberBlockAxis(base: LocalDate, weeks: Boolean): BlockAxis {
 internal fun isOverdue(todo: Todo, today: LocalDate): Boolean {
     if (todo.done) return false
     // A series is shown under its next occurrence once the stored due date has passed.
-    val due = if (todo.repeat != null) todo.nextOccurrenceDate(today) else todo.due?.let { LocalDate.parse(it) }
+    val due = if (todo.repeat != null) todo.nextOccurrenceDate(today) else todo.dueDay
     return due != null && due < today
 }
 

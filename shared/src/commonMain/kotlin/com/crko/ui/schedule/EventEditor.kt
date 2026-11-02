@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Alarm
+import com.crko.domain.AlarmRelated
+import com.crko.domain.AlarmTrigger
 import com.crko.domain.Attachment
 import com.crko.domain.Event
 import com.crko.domain.EventStatus
@@ -53,7 +55,10 @@ import com.crko.domain.plusDays
 import com.crko.domain.safeAttachmentFileName
 import com.crko.domain.startOfWeek
 import com.crko.domain.wallDate
+import com.crko.domain.relatedToEnd
+import com.crko.domain.triggerMinutes
 import com.crko.domain.withDeviceDateTime
+import kotlin.time.Duration.Companion.minutes
 import com.crko.i18n.Strings
 import com.crko.i18n.alarmLabel
 import com.crko.state.EditScope
@@ -154,7 +159,7 @@ private fun EventEditorContent(
     var repeatExpanded by remember(event) { mutableStateOf(false) }
     var reminderExpanded by remember(event) { mutableStateOf(false) }
     // The editor edits only the first relative alarm; imported audio/email/absolute alarms survive.
-    val originalAlarm = event.alarms.firstOrNull { it.absoluteTrigger == null }
+    val originalAlarm = event.alarms.firstOrNull { it.trigger is AlarmTrigger.Relative }
     val originalReminder = originalAlarm?.triggerMinutes
     val originalAtEnd = originalAlarm?.relatedToEnd ?: false
     var reminder by remember(event) { mutableStateOf(originalReminder) }
@@ -643,15 +648,21 @@ internal fun updateReminderAlarms(
     atEnd: Boolean = false,
 ): List<Alarm> {
     if (reminder == original && atEnd == originalAtEnd) return alarms
-    val index = alarms.indexOfFirst { it.absoluteTrigger == null }
+    val index = alarms.indexOfFirst { it.trigger is AlarmTrigger.Relative }
     return when {
         reminder == null -> if (index < 0) alarms else alarms.filterIndexed { i, _ -> i != index }
-        index < 0 -> alarms + Alarm(triggerMinutes = reminder, relatedToEnd = atEnd)
+        index < 0 -> alarms + Alarm(trigger = relativeTrigger(reminder, atEnd))
         else -> alarms.toMutableList().also {
-            it[index] = it[index].copy(triggerMinutes = reminder, relatedToEnd = atEnd)
+            it[index] = it[index].copy(trigger = relativeTrigger(reminder, atEnd))
         }
     }
 }
+
+private fun relativeTrigger(minutesBefore: Int, atEnd: Boolean): AlarmTrigger.Relative =
+    AlarmTrigger.Relative(
+        duration = (-minutesBefore).minutes,
+        related = if (atEnd) AlarmRelated.End else AlarmRelated.Start,
+    )
 
 private fun buildRule(
     frequency: RepeatFrequency?,

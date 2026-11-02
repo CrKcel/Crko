@@ -298,7 +298,7 @@ private fun StatTile(label: String, value: String, modifier: Modifier = Modifier
 private fun WeekBars(todos: List<Todo>, today: LocalDate) {
     val days = remember(today) { (6 downTo 0).map { today.plusDays(-it) } }
     val counts = remember(todos, today) {
-        days.map { day -> todos.count { it.done && it.due == day.toString() } }
+        days.map { day -> todos.count { it.done && it.dueDay == day } }
     }
     val max = (counts.maxOrNull() ?: 0).coerceAtLeast(1)
     Row(
@@ -352,8 +352,8 @@ private fun WeekBars(todos: List<Todo>, today: LocalDate) {
 
 @Composable
 private fun PriorityRow(priority: TodoPriority, label: String, todos: List<Todo>) {
-    val total = todos.count { it.priority == priority }
-    val done = todos.count { it.priority == priority && it.done }
+    val total = todos.count { it.priorityLevel == priority }
+    val done = todos.count { it.priorityLevel == priority && it.done }
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Box(
             Modifier

@@ -2,10 +2,13 @@ package com.crko.dev
 
 import com.crko.domain.AppState
 import com.crko.domain.Event
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.MaxEndMinutes
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
+import com.crko.domain.TodoStatus
 import com.crko.domain.plusDays
+import com.crko.domain.toIcsPriority
 import kotlinx.datetime.LocalDate
 import kotlin.time.Clock
 
@@ -33,10 +36,15 @@ fun sampleState(
     ) = Todo(
         id = "sample-todo-${todoId++}",
         title = title,
-        done = done,
-        priority = priority,
+        status = if (done) TodoStatus.Completed else TodoStatus.NeedsAction,
+        completed = if (done) {
+            kotlin.time.Instant.fromEpochMilliseconds(nowMillis - createdHoursAgo * 3_600_000)
+        } else {
+            null
+        },
+        priority = priority.toIcsPriority(),
         createdAt = nowMillis - createdHoursAgo * 3_600_000,
-        due = due?.toString(),
+        due = due?.let(IcsTimeValue::Date),
     )
 
     fun at(hour: Int, minute: Int = 0) = hour * 60 + minute

@@ -30,8 +30,8 @@ data class TodoNode(
 fun List<Todo>.todoForest(): List<TodoNode> {
     val byUid = LinkedHashMap<String, Todo>()
     forEach { todo -> if (todo.effectiveUid !in byUid) byUid[todo.effectiveUid] = todo }
-    // The first resolvable related value that is not the todo itself wins; import keeps only the
-    // default `PARENT` relation in [Todo.relatedTo], so every value here names a parent. Links are
+    // The first resolvable `PARENT` relation that is not the todo itself wins; `CHILD` and
+    // `SIBLING` links are kept on the record for export but do not build the hierarchy. Links are
     // kept per record (by id), not per UID: two records may share a UID, and neither inherits the
     // other's parent or children.
     val parentOf = HashMap<String, Todo>()
@@ -39,7 +39,8 @@ fun List<Todo>.todoForest(): List<TodoNode> {
         val self = todo.effectiveUid
         val parent = todo.relatedTo
             .asSequence()
-            .mapNotNull(byUid::get)
+            .filter { it.isParent }
+            .mapNotNull { byUid[it.uid] }
             .firstOrNull { it.effectiveUid != self }
         if (parent != null) parentOf[todo.id] = parent
     }

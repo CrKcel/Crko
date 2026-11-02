@@ -11,8 +11,10 @@ import com.crko.domain.Journal
 import com.crko.domain.LegacyAppState
 import com.crko.domain.LegacyEvent
 import com.crko.domain.LegacyTodo
+import com.crko.domain.StageFourAppState
 import com.crko.domain.PersistedSettings
 import com.crko.domain.Todo
+import com.crko.domain.normalizeTimeZoneId
 import com.crko.domain.registerIcsTimeZones
 import com.crko.domain.toCurrentEvent
 import com.crko.domain.toCurrentTodo
@@ -197,18 +199,18 @@ internal fun decodeStateWithReport(raw: String): StateDecode {
                 return StateDecode(state, LoadDamage.None)
             }
     }
-    // Stage 2 payloads already carry the typed recurrence set, which LegacyEvent cannot express;
-    // decoding them with the current model keeps every field, and only the per-record VTIMEZONE
-    // text has to be lifted into the new calendar-level store.
-    if (version == StageTwoSchemaVersion) {
-        runCatching { AppJson.decodeFromJsonElement(AppState.serializer(), root) }.getOrNull()
+    // Stage 3/4 payloads already carry typed recurrence values; decode their component shape and
+    // convert the pre-stage-4 participants, alarms, attachments, todos and journals.
+    if (version == 4 || version == StageTwoSchemaVersion) {
+        runCatching { AppJson.decodeFromJsonElement(StageFourAppState.serializer(), root) }.getOrNull()
             ?.let { previous ->
-                val state = previous.copy(
-                    schemaVersion = CurrentSchemaVersion,
-                    calendar = previous.calendar.copy(
-                        timeZones = collectLegacyTimeZoneDefinitions(root),
-                    ),
-                )
+                val definitions = if (version == StageTwoSchemaVersion) {
+                    collectLegacyTimeZoneDefinitions(root)
+                        .associateByTo(LinkedHashMap()) { normalizeTimeZoneId(it.tzid) }
+                } else {
+                    LinkedHashMap()
+                }
+                val state = previous.toCurrent(definitions)
                 registerIcsTimeZones(state.calendar.timeZones)
                 return StateDecode(state, LoadDamage.None)
             }
@@ -221,7 +223,7 @@ internal fun decodeStateWithReport(raw: String): StateDecode {
         val state = AppState(
             events = events,
             todos = legacy.todos.map { it.toCurrentTodo() },
-            journals = legacy.journals,
+            journals = legacy.journals.map { it.toCurrent() },
             subscriptions = legacy.subscriptions,
             busyPeriods = legacy.busyPeriods,
             calendar = CalendarMetadata(timeZones = definitions.values.toList()),

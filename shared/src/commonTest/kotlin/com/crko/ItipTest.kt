@@ -1,5 +1,6 @@
 package com.crko
 
+import com.crko.domain.CalAddress
 import com.crko.domain.Event
 import com.crko.domain.IcsAttendee
 import com.crko.domain.IcsImport
@@ -180,8 +181,9 @@ class ItipTest {
         val jane = updated.attendeeEntries.first { it.displayName == "Jane" }
         assertEquals(IcsPartStat.Accepted, jane.partStat)
         // RSVP and CN are untouched by the status rewrite.
-        val janeLine = updated.attendeeRaw.first { "jane@example.com" in it }
-        assertTrue("RSVP=TRUE" in janeLine && "CN=Jane" in janeLine)
+        val janeStored = updated.attendees.first { "jane@example.com" in it.calAddress }
+        assertEquals("Jane", janeStored.cn)
+        assertEquals(true, janeStored.rsvp)
         // The other attendee is untouched.
         assertEquals(IcsPartStat.Declined, updated.attendeeEntries.first { it.displayName == "Bob" }.partStat)
     }
@@ -195,7 +197,9 @@ class ItipTest {
             end = IcsTimeValue.Floating(LocalDateTime(2026, 3, 5, 11, 0)),
             icsUid = "series@crko",
             recurrenceId = IcsTimeValue.Date(LocalDate(2026, 3, 2)),
-            attendeeRaw = listOf("ATTENDEE;CN=Jane;PARTSTAT=NEEDS-ACTION:mailto:jane@example.com"),
+            attendees = listOf(
+                CalAddress.parse("ATTENDEE;CN=Jane;PARTSTAT=NEEDS-ACTION:mailto:jane@example.com")!!,
+            ),
         )
         val reply = import(
             calendar(
@@ -282,7 +286,7 @@ class ItipTest {
             attendees = listOf("mailto:a@x", "mailto:b@x"),
         )
         assertEquals(listOf("mailto:a@x", "mailto:b@x"), event.attendeeEntries.map { it.calAddress })
-        assertEquals(IcsPartStat.NeedsAction, event.attendeeEntries.first().partStat)
+        assertNull(event.attendeeEntries.first().partStat)
     }
 
     @Test

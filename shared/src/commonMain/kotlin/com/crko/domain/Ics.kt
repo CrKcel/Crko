@@ -467,7 +467,7 @@ fun exportItipCancel(
  */
 fun exportItipReply(
     event: Event,
-    attendee: IcsAttendee,
+    attendee: CalAddress,
     now: Instant = Clock.System.now(),
 ): String = buildString {
     line("BEGIN:VCALENDAR")
@@ -480,12 +480,7 @@ fun exportItipReply(
     line("UID:${escapeText(uid)}")
     line("DTSTAMP:${formatUtc(parseInstant(event.dtStamp) ?: now)}")
     if (event.sequence > 0) line("SEQUENCE:${event.sequence}")
-    val organizerRaw = event.organizerRaw
-    if (!organizerRaw.isNullOrBlank()) {
-        line(organizerRaw)
-    } else {
-        event.organizer?.let { if (it.isNotBlank()) line("ORGANIZER:${sanitizeUriValue(it)}") }
-    }
+    event.organizer?.takeIf { it.calAddress.isNotBlank() }?.let { line(it.toLine("ORGANIZER")) }
     line(attendee.toLine())
     event.recurrenceId?.let { appendTimeLine("RECURRENCE-ID", it) }
     appendTimeLine("DTSTART", event.start)
@@ -501,11 +496,7 @@ private fun StringBuilder.line(value: String) {
 private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, index: Int, now: Instant) {
     val uid = event.uid ?: "crko-${index + 1}@local"
     line("BEGIN:VEVENT")
-    line("UID:${escapeText(uid)}")
-    line("DTSTAMP:${formatUtc(parseInstant(event.dtStamp) ?: parseInstant(event.lastModified) ?: now)}")
-    event.created?.let { if (it.isNotBlank()) line("CREATED:${formatUtc(parseInstant(it) ?: now)}") }
-    event.lastModified?.let { if (it.isNotBlank()) line("LAST-MODIFIED:${formatUtc(parseInstant(it) ?: now)}") }
-    if (event.sequence > 0 || event.lastModified != null) line("SEQUENCE:${event.sequence.coerceAtLeast(0)}")
+    appendComponentHeader(event, uid, now)
     // A RECURRENCE-ID is only meaningful inside the file that carries its master series, so an
     // exception whose master is absent is exported as a plain event instead of a dangling one.
     val masterPresent = event.recurrenceId != null && allEvents.any { candidate ->
@@ -520,52 +511,95 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     // RFC 5545 represents a zero-length timed event by leaving out DTEND/DURATION.
     event.end?.let { appendTimeLine("DTEND", it) }
 
-    line("SUMMARY:${escapeText(event.title)}")
-    if (event.note.isNotBlank()) line("DESCRIPTION:${escapeText(event.note)}")
+    appendComponentText(event)
     if (event.location.isNotBlank()) line("LOCATION:${escapeText(event.location)}")
-    if (event.categories.isNotEmpty()) {
-        line("CATEGORIES:${event.categories.joinToString(",") { escapeText(it) }}")
-    }
-    if (event.url.isNotBlank()) line("URL:${sanitizeUriValue(event.url)}")
     if (!event.geo.isNullOrBlank()) line("GEO:${sanitizeUriValue(event.geo)}")
-    appendAttachments(event.attachments)
     if (event.eventClass != null) line("CLASS:${event.eventClass.name.uppercase()}")
     if (event.status != EventStatus.Confirmed) line("STATUS:${event.status.name.uppercase()}")
     if (event.transparency == EventTransparency.Transparent) line("TRANSP:TRANSPARENT")
     event.priority?.let { if (it in 0..9) line("PRIORITY:$it") }
-    val organizerRaw = event.organizerRaw
-    if (!organizerRaw.isNullOrBlank()) {
-        line(organizerRaw)
-    } else {
-        event.organizer?.let { if (it.isNotBlank()) line("ORGANIZER:${sanitizeUriValue(it)}") }
-    }
-    if (event.attendeeRaw.isNotEmpty()) {
-        event.attendeeRaw.forEach { if (it.isNotBlank()) line(it) }
-    } else {
-        event.attendees.forEach { if (it.isNotBlank()) line("ATTENDEE:${sanitizeUriValue(it)}") }
-    }
+    event.organizer?.takeIf { it.calAddress.isNotBlank() }?.let { line(it.toLine("ORGANIZER")) }
+    event.attendees.forEach { if (it.calAddress.isNotBlank()) line(it.toLine()) }
 
     event.recurrence?.let { appendRecurrence(it, event) }
 
-    event.alarms.forEach { alarm ->
+    appendAlarms(event.alarms)
+    appendComponentExtras(event)
+    line("END:VEVENT")
+}
+
+/** `UID`, timestamps, revision counter and the text properties every component carries. */
+private fun StringBuilder.appendComponentHeader(
+    component: CalendarComponent,
+    uid: String,
+    now: Instant,
+    created: Instant? = null,
+) {
+    line("UID:${escapeText(uid)}")
+    val stamp = parseInstant(component.dtStamp) ?: parseInstant(component.lastModified) ?: now
+    line("DTSTAMP:${formatUtc(stamp)}")
+    val createdAt = created ?: component.created?.let(::parseInstant)
+    createdAt?.let { line("CREATED:${formatUtc(it)}") }
+    component.lastModified?.let { line("LAST-MODIFIED:${formatUtc(parseInstant(it) ?: stamp)}") }
+    if (component.sequence > 0 || component.lastModified != null) {
+        line("SEQUENCE:${component.sequence.coerceAtLeast(0)}")
+    }
+}
+
+/** `SUMMARY`, `DESCRIPTION`, `URL`, `CATEGORIES` and `ATTACH` of any component. */
+private fun StringBuilder.appendComponentText(component: CalendarComponent) {
+    line("SUMMARY:${escapeText(component.title)}")
+    if (component.note.isNotBlank()) line("DESCRIPTION:${escapeText(component.note)}")
+    if (component.categories.isNotEmpty()) {
+        line("CATEGORIES:${component.categories.joinToString(",") { escapeText(it) }}")
+    }
+    if (component.url.isNotBlank()) line("URL:${sanitizeUriValue(component.url)}")
+    appendAttachments(component.attachments)
+}
+
+/** Unknown lines kept on every component, written last so they survive a round trip. */
+private fun StringBuilder.appendComponentExtras(component: CalendarComponent) {
+    component.extraProperties.forEach { line(it) }
+}
+
+/** Writes `VALARM` subcomponents with their relative or absolute trigger. */
+private fun StringBuilder.appendAlarms(alarms: List<Alarm>) {
+    alarms.forEach { alarm ->
         line("BEGIN:VALARM")
         line("ACTION:${alarm.action.ifBlank { "DISPLAY" }}")
-        val absolute = alarm.absoluteTrigger
-        if (absolute != null) {
-            line("TRIGGER;VALUE=DATE-TIME:$absolute")
-        } else {
-            val related = if (alarm.relatedToEnd) ";RELATED=END" else ""
-            line("TRIGGER$related:${formatTriggerDuration(alarm.triggerMinutes)}")
+        when (val trigger = alarm.trigger) {
+            is AlarmTrigger.Absolute -> appendAbsoluteTrigger(trigger.value)
+            is AlarmTrigger.Relative -> {
+                val related = if (trigger.related == AlarmRelated.End) ";RELATED=END" else ""
+                line("TRIGGER$related:${formatSignedDuration(trigger.duration)}")
+            }
         }
         alarm.repeat?.let { line("REPEAT:$it") }
-        alarm.durationMinutes?.let { line("DURATION:${formatDuration(it)}") }
+        alarm.duration?.let { line("DURATION:${formatDurationSeconds(kotlin.math.abs(it.inWholeSeconds))}") }
         if (alarm.description.isNotBlank()) line("DESCRIPTION:${escapeText(alarm.description)}")
         alarm.extraProperties.forEach { line(it) }
         line("END:VALARM")
     }
+}
 
-    event.extraProperties.forEach { line(it) }
-    line("END:VEVENT")
+/** Absolute `TRIGGER;VALUE=DATE-TIME` values keep their explicit value type on export. */
+private fun StringBuilder.appendAbsoluteTrigger(value: IcsTimeValue) {
+    when (value) {
+        is IcsTimeValue.Date -> appendTimeLine("TRIGGER", value)
+        is IcsTimeValue.Floating ->
+            line("TRIGGER;VALUE=DATE-TIME:${formatIcsLocalDateTime(value.dateTime, utc = false)}")
+        is IcsTimeValue.Utc -> line("TRIGGER;VALUE=DATE-TIME:${formatUtc(value.instant)}")
+        is IcsTimeValue.Zoned -> {
+            if (value.tzid.equals("UTC", ignoreCase = true)) {
+                line("TRIGGER;VALUE=DATE-TIME:${formatUtc(value.dateTime.toInstant(TimeZone.UTC))}")
+            } else {
+                line(
+                    "TRIGGER;VALUE=DATE-TIME;TZID=${value.tzid}:" +
+                        formatIcsLocalDateTime(value.dateTime, utc = false),
+                )
+            }
+        }
+    }
 }
 
 /** Writes [value] as the property [name], in the value type its RFC time value declares. */
@@ -586,91 +620,46 @@ internal fun StringBuilder.appendTimeLine(name: String, value: IcsTimeValue) {
 
 private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
     line("BEGIN:VTODO")
-    line("UID:${escapeText(todo.icsUid ?: "${todo.id}@crko")}")
-    val stamp = parseInstant(todo.dtStamp) ?: parseInstant(todo.lastModified) ?: now
-    line("DTSTAMP:${formatUtc(stamp)}")
-    if (todo.createdAt > 0) {
-        line("CREATED:${formatUtc(Instant.fromEpochMilliseconds(todo.createdAt))}")
-    }
-    line("SUMMARY:${escapeText(todo.title)}")
-    if (todo.note.isNotBlank()) line("DESCRIPTION:${escapeText(todo.note)}")
+    val createdFallback = todo.createdAt.takeIf { it > 0 }?.let { Instant.fromEpochMilliseconds(it) }
+    appendComponentHeader(todo, todo.icsUid ?: "${todo.id}@crko", now, createdFallback)
+    todo.start?.let { appendTimeLine("DTSTART", it) }
+    todo.due?.let { appendTimeLine("DUE", it) }
+    appendComponentText(todo)
     if (todo.location.isNotBlank()) line("LOCATION:${escapeText(todo.location)}")
-    if (todo.categories.isNotEmpty()) {
-        line("CATEGORIES:${todo.categories.joinToString(",") { escapeText(it) }}")
-    }
-    if (todo.url.isNotBlank()) line("URL:${sanitizeUriValue(todo.url)}")
-    appendAttachments(todo.attachments)
-    todo.relatedTo.forEach { if (it.isNotBlank()) line("RELATED-TO:${escapeText(it)}") }
-    val startInstant = todo.startTime?.let(::parseInstant)
-    if (startInstant != null) {
-        line("DTSTART:${formatUtc(startInstant)}")
-    } else {
-        todo.start?.let { parseDateText(it)?.let { date -> line("DTSTART;VALUE=DATE:${formatDate(date)}") } }
-    }
-    val dueInstant = todo.dueTime?.let(::parseInstant)
-    if (dueInstant != null) {
-        line("DUE:${formatUtc(dueInstant)}")
-    } else {
-        todo.due?.let { parseDateText(it)?.let { date -> line("DUE;VALUE=DATE:${formatDate(date)}") } }
+    todo.relatedTo.forEach { related ->
+        val reltype = related.reltype.uppercase()
+        val parameter = if (reltype == "PARENT" || reltype.isBlank()) "" else ";RELTYPE=$reltype"
+        line("RELATED-TO$parameter:${escapeText(related.uid)}")
     }
     todo.repeat?.let { rule ->
         line("RRULE:${rule.raw ?: ruleValue(rule, todo.repeatStartValue())}")
         appendTodoRDate(todo)
         appendTodoExDate(todo, rule)
     }
-    val exportStatus = when {
-        todo.status != TodoStatus.NeedsAction -> todo.status
-        todo.done -> TodoStatus.Completed
-        else -> TodoStatus.NeedsAction
-    }
-    val percent = when {
-        todo.percentComplete in 1..100 -> todo.percentComplete
-        exportStatus == TodoStatus.Completed -> 100
-        else -> 0
-    }
-    val statusText = when (exportStatus) {
+    val statusText = when (todo.status) {
         TodoStatus.NeedsAction -> "NEEDS-ACTION"
         TodoStatus.InProcess -> "IN-PROCESS"
         TodoStatus.Completed -> "COMPLETED"
         TodoStatus.Cancelled -> "CANCELLED"
     }
+    val percent = when {
+        todo.percentComplete in 1..100 -> todo.percentComplete
+        todo.status == TodoStatus.Completed -> 100
+        else -> 0
+    }
     line("STATUS:$statusText")
     line("PERCENT-COMPLETE:$percent")
-    if (exportStatus == TodoStatus.Completed) {
-        // COMPLETED is a UTC DATE-TIME in RFC 5545; never invent one from DUE.
-        val completed = todo.completedTime?.let(::parseInstant)?.let(::formatUtc)
-            ?: todo.completedAt?.let(::parseDateText)?.let { "${formatDate(it)}T000000Z" }
-        if (completed != null) line("COMPLETED:$completed")
+    if (todo.status == TodoStatus.Completed) {
+        todo.completed?.let { line("COMPLETED:${formatUtc(it)}") }
     }
-    line("PRIORITY:${todoPriorityToIcs(todo.priority)}")
-    todo.lastModified?.let { line("LAST-MODIFIED:${formatUtc(parseInstant(it) ?: now)}") }
-    if (todo.sequence > 0) line("SEQUENCE:${todo.sequence}")
-    todo.alarms.forEach { alarm ->
-        line("BEGIN:VALARM")
-        line("ACTION:${alarm.action.ifBlank { "DISPLAY" }}")
-        val absolute = alarm.absoluteTrigger
-        if (absolute != null) {
-            line("TRIGGER;VALUE=DATE-TIME:$absolute")
-        } else {
-            val related = if (alarm.relatedToEnd) ";RELATED=END" else ""
-            line("TRIGGER$related:${formatTriggerDuration(alarm.triggerMinutes)}")
-        }
-        alarm.repeat?.let { line("REPEAT:$it") }
-        alarm.durationMinutes?.let { line("DURATION:${formatDuration(it)}") }
-        if (alarm.description.isNotBlank()) line("DESCRIPTION:${escapeText(alarm.description)}")
-        alarm.extraProperties.forEach { line(it) }
-        line("END:VALARM")
-    }
-    todo.extraProperties.forEach { line(it) }
+    todo.priority?.let { if (it in 0..9) line("PRIORITY:$it") }
+    appendAlarms(todo.alarms)
+    appendComponentExtras(todo)
     line("END:VTODO")
 }
 
 /** Start value a todo series' `UNTIL` is rendered against; a date-only todo keeps the DATE form. */
-private fun Todo.repeatStartValue(): IcsTimeValue? {
-    startTime?.let(::parseInstant)?.let { return IcsTimeValue.Utc(it) }
-    val date = (start ?: due)?.let(::parseDateText)
-    return date?.let(IcsTimeValue::Date)
-}
+private fun Todo.repeatStartValue(): IcsTimeValue? = start ?: due
 
 /** `RDATE` lines of a todo series, keeping each value's own time and length. */
 private fun StringBuilder.appendTodoRDate(todo: Todo) {
@@ -1174,16 +1163,39 @@ private fun resolvePlatformZone(tzid: String): IcsZone.Platform? {
     return null
 }
 
-private data class RawAlarm(
-    val action: String,
-    val triggerMinutes: Int,
-    val relatedToEnd: Boolean,
-    val repeat: Int?,
-    val durationMinutes: Int?,
-    val description: String,
-    val absoluteTrigger: String? = null,
-    val extraProperties: List<String> = emptyList(),
-)
+/**
+ * Content lines every component shares, read once by `VEVENT`, `VTODO` and `VJOURNAL` parsers.
+ * `handle` returns false for a line the component has to interpret itself.
+ */
+private class CommonFields {
+    var uid: String? = null
+    var summary = ""
+    var description = ""
+    var url = ""
+    val categories = mutableListOf<String>()
+    val attachments = mutableListOf<Attachment>()
+    var created: String? = null
+    var lastModified: String? = null
+    var sequence = 0
+    var dtStamp: String? = null
+
+    fun handle(line: ContentLine): Boolean {
+        when (line.name) {
+            "UID" -> uid = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
+            "SUMMARY" -> summary = unescapeText(line.value).trim()
+            "DESCRIPTION" -> description = unescapeText(line.value).trim()
+            "URL" -> url = unescapeText(line.value).trim()
+            "CATEGORIES" -> categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
+            "ATTACH" -> attachments += readAttachment(line)
+            "CREATED" -> created = parseIcsInstant(line.value) ?: line.value.trim()
+            "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
+            "SEQUENCE" -> sequence = line.value.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
+            "DTSTAMP" -> dtStamp = parseIcsInstant(line.value) ?: line.value.trim()
+            else -> return false
+        }
+        return true
+    }
+}
 
 private data class RawEvent(
     val uid: String? = null,
@@ -1198,10 +1210,8 @@ private data class RawEvent(
     val transparency: String? = null,
     val eventClass: String? = null,
     val priority: Int? = null,
-    val organizer: String? = null,
-    val attendees: List<String> = emptyList(),
-    val organizerRaw: String? = null,
-    val attendeeRaw: List<String> = emptyList(),
+    val organizer: CalAddress? = null,
+    val attendees: List<CalAddress> = emptyList(),
     val start: IcsTime? = null,
     val end: IcsTime? = null,
     val durationMinutes: Int? = null,
@@ -1217,7 +1227,7 @@ private data class RawEvent(
     val sequence: Int = 0,
     /** `DTSTAMP` of the copy, used to tell the newest copy of a UID apart from its stale ones. */
     val dtStamp: String? = null,
-    val alarms: List<RawAlarm> = emptyList(),
+    val alarms: List<Alarm> = emptyList(),
     val extraProperties: List<String> = emptyList(),
     /** Line of `BEGIN:VEVENT`, used to point a warning at the record. */
     val lineNumber: Int = 0,
@@ -1232,22 +1242,15 @@ private fun readEvent(
     details: MutableList<IcsWarningDetail>,
 ): RawEvent {
     val warnings = linkedSetOf<IcsWarning>()
-    var uid: String? = null
-    var summary = ""
-    var description = ""
+    val common = CommonFields()
     var location = ""
-    val categories = mutableListOf<String>()
-    val attachments = mutableListOf<Attachment>()
-    var url = ""
     var geo: String? = null
     var status: String? = null
     var transparency: String? = null
     var eventClass: String? = null
     var priority: Int? = null
-    var organizer: String? = null
-    val attendees = mutableListOf<String>()
-    var organizerRaw: String? = null
-    val attendeeRaw = mutableListOf<String>()
+    var organizer: CalAddress? = null
+    val attendees = mutableListOf<CalAddress>()
     var start: IcsTime? = null
     var end: IcsTime? = null
     var durationMinutes: Int? = null
@@ -1257,34 +1260,20 @@ private fun readEvent(
     var rawRule: String? = null
     val exdates = mutableListOf<IcsTime>()
     val rdates = mutableListOf<IcsTime>()
-    var created: String? = null
-    var lastModified: String? = null
-    var sequence = 0
-    var dtStamp: String? = null
     val extra = mutableListOf<String>()
 
     component.properties.forEach { line ->
         when (line.name) {
-            "UID" -> uid = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
-            "SUMMARY" -> summary = unescapeText(line.value).trim()
-            "DESCRIPTION" -> description = unescapeText(line.value).trim()
             "LOCATION" -> location = unescapeText(line.value).trim()
-            "CATEGORIES" -> categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
-            "URL" -> url = unescapeText(line.value).trim()
             "GEO" -> geo = line.value.trim().takeIf { it.isNotEmpty() }
-            "ATTACH" -> attachments += readAttachment(line)
             "STATUS" -> status = line.value.trim().uppercase()
             "TRANSP" -> transparency = line.value.trim().uppercase()
             "CLASS" -> eventClass = line.value.trim().uppercase()
             "PRIORITY" -> priority = line.value.trim().toIntOrNull()?.coerceIn(0, 9)
-            "ORGANIZER" -> {
-                organizerRaw = line.raw
-                organizer = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
-            }
-            "ATTENDEE" -> {
-                attendeeRaw += line.raw
-                unescapeText(line.value).trim().takeIf { it.isNotEmpty() }?.let { attendees += it }
-            }
+            "ORGANIZER" -> organizer = CalAddress.fromContentLine(line)
+            "ATTENDEE" -> CalAddress.fromContentLine(line)
+                .takeIf { it.calAddress.isNotBlank() }
+                ?.let { attendees += it }
             "DTSTART" -> start = parseTime(line, zones, warnings, floatingZone)
             "DTEND" -> end = parseTime(line, zones, warnings, floatingZone)
             "DURATION" -> durationMinutes = parseDurationMinutes(line.value)
@@ -1322,38 +1311,34 @@ private fun readEvent(
                     floatingZone,
                 )?.let { rdates += it }
             }
-            "CREATED" -> created = parseIcsInstant(line.value) ?: line.value.trim()
-            "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
-            "SEQUENCE" -> sequence = line.value.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
-            "DTSTAMP" -> dtStamp = parseIcsInstant(line.value) ?: line.value.trim()
             "PRODID", "VERSION", "CALSCALE", "METHOD", "X-WR-CALNAME" -> Unit
-            else -> extra += line.raw
+            else -> if (!common.handle(line)) extra += line.raw
         }
     }
 
-    val alarms = component.children.filter { it.name == "VALARM" }.mapNotNull(::readAlarm)
+    val alarms = component.children
+        .filter { it.name == "VALARM" }
+        .mapNotNull { readAlarm(it, zones, floatingZone, warnings) }
     if (component.children.any { it.name != "VALARM" }) {
         warnings += IcsWarning.UnknownSubcomponent
     }
-    val record = summary.ifBlank { uid }
+    val record = common.summary.ifBlank { common.uid }
     warnings.forEach { details += warningDetail(it, component.lineNumber, record) }
     return RawEvent(
-        uid = uid,
-        summary = summary,
-        description = description,
+        uid = common.uid,
+        summary = common.summary,
+        description = common.description,
         location = location,
-        categories = categories.distinct(),
-        url = url,
+        categories = common.categories.distinct(),
+        url = common.url,
         geo = geo,
-        attachments = attachments,
+        attachments = common.attachments,
         status = status,
         transparency = transparency,
         eventClass = eventClass,
         priority = priority,
         organizer = organizer,
         attendees = attendees,
-        organizerRaw = organizerRaw,
-        attendeeRaw = attendeeRaw,
         start = start,
         end = end,
         durationMinutes = durationMinutes,
@@ -1363,10 +1348,10 @@ private fun readEvent(
         rawRule = rawRule,
         exdates = exdates,
         rDates = rdates,
-        created = created,
-        lastModified = lastModified,
-        sequence = sequence,
-        dtStamp = dtStamp,
+        created = common.created,
+        lastModified = common.lastModified,
+        sequence = common.sequence,
+        dtStamp = common.dtStamp,
         alarms = alarms,
         extraProperties = extra,
         lineNumber = component.lineNumber,
@@ -1375,42 +1360,41 @@ private fun readEvent(
 
 private fun readAttachment(line: ContentLine): Attachment {
     val binary = line.params["ENCODING"].equals("BASE64", ignoreCase = true)
-    val uri = if (binary) "" else line.value.trim()
-    val name = line.params["FILENAME"]?.trim()?.removeSurrounding("\"")
-        ?.takeIf { it.isNotEmpty() }
-        ?: uri.substringAfterLast('/').substringBefore('?').takeIf { it.isNotBlank() }
-        ?: ""
-    val mimeType = line.params["FMTTYPE"]?.trim()?.removeSurrounding("\"") ?: ""
     return Attachment(
-        raw = line.raw,
-        uri = uri,
-        name = name,
-        mimeType = mimeType,
-        data = if (binary) line.value.trim() else "",
+        value = line.value.trim(),
+        parameters = line.params,
         binary = binary,
     )
 }
 
-private fun readAlarm(component: IcsComponent): RawAlarm? {
+private fun readAlarm(
+    component: IcsComponent,
+    zones: Map<String, CustomZone>,
+    floatingZone: IcsZone?,
+    warnings: MutableSet<IcsWarning>,
+): Alarm? {
     val action = component.first("ACTION")?.value?.trim()?.uppercase() ?: "DISPLAY"
     val trigger = component.first("TRIGGER") ?: return null
     val triggerValue = trigger.value.trim()
     val relative = triggerValue.startsWith("P") || triggerValue.startsWith("-P") || triggerValue.startsWith("+P")
-    val signed = if (relative) parseSignedDurationMinutes(triggerValue) else null
-    if (relative && signed == null) return null
-    if (!relative && triggerValue.isEmpty()) return null
+    val triggerValueParsed = if (relative) {
+        val signed = parseSignedDurationMinutes(triggerValue) ?: return null
+        AlarmTrigger.Relative(signed.minutes, AlarmRelated.parse(trigger.params["RELATED"]))
+    } else {
+        if (triggerValue.isEmpty()) return null
+        val absolute = parseTime(trigger, zones, warnings, floatingZone)?.toValue() ?: return null
+        AlarmTrigger.Absolute(absolute)
+    }
     val repeat = component.first("REPEAT")?.value?.trim()?.toIntOrNull()
-    val duration = component.first("DURATION")?.value?.trim()?.let(::parseDurationMinutes)
+    val duration = component.first("DURATION")?.value?.trim()?.let(::parseDurationMinutes)?.minutes
     val description = component.first("DESCRIPTION")?.value?.let(::unescapeText).orEmpty()
     val known = setOf("ACTION", "TRIGGER", "REPEAT", "DURATION", "DESCRIPTION")
-    return RawAlarm(
+    return Alarm(
         action = action,
-        triggerMinutes = -(signed ?: 0),
-        relatedToEnd = trigger.params["RELATED"]?.equals("END", ignoreCase = true) == true,
+        trigger = triggerValueParsed,
         repeat = repeat,
-        durationMinutes = duration,
+        duration = duration,
         description = description,
-        absoluteTrigger = triggerValue.takeIf { !relative },
         extraProperties = component.properties.filterNot { it.name in known }.map { it.raw },
     )
 }
@@ -1862,9 +1846,7 @@ private fun mapSingle(
         priority = raw.priority,
         organizer = raw.organizer,
         attendees = raw.attendees,
-        organizerRaw = raw.organizerRaw,
-        attendeeRaw = raw.attendeeRaw,
-        alarms = raw.alarms.map { it.toAlarm() },
+        alarms = raw.alarms,
         recurrence = recurrence,
         icsUid = raw.uid,
         recurrenceId = raw.recurrenceId?.toValue(),
@@ -1874,7 +1856,7 @@ private fun mapSingle(
         dtStamp = raw.dtStamp,
         sequence = raw.sequence,
         extraProperties = raw.extraProperties,
-        sourceLine = raw.lineNumber,
+        local = LocalRecordMeta(sourceLine = raw.lineNumber),
     ).withValidExdates(warnings)
 }
 
@@ -2009,17 +1991,6 @@ private fun rawClass(value: String?): EventClass? = when (value?.uppercase()) {
     else -> null
 }
 
-private fun RawAlarm.toAlarm(): Alarm = Alarm(
-    action = action,
-    triggerMinutes = triggerMinutes,
-    relatedToEnd = relatedToEnd,
-    repeat = repeat,
-    durationMinutes = durationMinutes,
-    description = description,
-    absoluteTrigger = absoluteTrigger,
-    extraProperties = extraProperties,
-)
-
 private fun readTodo(
     component: IcsComponent,
     deviceZone: TimeZone,
@@ -2028,60 +1999,29 @@ private fun readTodo(
     details: MutableList<IcsWarningDetail>,
 ): Todo? {
     val warnings = linkedSetOf<IcsWarning>()
-    var uid: String? = null
-    var title = ""
-    var note = ""
-    var start: String? = null
-    var startTime: String? = null
+    val common = CommonFields()
     var startValue: IcsTime? = null
-    var due: String? = null
-    var dueTime: String? = null
     var dueValue: IcsTime? = null
+    var completedValue: IcsTime? = null
     var rule: RepeatRule? = null
     var rawRule: String? = null
     val exdates = mutableListOf<IcsTime>()
     val rdates = mutableListOf<IcsTime>()
     var location = ""
-    val categories = mutableListOf<String>()
-    val attachments = mutableListOf<Attachment>()
-    var url = ""
-    val relatedTo = mutableListOf<String>()
+    val relatedTo = mutableListOf<RelatedTo>()
     var rawStatus: String? = null
     var percent = 0
-    var priority = 0
-    var completed: String? = null
-    var completedTime: String? = null
-    var created: String? = null
-    var lastModified: String? = null
-    var dtStamp: String? = null
-    var sequence = 0
+    var priority: Int? = null
     val extra = mutableListOf<String>()
     component.properties.forEach { line ->
         when (line.name) {
-            "UID" -> uid = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
-            "SUMMARY" -> title = unescapeText(line.value).trim()
-            "DESCRIPTION" -> note = unescapeText(line.value).trim()
             "DTSTART" -> {
-                val time = parseTime(line, zones, warnings, floatingZone)
-                startValue = time
-                start = when (time) {
-                    is IcsTime.AllDay -> time.date.toString()
-                    is IcsTime.DateTime -> time.localDate(deviceZone).toString()
-                    null -> null
-                }
-                startTime = time?.instantForDevice(deviceZone)
-                if (time == null) warnings += IcsWarning.InvalidValue
+                startValue = parseTime(line, zones, warnings, floatingZone)
+                if (startValue == null) warnings += IcsWarning.InvalidValue
             }
             "DUE" -> {
-                val time = parseTime(line, zones, warnings, floatingZone)
-                dueValue = time
-                due = when (time) {
-                    is IcsTime.AllDay -> time.date.toString()
-                    is IcsTime.DateTime -> time.localDate(deviceZone).toString()
-                    null -> null
-                }
-                dueTime = time?.instantForDevice(deviceZone)
-                if (time == null) warnings += IcsWarning.InvalidValue
+                dueValue = parseTime(line, zones, warnings, floatingZone)
+                if (dueValue == null) warnings += IcsWarning.InvalidValue
             }
             "RRULE" -> {
                 val parsed = parseRule(
@@ -2115,42 +2055,30 @@ private fun readTodo(
                 )?.let { rdates += it }
             }
             "LOCATION" -> location = unescapeText(line.value).trim()
-            "CATEGORIES" -> categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
-            "URL" -> url = unescapeText(line.value).trim()
-            "ATTACH" -> attachments += readAttachment(line)
-            "RELATED-TO" -> when (line.params["RELTYPE"]?.trim()?.uppercase()) {
-                // Absent RELTYPE is the default PARENT the hierarchy is built on.
-                null, "", "PARENT" -> unescapeText(line.value).trim().takeIf { it.isNotEmpty() }?.let { relatedTo += it }
-                // CHILD and SIBLING name the same link in the other direction; keeping the raw line
-                // preserves the parameter for the next export instead of inverting the hierarchy.
-                else -> extra += line.raw
+            "RELATED-TO" -> unescapeText(line.value).trim().takeIf { it.isNotEmpty() }?.let { target ->
+                val reltype = line.params["RELTYPE"]?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: "PARENT"
+                relatedTo += RelatedTo(target, reltype)
             }
             "STATUS" -> rawStatus = line.value.trim().uppercase()
             "PERCENT-COMPLETE" -> percent = line.value.trim().toIntOrNull()?.coerceIn(0, 100) ?: 0
-            "PRIORITY" -> priority = line.value.trim().toIntOrNull()?.coerceIn(0, 9) ?: 0
-            "COMPLETED" -> {
-                val time = parseTime(line, zones, warnings, floatingZone)
-                completed = time?.localDate(deviceZone)?.toString()
-                completedTime = time?.instantForDevice(deviceZone)
-            }
-            "CREATED" -> created = parseIcsInstant(line.value) ?: line.value.trim()
-            "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
-            "SEQUENCE" -> sequence = line.value.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
-            "DTSTAMP" -> dtStamp = parseIcsInstant(line.value) ?: line.value.trim()
+            "PRIORITY" -> priority = line.value.trim().toIntOrNull()?.coerceIn(0, 9)
+            "COMPLETED" -> completedValue = parseTime(line, zones, warnings, floatingZone)
             "EXRULE" -> {
                 warnings += IcsWarning.ExruleIgnored
                 extra += line.raw
             }
-            else -> extra += line.raw
+            else -> if (!common.handle(line)) extra += line.raw
         }
     }
-    val alarms = component.children.filter { it.name == "VALARM" }.mapNotNull(::readAlarm)
+    val alarms = component.children
+        .filter { it.name == "VALARM" }
+        .mapNotNull { readAlarm(it, zones, floatingZone, warnings) }
     if (component.children.any { it.name != "VALARM" }) {
         warnings += IcsWarning.UnknownSubcomponent
     }
     // A rule this model cannot expand is kept verbatim so a later export does not drop it.
     rawRule?.let { extra += "RRULE:$it" }
-    if (title.isBlank() && uid == null) {
+    if (common.summary.isBlank() && common.uid == null) {
         // Nothing identifies this record, but the user still learns that a part of the file was
         // dropped instead of wondering where a todo went.
         warnings.forEach { details += warningDetail(it, component.lineNumber, null) }
@@ -2167,56 +2095,42 @@ private fun readTodo(
             else -> TodoStatus.NeedsAction
         }
     }
-    val done = status == TodoStatus.Completed ||
-        status == TodoStatus.Cancelled ||
-        percent >= 100 ||
-        completed != null
-    val record = title.ifBlank { uid }
+    val completed = completedValue?.let { time ->
+        val value = time.toValue()
+        value.instantOrNull(deviceZone) ?: (value as? IcsTimeValue.Date)?.date
+            ?.let { LocalDateTime(it, LocalTime(0, 0)).toInstant(deviceZone) }
+    }
+    val record = common.summary.ifBlank { common.uid }
     warnings.forEach { details += warningDetail(it, component.lineNumber, record) }
     // The series is anchored on DTSTART, falling back to DUE the way RFC 5545 anchors a VTODO.
-    val repeat = rule
     return Todo(
         id = "",
-        title = title.ifBlank { uid ?: "" },
-        done = done,
-        priority = when {
-            priority in 1..4 -> TodoPriority.High
-            priority in 5..7 -> TodoPriority.Normal
-            priority in 8..9 -> TodoPriority.Low
-            else -> TodoPriority.Normal
-        },
-        start = start,
-        startTime = startTime,
-        due = due,
-        dueTime = dueTime,
-        note = note,
+        title = common.summary.ifBlank { common.uid ?: "" },
+        start = startValue?.toValue(),
+        due = dueValue?.toValue(),
+        completed = completed,
+        priority = priority,
+        note = common.description,
         location = location,
-        categories = categories.distinct(),
-        url = url,
-        attachments = attachments,
+        categories = common.categories.distinct(),
+        url = common.url,
+        attachments = common.attachments,
         relatedTo = relatedTo.distinct(),
-        icsUid = uid,
-        createdAt = parseInstant(created)?.toEpochMilliseconds() ?: 0L,
-        completedAt = completed,
-        sequence = sequence,
-        lastModified = lastModified,
-        dtStamp = dtStamp,
+        icsUid = common.uid,
+        created = common.created,
+        createdAt = parseInstant(common.created)?.toEpochMilliseconds() ?: 0L,
+        sequence = common.sequence,
+        lastModified = common.lastModified,
+        dtStamp = common.dtStamp,
         extraProperties = extra,
         status = status,
         percentComplete = percent,
-        completedTime = completedTime,
-        alarms = alarms.map { it.toAlarm() },
-        repeat = repeat,
+        alarms = alarms,
+        repeat = rule,
         rDates = rdates.map { RecurrenceDate(it.toValue(), it.periodDuration()) },
         excludedDates = exdates.map { it.localDate(deviceZone).toString() }.distinct(),
-        sourceLine = component.lineNumber,
+        local = LocalRecordMeta(sourceLine = component.lineNumber),
     )
-}
-
-private fun todoPriorityToIcs(priority: TodoPriority): Int = when (priority) {
-    TodoPriority.High -> 1
-    TodoPriority.Normal -> 5
-    TodoPriority.Low -> 9
 }
 
 private fun readJournal(
@@ -2227,66 +2141,96 @@ private fun readJournal(
     details: MutableList<IcsWarningDetail>,
 ): Journal? {
     val warnings = linkedSetOf<IcsWarning>()
-    var uid: String? = null
-    var title = ""
-    var note = ""
-    var date: String? = null
-    var startTime: String? = null
-    var url = ""
-    val categories = mutableListOf<String>()
-    val attachments = mutableListOf<Attachment>()
-    var created: String? = null
-    var lastModified: String? = null
-    var dtStamp: String? = null
-    var sequence = 0
+    val common = CommonFields()
+    var startValue: IcsTime? = null
+    var rule: RepeatRule? = null
+    var rawRule: String? = null
+    val exdates = mutableListOf<IcsTime>()
+    val rdates = mutableListOf<IcsTime>()
+    var rawStatus: String? = null
+    var journalClass: String? = null
     val extra = mutableListOf<String>()
     component.properties.forEach { line ->
         when (line.name) {
-            "UID" -> uid = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
-            "SUMMARY" -> title = unescapeText(line.value).trim()
-            "DESCRIPTION" -> note = unescapeText(line.value).trim()
             "DTSTART" -> {
-                val time = parseTime(line, zones, warnings, floatingZone)
-                date = when (time) {
-                    is IcsTime.AllDay -> time.date.toString()
-                    is IcsTime.DateTime -> time.localDate(deviceZone).toString()
-                    null -> null
-                }
-                startTime = time?.instantForDevice(deviceZone)
-                if (time == null) warnings += IcsWarning.InvalidValue
+                startValue = parseTime(line, zones, warnings, floatingZone)
+                if (startValue == null) warnings += IcsWarning.InvalidValue
             }
-            "URL" -> url = unescapeText(line.value).trim()
-            "ATTACH" -> attachments += readAttachment(line)
-            "CATEGORIES" -> categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
-            "CREATED" -> created = parseIcsInstant(line.value) ?: line.value.trim()
-            "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
-            "SEQUENCE" -> sequence = line.value.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
-            "DTSTAMP" -> dtStamp = parseIcsInstant(line.value) ?: line.value.trim()
-            else -> extra += line.raw
+            "RRULE" -> {
+                val parsed = parseRule(
+                    line.value,
+                    zones,
+                    warnings,
+                    floatingZone,
+                    startIsDate = startValue is IcsTime.AllDay,
+                )
+                if (rule == null && rawRule == null) {
+                    rule = parsed
+                    rawRule = line.value.trim().takeIf { parsed == null }
+                } else {
+                    warnings += IcsWarning.MultipleRrules
+                }
+            }
+            "EXDATE" -> splitList(line.value).forEach { value ->
+                parseTime(
+                    ContentLine("EXDATE", line.params, value, line.raw),
+                    zones,
+                    warnings,
+                    floatingZone,
+                )?.let { exdates += it }
+            }
+            "RDATE" -> splitList(line.value).forEach { value ->
+                parseTime(
+                    ContentLine("RDATE", line.params, value, line.raw),
+                    zones,
+                    warnings,
+                    floatingZone,
+                )?.let { rdates += it }
+            }
+            "STATUS" -> rawStatus = line.value.trim().uppercase()
+            "CLASS" -> journalClass = line.value.trim().uppercase()
+            "EXRULE" -> {
+                warnings += IcsWarning.ExruleIgnored
+                extra += line.raw
+            }
+            else -> if (!common.handle(line)) extra += line.raw
         }
     }
-    if (uid == null && title.isBlank() && note.isBlank()) {
+    rawRule?.let { extra += "RRULE:$it" }
+    if (common.uid == null && common.summary.isBlank() && common.description.isBlank()) {
         warnings.forEach { details += warningDetail(it, component.lineNumber, null) }
         return null
     }
-    val record = title.ifBlank { uid }
+    val record = common.summary.ifBlank { common.uid }
     warnings.forEach { details += warningDetail(it, component.lineNumber, record) }
+    val recurrence = if (rule == null && rawRule == null && rdates.isEmpty() && exdates.isEmpty()) {
+        null
+    } else {
+        Recurrence(
+            rule = rule,
+            rdates = rdates.map { RecurrenceDate(it.toValue(), it.periodDuration()) },
+            exdates = exdates.map { it.toValue() },
+            rawRule = rawRule,
+        )
+    }
     return Journal(
         id = "",
-        title = title,
-        note = note,
-        date = date,
-        startTime = startTime,
-        url = url,
-        categories = categories.distinct(),
-        attachments = attachments,
-        created = created,
-        lastModified = lastModified,
-        dtStamp = dtStamp,
-        sequence = sequence,
-        icsUid = uid,
+        title = common.summary,
+        note = common.description,
+        start = startValue?.toValue(),
+        url = common.url,
+        categories = common.categories.distinct(),
+        attachments = common.attachments,
+        created = common.created,
+        lastModified = common.lastModified,
+        dtStamp = common.dtStamp,
+        sequence = common.sequence,
+        icsUid = common.uid,
         extraProperties = extra,
-        sourceLine = component.lineNumber,
+        recurrence = recurrence,
+        status = JournalStatus.parse(rawStatus),
+        eventClass = rawClass(journalClass),
+        local = LocalRecordMeta(sourceLine = component.lineNumber),
     )
 }
 
@@ -2331,33 +2275,31 @@ private fun busyTypeOf(value: String?): BusyType = when (value?.trim()?.uppercas
     else -> BusyType.Busy
 }
 
-private fun StringBuilder.appendJournal(journal: Journal, index: Int, now: Instant) {    line("BEGIN:VJOURNAL")
-    line("UID:${escapeText(journal.icsUid ?: "${journal.id}@crko")}")
-    val stamp = parseInstant(journal.dtStamp) ?: parseInstant(journal.lastModified) ?: now
-    line("DTSTAMP:${formatUtc(stamp)}")
-    journal.created?.let { if (it.isNotBlank()) line("CREATED:${formatUtc(parseInstant(it) ?: stamp)}") }
-    journal.lastModified?.let { if (it.isNotBlank()) line("LAST-MODIFIED:${formatUtc(parseInstant(it) ?: stamp)}") }
-    if (journal.sequence > 0 || journal.lastModified != null) line("SEQUENCE:${journal.sequence.coerceAtLeast(0)}")
-    journal.date?.let { dateText ->
-        val parsed = parseDateText(dateText)
-        if (parsed != null) {
-            val start = journal.startTime?.let(::parseInstant)
-            if (start != null) {
-                line("DTSTART:${formatUtc(start)}")
-            } else {
-                line("DTSTART;VALUE=DATE:${formatDate(parsed)}")
-            }
-        }
-    }
-    if (journal.title.isNotBlank()) line("SUMMARY:${escapeText(journal.title)}")
-    if (journal.note.isNotBlank()) line("DESCRIPTION:${escapeText(journal.note)}")
-    if (journal.url.isNotBlank()) line("URL:${sanitizeUriValue(journal.url)}")
-    appendAttachments(journal.attachments)
-    if (journal.categories.isNotEmpty()) {
-        line("CATEGORIES:${journal.categories.joinToString(",") { escapeText(it) }}")
-    }
-    journal.extraProperties.forEach { line(it) }
+private fun StringBuilder.appendJournal(journal: Journal, index: Int, now: Instant) {
+    line("BEGIN:VJOURNAL")
+    appendComponentHeader(journal, journal.icsUid ?: "${journal.id}@crko", now)
+    journal.start?.let { appendTimeLine("DTSTART", it) }
+    appendComponentText(journal)
+    journal.status?.let { line("STATUS:${it.wireName}") }
+    journal.eventClass?.let { line("CLASS:${it.name.uppercase()}") }
+    journal.recurrence?.let { appendJournalRecurrence(it) }
+    appendComponentExtras(journal)
     line("END:VJOURNAL")
+}
+
+/** Writes the `RRULE`, `RDATE` and `EXDATE` of a journal, without an event's occurrence handling. */
+private fun StringBuilder.appendJournalRecurrence(recurrence: Recurrence) {
+    val rule = recurrence.rule
+    if (rule != null) {
+        line("RRULE:${rule.raw ?: ruleValue(rule, null)}")
+    } else {
+        recurrence.rawRule?.let { line("RRULE:$it") }
+    }
+    appendRecurrenceDates(recurrence.rdates)
+    if (recurrence.exdates.isEmpty()) return
+    recurrence.exdates.groupBy { occurrenceParameter(it) }.forEach { (params, group) ->
+        line("EXDATE$params:${group.distinct().sortedBy { it.wallDateTime }.joinToString(",") { formatTimeValue(it) }}")
+    }
 }
 
 // ----- custom VTIMEZONE ----------------------------------------------------
@@ -2537,11 +2479,11 @@ private fun parseIcsInstant(value: String): String? {
     return time.zone.toInstant(time.value).toString()
 }
 
-/** Trigger duration with the RFC sign: positive minutes mean before the start. */
-private fun formatTriggerDuration(minutes: Int): String = when {
-    minutes > 0 -> "-${formatDuration(minutes)}"
-    minutes < 0 -> "+${formatDuration(-minutes)}"
-    else -> "PT0M"
+/** A relative trigger keeps the RFC sign: negative fires before, positive after the related time. */
+private fun formatSignedDuration(duration: Duration): String {
+    if (duration == Duration.ZERO) return "PT0M"
+    val sign = if (duration.isNegative()) "-" else "+"
+    return sign + formatDurationSeconds(kotlin.math.abs(duration.inWholeSeconds))
 }
 
 private fun formatDuration(minutes: Int): String {
@@ -2624,28 +2566,31 @@ private fun foldLine(line: String): String {
 @OptIn(ExperimentalEncodingApi::class)
 private fun StringBuilder.appendAttachments(attachments: List<Attachment>) {
     attachments.forEach { attachment ->
-        // A stored payload is re-encoded at export time. The record keeps the parameter head of the
-        // original line, so FMTTYPE and any other parameters survive the round trip without the
-        // base64 blob ever living inside the serialized state.
+        // A stored payload is re-encoded at export time; the parameters stay with the record so
+        // FMTTYPE and any unknown parameter survive without the base64 blob living in the state.
         val stored = attachment.storedFile?.takeIf { it.isNotBlank() }
-        if (attachment.binary && attachment.data.isBlank() && stored != null) {
-            val bytes = stored.let(AppAttachmentStore::read)
-            if (bytes != null) {
-                val head = attachment.raw.ifBlank {
-                    buildString {
-                        append("ATTACH;ENCODING=BASE64")
-                        if (attachment.mimeType.isNotBlank()) append(";FMTTYPE=${attachment.mimeType}")
-                        if (attachment.name.isNotBlank()) append(";FILENAME=${escapeText(attachment.name)}")
-                    }
-                }
-                line("$head:${Base64.encode(bytes)}")
+        val value = if (attachment.binary) {
+            if (attachment.value.isNotBlank()) {
+                attachment.value.filterNot { it.isWhitespace() }
+            } else {
+                val bytes = stored?.let(AppAttachmentStore::read) ?: return@forEach
+                Base64.encode(bytes)
             }
-            // A payload whose file is gone cannot be invented; the attachment is left out instead
-            // of exporting an empty value every client would reject.
-            return@forEach
+        } else {
+            sanitizeUriValue(attachment.value)
         }
-        val raw = attachment.raw
-        line(raw.ifBlank { "ATTACH:${sanitizeUriValue(attachment.uri)}" })
+        if (value.isBlank()) return@forEach
+        val parameters = LinkedHashMap(attachment.parameters)
+        if (attachment.binary && "ENCODING" !in parameters) parameters["ENCODING"] = "BASE64"
+        line(
+            buildString {
+                append("ATTACH")
+                parameters.forEach { (name, parameter) ->
+                    append(';').append(name).append('=').append(icsParameterValue(parameter))
+                }
+                append(':').append(value)
+            },
+        )
     }
 }
 

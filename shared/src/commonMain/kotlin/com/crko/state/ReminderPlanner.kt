@@ -1,10 +1,13 @@
 package com.crko.state
 
 import com.crko.domain.Alarm
+import com.crko.domain.AlarmRelated
+import com.crko.domain.AlarmTrigger
 import com.crko.domain.Event
 import com.crko.domain.OccurrenceTime
 import com.crko.domain.Todo
 import com.crko.domain.daysTo
+import com.crko.domain.instantOrNull
 import com.crko.domain.occurrenceDate
 import com.crko.domain.occurrenceEndInstant
 import com.crko.domain.occurrenceStartInstant
@@ -91,17 +94,18 @@ private fun collectEventReminders(
 ) {
     val relative = event.alarms
         .withIndex()
-        .filter { (_, alarm) -> !alarm.action.equals("EMAIL", ignoreCase = true) && alarm.absoluteTrigger == null }
+        .filter { (_, alarm) -> !alarm.action.equals("EMAIL", ignoreCase = true) && alarm.trigger is AlarmTrigger.Relative }
     val absolute = event.alarms
         .withIndex()
-        .filter { (_, alarm) -> !alarm.action.equals("EMAIL", ignoreCase = true) && alarm.absoluteTrigger != null }
+        .filter { (_, alarm) -> !alarm.action.equals("EMAIL", ignoreCase = true) && alarm.trigger is AlarmTrigger.Absolute }
     if (relative.isEmpty() && absolute.isEmpty()) return
     val title = event.title.ifBlank { strings.untitledEvent }
 
     // An absolute trigger fires once regardless of the occurrences, so it is emitted outside the
     // occurrence loop; a relative trigger is resolved per occurrence.
     absolute.forEach { (index, alarm) ->
-        val at = parseTriggerInstant(alarm.absoluteTrigger.orEmpty(), zone)?.toEpochMilliseconds() ?: return@forEach
+        val value = (alarm.trigger as AlarmTrigger.Absolute).value
+        val at = value.instantOrNull(zone)?.toEpochMilliseconds() ?: return@forEach
         output += ScheduledReminder(
             key = "e:${event.id}:$index:abs",
             triggerAtMillis = at,
@@ -123,11 +127,13 @@ private fun collectEventReminders(
             val endAt = event.occurrenceEndInstant(wallDate, time, zone)
             val startLocal = startAt.toLocalDateTime(zone)
             relative.forEach { (index, alarm) ->
-                val base = if (alarm.relatedToEnd) endAt else startAt
+                val trigger = alarm.trigger as AlarmTrigger.Relative
+                val base = if (trigger.related == AlarmRelated.End) endAt else startAt
                 emitWithRepeat(
                     event,
                     index,
                     alarm,
+                    trigger,
                     base,
                     candidate,
                     startLocal.time.let { it.hour * 60 + it.minute },
@@ -160,6 +166,7 @@ private fun emitWithRepeat(
     event: Event,
     index: Int,
     alarm: Alarm,
+    trigger: AlarmTrigger.Relative,
     base: Instant,
     occurrence: LocalDate,
     startMinutes: Int,
@@ -167,11 +174,11 @@ private fun emitWithRepeat(
     strings: Strings,
     output: MutableList<ScheduledReminder>,
 ) {
-    val first = base.toEpochMilliseconds() - alarm.triggerMinutes * 60_000L
+    val first = base.toEpochMilliseconds() + trigger.duration.inWholeMilliseconds
     val extra = alarm.repeat?.takeIf { it > 0 } ?: 0
     // REPEAT without a positive DURATION has no spacing; the extra firings would collapse onto the
     // first one, so they are ignored.
-    val step = alarm.durationMinutes?.takeIf { it > 0 }?.let { it * 60_000L } ?: 0L
+    val step = alarm.duration?.inWholeMilliseconds?.takeIf { it > 0 } ?: 0L
     val firings = if (extra > 0 && step > 0L) extra else 0
     for (round in 0..firings) {
         val at = first + round * step
@@ -181,7 +188,7 @@ private fun emitWithRepeat(
             triggerAtMillis = at,
             title = event.title.ifBlank { strings.untitledEvent },
             body = alarm.description.ifBlank {
-                "${strings.alarmLabel(alarm.triggerMinutes, alarm.relatedToEnd)} · ${alarmMoment(event.allDay, occurrence, startMinutes, strings)}"
+                "${strings.alarmLabel((-trigger.duration).inWholeMinutes.toInt(), trigger.related == AlarmRelated.End)} · ${alarmMoment(event.allDay, occurrence, startMinutes, strings)}"
             },
         )
     }
@@ -198,23 +205,27 @@ private fun collectTodoReminders(
 ) {
     if (todo.done) return
     todo.alarms.forEachIndexed { index, alarm ->
-        val anchor = when {
-            alarm.absoluteTrigger != null -> parseTriggerInstant(alarm.absoluteTrigger, zone)
-            alarm.relatedToEnd -> todo.dueTime?.let(::parseStoredInstant)
-            else -> todo.startTime?.let(::parseStoredInstant)
+        val trigger = alarm.trigger
+        val anchor = when (trigger) {
+            is AlarmTrigger.Absolute -> trigger.value.instantOrNull(zone)
+            is AlarmTrigger.Relative -> {
+                val value = if (trigger.related == AlarmRelated.End) todo.due else todo.start ?: todo.due
+                value?.instantOrNull(zone)
+            }
         } ?: return@forEachIndexed
         // An absolute trigger fires once regardless of the occurrences.
-        if (alarm.absoluteTrigger != null) {
+        if (trigger is AlarmTrigger.Absolute) {
             emitTodoReminder(todo, index, alarm, anchor.toEpochMilliseconds(), null, nowMillis, strings, output)
             return@forEachIndexed
         }
+        val relative = trigger as AlarmTrigger.Relative
         val rule = todo.repeat
         if (rule == null) {
             emitTodoReminder(
                 todo,
                 index,
                 alarm,
-                anchor.toEpochMilliseconds() - alarm.triggerMinutes * 60_000L,
+                anchor.toEpochMilliseconds() + relative.duration.inWholeMilliseconds,
                 null,
                 nowMillis,
                 strings,
@@ -229,14 +240,14 @@ private fun collectTodoReminders(
         val windowStart = today.plusDays(-1 - lookback)
         todo.occurrenceStartsBetween(windowStart, horizonEnd).forEach { occStart ->
             val base = when {
-                alarm.relatedToEnd -> LocalDateTime(todo.occurrenceDate(occStart), wall)
+                relative.related == AlarmRelated.End -> LocalDateTime(todo.occurrenceDate(occStart), wall)
                 else -> LocalDateTime(occStart, wall)
             }.toInstant(zone)
             emitTodoReminder(
                 todo,
                 index,
                 alarm,
-                base.toEpochMilliseconds() - alarm.triggerMinutes * 60_000L,
+                base.toEpochMilliseconds() + relative.duration.inWholeMilliseconds,
                 occStart,
                 nowMillis,
                 strings,
@@ -258,11 +269,16 @@ private fun emitTodoReminder(
     output: MutableList<ScheduledReminder>,
 ) {
     if (triggerMillis <= nowMillis) return
+    val relative = alarm.trigger as? AlarmTrigger.Relative
     output += ScheduledReminder(
         key = "t:${todo.id}:$index:${occurrence ?: "once"}:${triggerMillis / 60_000L}",
         triggerAtMillis = triggerMillis,
         title = todo.title,
-        body = alarm.description.ifBlank { strings.alarmLabel(alarm.triggerMinutes, alarm.relatedToEnd) },
+        body = alarm.description.ifBlank {
+            relative?.let {
+                strings.alarmLabel((-it.duration).inWholeMinutes.toInt(), it.related == AlarmRelated.End)
+            }.orEmpty()
+        },
     )
 }
 

@@ -41,61 +41,14 @@ enum class IcsPartStat(val wireName: String) {
 
 /**
  * One `ATTENDEE` of an event, with the scheduling parameters an invitation round trip depends on.
- * [com.crko.domain.Event.attendeeRaw] stays the stored source of truth; this is a read-only view
- * over it, so parameters this app does not model are never dropped by an edit.
+ * Since stage 4 this is the stored type itself ([CalAddress]), so a reply edits a structured
+ * `PARTSTAT` instead of rewriting a cached content line.
  */
-data class IcsAttendee(
-    /** The address after the colon, e.g. `mailto:jane@example.com`. */
-    val calAddress: String,
-    /** `CN` parameter. */
-    val cn: String? = null,
-    /** `ROLE` parameter, e.g. `REQ-PARTICIPANT`. */
-    val role: String? = null,
-    val partStat: IcsPartStat = IcsPartStat.NeedsAction,
-    /** `CUTYPE` parameter; `INDIVIDUAL` by default. */
-    val cutype: String? = null,
-    /** `RSVP` parameter; null when the line does not say. */
-    val rsvp: Boolean? = null,
-    /** `DELEGATED-FROM` address. */
-    val delegatedFrom: String? = null,
-    /** `DELEGATED-TO` address. */
-    val delegatedTo: String? = null,
-    /** `SENT-BY` address of a secretary acting for the attendee. */
-    val sentBy: String? = null,
-) {
-    /** Name shown to the user: `CN` when present, otherwise the bare address. */
-    val displayName: String
-        get() = cn?.takeIf { it.isNotBlank() } ?: calAddress.substringAfterLast(':').substringBefore('?')
+typealias IcsAttendee = CalAddress
 
-    companion object {
-        /** Parses an original `ATTENDEE` content line; null when it is not a usable attendee. */
-        fun parse(raw: String): IcsAttendee? {
-            val line = parseContentLine(UnfoldedLine(raw, 0)) ?: return null
-            if (line.name != "ATTENDEE" || line.value.isBlank()) return null
-            return IcsAttendee(
-                calAddress = line.value.trim(),
-                cn = line.params["CN"]?.takeIf { it.isNotBlank() },
-                role = line.params["ROLE"]?.trim()?.uppercase()?.takeIf { it.isNotEmpty() },
-                partStat = IcsPartStat.parse(line.params["PARTSTAT"]) ?: IcsPartStat.NeedsAction,
-                cutype = line.params["CUTYPE"]?.trim()?.uppercase()?.takeIf { it.isNotEmpty() },
-                rsvp = when (line.params["RSVP"]?.trim()?.uppercase()) {
-                    "TRUE" -> true
-                    "FALSE" -> false
-                    else -> null
-                },
-                delegatedFrom = line.params["DELEGATED-FROM"]?.takeIf { it.isNotBlank() },
-                delegatedTo = line.params["DELEGATED-TO"]?.takeIf { it.isNotBlank() },
-                sentBy = line.params["SENT-BY"]?.takeIf { it.isNotBlank() },
-            )
-        }
-    }
-}
-
-/** Structured view over an event's original `ATTENDEE` lines; falls back to the plain values. */
+/** Structured attendee list of an event. */
 val Event.attendeeEntries: List<IcsAttendee>
-    get() = attendeeRaw.mapNotNull(IcsAttendee::parse).ifEmpty {
-        attendees.filter { it.isNotBlank() }.map { IcsAttendee(calAddress = it) }
-    }
+    get() = attendees
 
 /**
  * Case-insensitive comparison of two calendar addresses, ignoring the `mailto:` scheme. The scheme
@@ -108,39 +61,6 @@ internal fun sameCalendarAddress(a: String, b: String): Boolean {
         return if (text.startsWith("mailto:", ignoreCase = true)) text.substring("mailto:".length) else text
     }
     return bare(a).equals(bare(b), ignoreCase = true)
-}
-
-/**
- * The `ATTENDEE` line of [raw] with its `PARTSTAT` parameter set to [partStat]. Every other
- * parameter and the value are preserved verbatim, so a reply round trip never loses `CN`/`ROLE`
- * details the app does not model. Null when [raw] is not an `ATTENDEE` line.
- */
-internal fun rewriteAttendeePartStat(raw: String, partStat: IcsPartStat): String? {
-    val line = parseContentLine(UnfoldedLine(raw, 0)) ?: return null
-    if (line.name != "ATTENDEE" || line.value.isBlank()) return null
-    val params = LinkedHashMap(line.params)
-    params["PARTSTAT"] = partStat.wireName
-    return buildString {
-        append("ATTENDEE")
-        params.forEach { (name, value) ->
-            append(';').append(name).append('=').append(icsParameterValue(value))
-        }
-        append(':').append(line.value)
-    }
-}
-
-/** Builds an `ATTENDEE` line for [this] attendee, quoting parameter values that need it. */
-fun IcsAttendee.toLine(): String = buildString {
-    append("ATTENDEE")
-    cn?.let { append(";CN=").append(icsParameterValue(it)) }
-    role?.let { append(";ROLE=").append(it) }
-    cutype?.let { append(";CUTYPE=").append(it) }
-    rsvp?.let { append(";RSVP=").append(if (it) "TRUE" else "FALSE") }
-    sentBy?.let { append(";SENT-BY=\"").append(it).append('"') }
-    delegatedFrom?.let { append(";DELEGATED-FROM=\"").append(it).append('"') }
-    delegatedTo?.let { append(";DELEGATED-TO=\"").append(it).append('"') }
-    append(";PARTSTAT=").append(partStat.wireName)
-    append(':').append(calAddress)
 }
 
 /**
@@ -169,13 +89,13 @@ data class ItipReply(
  */
 fun IcsImport.itipReply(): ItipReply? {
     if (method != ItipMethod.Reply) return null
-    val event = events.firstOrNull { it.attendeeRaw.isNotEmpty() } ?: return null
+    val event = events.firstOrNull { it.attendees.isNotEmpty() } ?: return null
     val uid = event.icsUid ?: event.uid ?: return null
-    val attendee = event.attendeeRaw.lastOrNull()?.let(IcsAttendee::parse) ?: return null
+    val attendee = event.attendees.last()
     return ItipReply(
         uid = uid,
         recurrenceId = event.recurrenceId,
-        organizer = event.organizer,
+        organizer = event.organizer?.calAddress,
         sequence = event.sequence,
         attendee = attendee,
     )
@@ -205,26 +125,27 @@ fun itipDecision(incomingSequence: Int, existingSequence: Int): ItipDecision = w
 data class ItipReplyResult(val events: List<Event>, val applied: Boolean)
 
 /**
- * Applies [reply] to the stored events: the matching record's attendee line for the replying
- * address gets the replied `PARTSTAT`. An unknown attendee is appended; a reply that finds no
- * matching record leaves the list untouched.
+ * Applies [reply] to the stored events: the matching record's attendee for the replying address
+ * gets the replied `PARTSTAT`. An unknown attendee is appended; a reply that finds no matching
+ * record leaves the list untouched.
  */
 fun List<Event>.applyingReply(reply: ItipReply, now: Instant = Clock.System.now()): ItipReplyResult {
     val index = indexOfFirst { event -> matchesReplyTarget(event, reply) }
     if (index < 0) return ItipReplyResult(this, false)
     val event = this[index]
-    val rawIndex = event.attendeeRaw.indexOfFirst { raw ->
-        IcsAttendee.parse(raw)?.let { sameCalendarAddress(it.calAddress, reply.attendee.calAddress) } == true
+    val attendeeIndex = event.attendees.indexOfFirst { attendee ->
+        sameCalendarAddress(attendee.calAddress, reply.attendee.calAddress)
     }
-    val updated = when {
-        rawIndex >= 0 -> {
-            val rewritten = rewriteAttendeePartStat(event.attendeeRaw[rawIndex], reply.attendee.partStat)
-                ?: return ItipReplyResult(this, false)
-            event.copy(attendeeRaw = event.attendeeRaw.mapIndexed { i, raw -> if (i == rawIndex) rewritten else raw })
-        }
+    val updated = if (attendeeIndex >= 0) {
+        event.copy(
+            attendees = event.attendees.mapIndexed { i, attendee ->
+                if (i == attendeeIndex) attendee.copy(partStat = reply.attendee.partStat) else attendee
+            },
+        )
+    } else {
         // The reply names an attendee the stored copy does not list (an invitation forwarded to a
-        // delegate); keep the answer by adding the attendee line instead of dropping it.
-        else -> event.copy(attendeeRaw = event.attendeeRaw + reply.attendee.toLine())
+        // delegate); keep the answer by adding the attendee instead of dropping it.
+        event.copy(attendees = event.attendees + reply.attendee)
     }
     val list = toMutableList()
     list[index] = updated.copy(lastModified = now.toString())

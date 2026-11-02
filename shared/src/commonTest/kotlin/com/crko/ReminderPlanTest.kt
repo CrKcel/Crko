@@ -1,15 +1,19 @@
 package com.crko
 
 import com.crko.domain.Alarm
+import com.crko.domain.AlarmRelated
+import com.crko.domain.AlarmTrigger
 import com.crko.domain.Event
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
-import com.crko.domain.TodoPriority
+import com.crko.domain.TodoStatus
 import com.crko.domain.plusDays
 import com.crko.i18n.EnStrings
 import com.crko.state.planReminders
 import com.crko.state.parseTriggerInstant
+import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
@@ -17,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
 /**
@@ -38,6 +43,12 @@ class ReminderPlanTest {
     private fun plan(event: Event, limit: Int = 64) =
         planReminders(listOf(event), emptyList(), strings, now, zone, limit = limit)
 
+    /** Old tests named the positive minutes *before* the related time; the trigger stores the sign. */
+    private fun reminder(minutesBefore: Int, atEnd: Boolean = false) = AlarmTrigger.Relative(
+        duration = (-minutesBefore).minutes,
+        related = if (atEnd) AlarmRelated.End else AlarmRelated.Start,
+    )
+
     @Test
     fun aSimpleReminderFiresBeforeTheStart() {
         val event = Event(
@@ -46,7 +57,7 @@ class ReminderPlanTest {
             date = "2026-10-28",
             startMinutes = 10 * 60,
             endMinutes = 11 * 60,
-            alarms = listOf(Alarm(triggerMinutes = 15)),
+            alarms = listOf(Alarm(trigger = reminder(15))),
         )
         val planned = plan(event)
         assertEquals(1, planned.size)
@@ -65,8 +76,8 @@ class ReminderPlanTest {
             startMinutes = 10 * 60,
             endMinutes = 11 * 60,
             alarms = listOf(
-                Alarm(triggerMinutes = 10, relatedToEnd = true),
-                Alarm(triggerMinutes = 10),
+                Alarm(trigger = reminder(10, atEnd = true)),
+                Alarm(trigger = reminder(10)),
             ),
         )
         val planned = plan(event).sortedBy { it.triggerAtMillis }
@@ -83,7 +94,7 @@ class ReminderPlanTest {
             date = "2026-10-28",
             startMinutes = 10 * 60,
             endMinutes = 11 * 60,
-            alarms = listOf(Alarm(triggerMinutes = -5)),
+            alarms = listOf(Alarm(trigger = reminder(-5))),
         )
         val planned = plan(event)
         assertEquals(localAt("2026-10-28", 10, 5).toEpochMilliseconds(), planned.single().triggerAtMillis)
@@ -99,7 +110,7 @@ class ReminderPlanTest {
             startMinutes = 0,
             endMinutes = 0,
             allDay = true,
-            alarms = listOf(Alarm(triggerMinutes = 30)),
+            alarms = listOf(Alarm(trigger = reminder(30))),
         )
         val planned = plan(event)
         assertEquals(localAt("2026-10-27", 23, 30).toEpochMilliseconds(), planned.single().triggerAtMillis)
@@ -115,8 +126,8 @@ class ReminderPlanTest {
             startMinutes = 10 * 60,
             endMinutes = 10 * 60,
             alarms = listOf(
-                Alarm(triggerMinutes = 10, relatedToEnd = true),
-                Alarm(triggerMinutes = 10),
+                Alarm(trigger = reminder(10, atEnd = true)),
+                Alarm(trigger = reminder(10)),
             ),
         )
         val planned = plan(event)
@@ -134,7 +145,7 @@ class ReminderPlanTest {
             date = "2026-10-20",
             startMinutes = 10 * 60,
             endMinutes = 10 * 60 + 30,
-            alarms = listOf(Alarm(triggerMinutes = 15)),
+            alarms = listOf(Alarm(trigger = reminder(15))),
             repeat = RepeatRule(frequency = RepeatFrequency.Daily),
             excludedDates = listOf("2026-10-28"),
         )
@@ -154,7 +165,7 @@ class ReminderPlanTest {
             date = "2027-03-01",
             startMinutes = 600,
             endMinutes = 660,
-            alarms = listOf(Alarm(triggerMinutes = 15)),
+            alarms = listOf(Alarm(trigger = reminder(15))),
         )
         assertTrue(plan(event).isEmpty())
     }
@@ -167,7 +178,7 @@ class ReminderPlanTest {
             date = "2026-10-28",
             startMinutes = 10 * 60,
             endMinutes = 11 * 60,
-            alarms = listOf(Alarm(triggerMinutes = 0, repeat = 2, durationMinutes = 5)),
+            alarms = listOf(Alarm(trigger = reminder(0), repeat = 2, duration = 5.minutes)),
         )
         val planned = plan(event)
         assertEquals(3, planned.size)
@@ -184,7 +195,7 @@ class ReminderPlanTest {
             date = "2026-10-28",
             startMinutes = 10 * 60,
             endMinutes = 11 * 60,
-            alarms = listOf(Alarm(triggerMinutes = 0, repeat = 3)),
+            alarms = listOf(Alarm(trigger = reminder(0), repeat = 3)),
         )
         assertEquals(1, plan(event).size)
     }
@@ -197,7 +208,7 @@ class ReminderPlanTest {
             date = "2026-10-01",
             startMinutes = 600,
             endMinutes = 660,
-            alarms = listOf(Alarm(triggerMinutes = 15, absoluteTrigger = "20261028T010000Z")),
+            alarms = listOf(Alarm(trigger = AlarmTrigger.Absolute(IcsTimeValue.Utc(Instant.parse("2026-10-28T01:00:00Z"))))),
         )
         val planned = plan(event)
         assertEquals(1, planned.size)
@@ -242,7 +253,7 @@ class ReminderPlanTest {
             date = "2026-10-27",
             startMinutes = 8 * 60,
             endMinutes = 9 * 60,
-            alarms = listOf(Alarm(triggerMinutes = 15)),
+            alarms = listOf(Alarm(trigger = reminder(15))),
         )
         val email = Event(
             id = "e12",
@@ -250,7 +261,7 @@ class ReminderPlanTest {
             date = "2026-10-28",
             startMinutes = 600,
             endMinutes = 660,
-            alarms = listOf(Alarm(action = "EMAIL", triggerMinutes = 15)),
+            alarms = listOf(Alarm(action = "EMAIL", trigger = reminder(15))),
         )
         assertTrue(plan(past).isEmpty())
         assertTrue(plan(email).isEmpty())
@@ -265,7 +276,7 @@ class ReminderPlanTest {
                 date = "2026-10-28",
                 startMinutes = 8 * 60 + index,
                 endMinutes = 9 * 60 + index,
-                alarms = listOf(Alarm(triggerMinutes = 15)),
+                alarms = listOf(Alarm(trigger = reminder(15))),
             )
         }
         val planned = planReminders(events, emptyList(), strings, now, zone, limit = 3)
@@ -279,24 +290,21 @@ class ReminderPlanTest {
         val startBased = Todo(
             id = "t1",
             title = "With start",
-            priority = TodoPriority.Normal,
-            startTime = "2026-10-28T02:00:00Z",
-            alarms = listOf(Alarm(triggerMinutes = 30)),
+            start = IcsTimeValue.Utc(Instant.parse("2026-10-28T02:00:00Z")),
+            alarms = listOf(Alarm(trigger = reminder(30))),
         )
         val endBased = Todo(
             id = "t2",
             title = "With due",
-            priority = TodoPriority.Normal,
-            dueTime = "2026-10-28T04:00:00Z",
-            alarms = listOf(Alarm(triggerMinutes = 15, relatedToEnd = true)),
+            due = IcsTimeValue.Utc(Instant.parse("2026-10-28T04:00:00Z")),
+            alarms = listOf(Alarm(trigger = reminder(15, atEnd = true))),
         )
         val done = Todo(
             id = "t3",
             title = "Finished",
-            priority = TodoPriority.Normal,
-            done = true,
-            startTime = "2026-10-28T02:00:00Z",
-            alarms = listOf(Alarm(triggerMinutes = 30)),
+            status = TodoStatus.Completed,
+            start = IcsTimeValue.Utc(Instant.parse("2026-10-28T02:00:00Z")),
+            alarms = listOf(Alarm(trigger = reminder(30))),
         )
         val planned = planReminders(emptyList(), listOf(startBased, endBased, done), strings, now, zone)
             .sortedBy { it.triggerAtMillis }
@@ -312,9 +320,8 @@ class ReminderPlanTest {
         val todo = Todo(
             id = "t4",
             title = "Dateless",
-            priority = TodoPriority.Normal,
-            due = "2026-10-28",
-            alarms = listOf(Alarm(triggerMinutes = 30)),
+            due = IcsTimeValue.Date(LocalDate(2026, 10, 28)),
+            alarms = listOf(Alarm(trigger = reminder(30))),
         )
         assertTrue(planReminders(emptyList(), listOf(todo), strings, now, zone).isEmpty())
     }
@@ -328,7 +335,7 @@ class ReminderPlanTest {
             startMinutes = 9 * 60,
             endMinutes = 10 * 60,
             repeat = RepeatRule(RepeatFrequency.Daily, byHour = listOf(9, 17)),
-            alarms = listOf(Alarm(triggerMinutes = 15)),
+            alarms = listOf(Alarm(trigger = reminder(15))),
         )
         // The first day of the series opens with both rounds; the cap keeps later days out.
         val planned = plan(event).take(2)
@@ -343,11 +350,9 @@ class ReminderPlanTest {
         val todo = Todo(
             id = "t5",
             title = "Dose",
-            priority = TodoPriority.Normal,
-            start = "2026-10-27",
-            startTime = localAt("2026-10-27", 21, 0).toString(),
+            start = IcsTimeValue.Utc(localAt("2026-10-27", 21, 0)),
             repeat = RepeatRule(RepeatFrequency.Daily, count = 2),
-            alarms = listOf(Alarm(triggerMinutes = 30)),
+            alarms = listOf(Alarm(trigger = reminder(30))),
         )
         val planned = planReminders(emptyList(), listOf(todo), strings, now, zone)
         assertEquals(
@@ -368,7 +373,7 @@ class ReminderPlanTest {
             startMinutes = 9 * 60,
             endMinutes = 17 * 60,
             endDate = "2026-10-04",
-            alarms = listOf(Alarm(triggerMinutes = 60, relatedToEnd = true)),
+            alarms = listOf(Alarm(trigger = reminder(60, atEnd = true))),
             repeat = RepeatRule(frequency = RepeatFrequency.Monthly, byMonthDay = listOf(1)),
         )
         val planned = plan(event)

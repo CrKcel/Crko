@@ -1,6 +1,8 @@
 package com.crko
 
+import com.crko.domain.RelatedTo
 import com.crko.domain.Todo
+import com.crko.domain.TodoStatus
 import com.crko.domain.effectiveUid
 import com.crko.domain.todoForest
 import kotlin.test.Test
@@ -14,7 +16,13 @@ class TodoForestTest {
         relatedTo: List<String> = emptyList(),
         icsUid: String? = null,
         done: Boolean = false,
-    ): Todo = Todo(id = id, title = id, relatedTo = relatedTo, icsUid = icsUid, done = done)
+    ): Todo = Todo(
+        id = id,
+        title = id,
+        relatedTo = relatedTo.map { RelatedTo.parent(it) },
+        icsUid = icsUid,
+        status = if (done) TodoStatus.Completed else TodoStatus.NeedsAction,
+    )
 
     @Test
     fun effectiveUidPrefersTheImportedUidOverTheLocalOne() {

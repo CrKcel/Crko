@@ -793,11 +793,11 @@ private fun Event.occurrenceRangeOn(
 
 /** Anchor of a todo series: `DTSTART`, falling back to `DUE`; null when the todo has no dates. */
 val Todo.seriesAnchor: LocalDate?
-    get() = (start ?: due)?.let(::parseStoredDate)
+    get() = (start ?: due)?.wallDate
 
 /** Whole days from the series anchor to the date an occurrence is shown under. */
 private fun Todo.displayOffset(anchor: LocalDate): Int =
-    due?.let(::parseStoredDate)?.let { anchor.daysTo(it) } ?: 0
+    due?.wallDate?.let { anchor.daysTo(it) } ?: 0
 
 /** Date an occurrence starting on [occStart] is shown under: its due, or the start without a due. */
 fun Todo.occurrenceDate(occStart: LocalDate): LocalDate {

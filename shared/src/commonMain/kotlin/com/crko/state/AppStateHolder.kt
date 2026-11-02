@@ -5,6 +5,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.crko.domain.AppState
+import com.crko.domain.AlarmRelated
+import com.crko.domain.AlarmTrigger
 import com.crko.domain.Attachment
 import com.crko.domain.BusyInterval
 import com.crko.domain.CalendarMetadata
@@ -25,6 +27,7 @@ import com.crko.domain.PersistedSettings
 import com.crko.domain.Recurrence
 import com.crko.domain.RecurrenceDate
 import com.crko.domain.RecurrenceRange
+import com.crko.domain.RelatedTo
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.SubscriptionFailure
@@ -42,7 +45,9 @@ import com.crko.domain.instantOrNull
 import com.crko.domain.itipDecision
 import com.crko.domain.itipReply
 import com.crko.domain.shiftedByDays
+import com.crko.domain.toIcsPriority
 import com.crko.domain.todoForest
+import com.crko.domain.todoPriorityRank
 import com.crko.domain.mergeBusyPeriods
 import com.crko.domain.normalizeTimeZoneId
 import com.crko.domain.occurrenceStartOn
@@ -696,7 +701,7 @@ class AppStateHolder(
         val result = appState.events.applyingReply(reply, clock.now())
         if (!result.applied) return ImportOutcome()
         persist(appState.copy(events = result.events))
-        notify(AppMessage.ItipReplyProcessed(reply.attendee.displayName, reply.attendee.partStat))
+        notify(AppMessage.ItipReplyProcessed(reply.attendee.displayName, reply.attendee.partStat ?: IcsPartStat.NeedsAction))
         return ImportOutcome(events = 1)
     }
 
@@ -747,7 +752,7 @@ class AppStateHolder(
         var changed = 0
         val seen = mutableSetOf<String>()
         incoming.forEach { parsed ->
-            val incoming = parsed.copy(importSource = parsed.importSource ?: source)
+            val incoming = parsed.copy(local = parsed.local.copy(importSource = parsed.importSource ?: source))
             val uid = incoming.icsUid
             if (uid == null) {
                 merged += incoming.copy(id = idProvider())
@@ -772,7 +777,7 @@ class AppStateHolder(
                 } else if (existing.importSource != incoming.importSource) {
                     // Provenance follows the newest import even when the content itself is stale,
                     // or the next import of the renamed file would remove the record after all.
-                    merged[index] = existing.copy(importSource = incoming.importSource)
+                    merged[index] = existing.copy(local = existing.local.copy(importSource = incoming.importSource))
                 }
             } else {
                 merged += incoming.copy(id = idProvider())
@@ -801,7 +806,7 @@ class AppStateHolder(
         var changed = 0
         val seen = mutableSetOf<String>()
         incoming.forEach { parsed ->
-            val incoming = parsed.copy(importSource = parsed.importSource ?: source)
+            val incoming = parsed.copy(local = parsed.local.copy(importSource = parsed.importSource ?: source))
             val uid = incoming.icsUid
             if (uid == null) {
                 merged += incoming.copy(id = idProvider())
@@ -817,7 +822,7 @@ class AppStateHolder(
                     merged[index] = incoming.copy(id = existing.id)
                     changed++
                 } else if (existing.importSource != incoming.importSource) {
-                    merged[index] = existing.copy(importSource = incoming.importSource)
+                    merged[index] = existing.copy(local = existing.local.copy(importSource = incoming.importSource))
                 }
             } else {
                 merged += incoming.copy(id = idProvider())
@@ -846,7 +851,7 @@ class AppStateHolder(
         var changed = 0
         val seen = mutableSetOf<String>()
         incoming.forEach { parsed ->
-            val incoming = parsed.copy(importSource = parsed.importSource ?: source)
+            val incoming = parsed.copy(local = parsed.local.copy(importSource = parsed.importSource ?: source))
             val uid = incoming.icsUid
             if (uid == null) {
                 merged += incoming.copy(id = idProvider())
@@ -862,7 +867,7 @@ class AppStateHolder(
                     merged[index] = incoming.copy(id = existing.id)
                     changed++
                 } else if (existing.importSource != incoming.importSource) {
-                    merged[index] = existing.copy(importSource = incoming.importSource)
+                    merged[index] = existing.copy(local = existing.local.copy(importSource = incoming.importSource))
                 }
             } else {
                 merged += incoming.copy(id = idProvider())
@@ -901,7 +906,7 @@ class AppStateHolder(
             todo.id to if (todo.repeat != null) {
                 todo.nextOccurrenceDate(today)?.toString()
             } else {
-                todo.due
+                todo.dueDay?.toString()
             }
         }
         return appState.todos
@@ -909,7 +914,7 @@ class AppStateHolder(
             .sortedWith(
                 compareBy<Todo> { shownDue[it.id] == null }
                     .thenBy { shownDue[it.id] ?: "" }
-                    .thenBy { it.priority.ordinal }
+                    .thenBy { todoPriorityRank(it.priority) }
                     .thenByDescending { it.createdAt },
             )
     }
@@ -936,7 +941,7 @@ class AppStateHolder(
             todo.id to if (todo.repeat != null) {
                 todo.nextOccurrenceDate(today)?.toString()
             } else {
-                todo.due
+                todo.dueDay?.toString()
             }
         }
         return appState.todos
@@ -946,7 +951,7 @@ class AppStateHolder(
                 if (active) {
                     compareBy<TodoNode> { shownDue[it.todo.id] == null }
                         .thenBy { shownDue[it.todo.id] ?: "" }
-                        .thenBy { it.todo.priority.ordinal }
+                        .thenBy { todoPriorityRank(it.todo.priority) }
                         .thenByDescending { it.todo.createdAt }
                 } else {
                     compareByDescending { it.todo.createdAt }
@@ -960,12 +965,12 @@ class AppStateHolder(
         val todo = Todo(
             id = idProvider(),
             title = title.trim(),
-            priority = priority,
-            due = due?.toString(),
+            priority = priority.toIcsPriority(),
+            due = due?.let(IcsTimeValue::Date),
             createdAt = now.toEpochMilliseconds(),
             lastModified = now.toString(),
             dtStamp = now.toString(),
-            relatedTo = parentUid?.let(::listOf) ?: emptyList(),
+            relatedTo = parentUid?.let { listOf(RelatedTo.parent(it)) } ?: emptyList(),
         )
         persist(appState.copy(todos = appState.todos + todo))
         return WriteResult.Success
@@ -978,9 +983,7 @@ class AppStateHolder(
                 todos = appState.todos.map { todo ->
                     if (todo.id == id) {
                         todo.copy(
-                            done = done,
-                            completedAt = if (done) today.toString() else null,
-                            completedTime = if (done) now.toString() else null,
+                            completed = if (done) now else null,
                             status = if (done) TodoStatus.Completed else TodoStatus.NeedsAction,
                             percentComplete = if (done) 100 else 0,
                             lastModified = now.toString(),
@@ -1015,7 +1018,7 @@ class AppStateHolder(
             id = idProvider(),
             title = title.trim(),
             note = note,
-            date = date?.toString(),
+            start = date?.let(IcsTimeValue::Date),
             lastModified = now.toString(),
             dtStamp = now.toString(),
         )
@@ -1452,27 +1455,13 @@ private fun storeAttachmentPayload(attachment: Attachment): Attachment {
     if (!needsMaterialization(attachment)) return attachment
     val bytes = attachment.decodedBytes() ?: return attachment
     val stored = AppAttachmentStore.save(safeAttachmentFileName(attachment), bytes) ?: return attachment
-    // Only the parameter head of the original line is kept: the base64 value is the part that used
-    // to grow the stored state, and exporting re-encodes it from the file.
-    return attachment.copy(data = "", storedFile = stored, raw = attachmentParameterHead(attachment.raw))
-}
-
-/** Everything before the value of an `ATTACH` line: the name and its parameters. */
-private fun attachmentParameterHead(raw: String): String {
-    var quoted = false
-    var index = 0
-    while (index < raw.length) {
-        val ch = raw[index]
-        when {
-            // Inside a quoted parameter value a backslash escapes the next character, so `\"`
-            // must not end the string and a `\:` must not start the value.
-            ch == '\\' && quoted && index + 1 < raw.length -> index++
-            ch == '"' -> quoted = !quoted
-            ch == ':' && !quoted -> return raw.substring(0, index)
-        }
-        index++
-    }
-    return raw
+    // The base64 value is the part that used to grow the stored state; export re-encodes it from
+    // the file, while the parameters stay with the record.
+    return attachment.copy(
+        value = "",
+        storedFile = stored,
+        parameters = attachment.parameters + ("ENCODING" to "BASE64"),
+    )
 }
 
 /** `SEQUENCE` wins, then `DTSTAMP`, then `LAST-MODIFIED`; missing metadata never overwrites. */

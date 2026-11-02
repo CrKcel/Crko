@@ -25,6 +25,7 @@ import com.crko.domain.CalendarTimeZone
 import com.crko.domain.CancelledIcsRecord
 import com.crko.domain.Event
 import com.crko.domain.IcsImport
+import com.crko.domain.wallDate
 import com.crko.domain.IcsWarning
 import com.crko.domain.IcsWarningDetail
 import com.crko.domain.ItipMethod
@@ -95,7 +96,7 @@ internal fun importSelection(imported: IcsImport): ImportSelection = ImportSelec
                 ImportRow(
                     kind = ImportRowKind.Todo,
                     title = todo.title.ifBlank { todo.icsUid ?: "…" },
-                    date = todo.due ?: todo.start,
+                    date = (todo.due ?: todo.start)?.wallDate?.toString(),
                     line = todo.sourceLine.takeIf { it > 0 },
                 ),
             )

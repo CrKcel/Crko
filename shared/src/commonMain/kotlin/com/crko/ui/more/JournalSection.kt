@@ -30,6 +30,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Journal
+import com.crko.domain.IcsTimeValue
+import com.crko.domain.wallDate
 import com.crko.i18n.Strings
 import com.crko.state.AppStateHolder
 import com.crko.state.WriteResult
@@ -142,12 +144,16 @@ private fun parseJournalDate(text: String): LocalDate? =
     runCatching { LocalDate.parse(text) }.getOrNull()
 
 /**
- * The journal with the editor's changes applied. The editor picks a date only, so an imported
- * `DTSTART` instant tied to the old date is dropped rather than exported over the picked date.
+ * The journal with the editor's changes applied. The editor picks a date only; keeping the
+ * original `DTSTART` when the date did not move preserves an imported time value.
  */
 internal fun journalWithEdits(journal: Journal, title: String, note: String, date: LocalDate?): Journal {
-    val startTime = journal.startTime?.takeIf { date != null && date.toString() == journal.date }
-    return journal.copy(title = title.trim(), note = note, date = date?.toString(), startTime = startTime)
+    val start = when {
+        date == null -> null
+        journal.start?.wallDate == date -> journal.start
+        else -> IcsTimeValue.Date(date)
+    }
+    return journal.copy(title = title.trim(), note = note, start = start)
 }
 
 /** The journal's own date, or the placeholder the import preview uses for undated records. */

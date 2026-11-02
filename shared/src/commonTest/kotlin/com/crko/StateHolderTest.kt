@@ -1,6 +1,8 @@
 package com.crko
 
 import com.crko.domain.Alarm
+import com.crko.domain.AlarmRelated
+import com.crko.domain.AlarmTrigger
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.Attachment
@@ -19,6 +21,7 @@ import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
 import com.crko.domain.TodoStatus
+import com.crko.domain.absoluteTrigger
 import com.crko.domain.attachmentMimeType
 import com.crko.domain.exportIcs
 import com.crko.domain.importCalendar
@@ -27,8 +30,10 @@ import com.crko.domain.localStart
 import com.crko.domain.occurrenceStartOn
 import com.crko.domain.occursOn
 import com.crko.domain.plusDays
+import com.crko.domain.relatedToEnd
 import com.crko.domain.recurrenceSlotOn
 import com.crko.domain.shiftedByDays
+import com.crko.domain.triggerMinutes
 import com.crko.domain.wallDate
 import com.crko.domain.wallDateTime
 import com.crko.domain.PersistedSettings
@@ -57,6 +62,7 @@ import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.LocalTime
 import kotlinx.datetime.TimeZone
+import kotlin.time.Duration.Companion.minutes
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -257,12 +263,12 @@ class StateHolderTest {
         assertEquals("Ship", completed.title)
         assertEquals(TodoStatus.Completed, completed.status)
         assertEquals(100, completed.percentComplete)
-        assertTrue(completed.completedTime != null)
+        assertTrue(completed.completed != null)
         f.holder.setTodoDone(id, false)
         val reopened = f.holder.activeTodos().single()
         assertEquals(TodoStatus.NeedsAction, reopened.status)
         assertEquals(0, reopened.percentComplete)
-        assertNull(reopened.completedTime)
+        assertNull(reopened.completed)
     }
 
     @Test
@@ -348,8 +354,7 @@ class StateHolderTest {
             id = "j1",
             title = "Trip",
             note = "Notes",
-            date = "2026-10-27",
-            startTime = "2026-10-27T09:30:00Z",
+            start = IcsTimeValue.Utc(Instant.parse("2026-10-27T09:30:00Z")),
         )
         // An untouched date keeps the imported instant.
         val kept = journalWithEdits(imported, "Trip 2026", "Revised", LocalDate.parse("2026-10-27"))
@@ -361,7 +366,7 @@ class StateHolderTest {
         assertNull(journalWithEdits(imported, "Trip 2026", "Revised", null).startTime)
         // The title is trimmed; a journal without an instant is untouched by the rule.
         assertEquals("Trip 2026", kept.title)
-        assertEquals("T", journalWithEdits(imported.copy(startTime = null), "  T  ", "n", null).title)
+        assertEquals("T", journalWithEdits(imported.copy(start = null), "  T  ", "n", null).title)
     }
 
     @Test
@@ -1148,8 +1153,12 @@ class StateHolderTest {
     fun embeddedAttachmentsAreStoredAsFilesAndReEncodedOnExport() {
         val f = Fixture()
         val attachment = Attachment(
-            raw = "ATTACH;FMTTYPE=text/plain;ENCODING=BASE64;FILENAME=notes.txt",
-            data = "VGVzdA==",
+            value = "VGVzdA==",
+            parameters = linkedMapOf(
+                "FMTTYPE" to "text/plain",
+                "ENCODING" to "BASE64",
+                "FILENAME" to "notes.txt",
+            ),
             binary = true,
         )
         val event = Event(null, "With file", "2026-10-27", 540, 600, icsUid = "att-1", attachments = listOf(attachment))
@@ -1170,9 +1179,9 @@ class StateHolderTest {
 
     @Test
     fun attachmentMimeTypesAreDerivedFromFmttypeOrFileName() {
-        assertEquals("image/png", attachmentMimeType(Attachment(mimeType = "image/png")))
-        assertEquals("image/png", attachmentMimeType(Attachment(name = "picture.png")))
-        assertEquals("text/plain", attachmentMimeType(Attachment(name = "readme.txt", binary = true)))
+        assertEquals("image/png", attachmentMimeType(Attachment(parameters = mapOf("FMTTYPE" to "image/png"))))
+        assertEquals("image/png", attachmentMimeType(Attachment(parameters = mapOf("FILENAME" to "picture.png"))))
+        assertEquals("text/plain", attachmentMimeType(Attachment(parameters = mapOf("FILENAME" to "readme.txt"), binary = true)))
         // Without any hint the payload is an opaque binary download.
         assertEquals("application/octet-stream", attachmentMimeType(Attachment(binary = true)))
     }
@@ -1213,15 +1222,22 @@ class StateHolderTest {
     @Test
     fun changingTheReminderKeepsOtherImportedAlarms() {
         val alarms = listOf(
-            Alarm(triggerMinutes = 15),
-            Alarm(action = "EMAIL", triggerMinutes = 30, description = "mail"),
-            Alarm(triggerMinutes = 15, absoluteTrigger = "20261027T090000Z"),
+            Alarm(trigger = AlarmTrigger.Relative((-15).minutes)),
+            Alarm(action = "EMAIL", trigger = AlarmTrigger.Relative((-30).minutes), description = "mail"),
+            Alarm(
+                trigger = AlarmTrigger.Absolute(
+                    IcsTimeValue.Utc(Instant.parse("2026-10-27T09:00:00Z")),
+                ),
+            ),
         )
         val updated = updateReminderAlarms(alarms, original = 15, reminder = 60)
         assertEquals(3, updated.size)
         assertEquals(60, updated[0].triggerMinutes)
         assertEquals("EMAIL", updated[1].action)
-        assertEquals("20261027T090000Z", updated[2].absoluteTrigger)
+        assertEquals(
+            IcsTimeValue.Utc(Instant.parse("2026-10-27T09:00:00Z")),
+            updated[2].absoluteTrigger,
+        )
 
         val removed = updateReminderAlarms(alarms, original = 15, reminder = null)
         assertEquals(2, removed.size)
@@ -1230,7 +1246,9 @@ class StateHolderTest {
 
     @Test
     fun editingTheReminderKeepsTheEndRelatedBase() {
-        val endBased = listOf(Alarm(triggerMinutes = 30, relatedToEnd = true))
+        val endBased = listOf(
+            Alarm(trigger = AlarmTrigger.Relative((-30).minutes, AlarmRelated.End)),
+        )
         // Changing only the minutes leaves the `RELATED=END` base alone.
         val kept = updateReminderAlarms(endBased, original = 30, reminder = 45, originalAtEnd = true, atEnd = true)
         assertTrue(kept.single().relatedToEnd)
@@ -1323,10 +1341,10 @@ class StateHolderTest {
 
     @Test
     fun embeddedAttachmentsTolerateFoldedAndUnpaddedBase64() {
-        assertEquals("Test", Attachment(binary = true, data = "VGVzdA==").decodedBytes()?.decodeToString())
-        assertEquals("Test", Attachment(binary = true, data = "VGVzdA").decodedBytes()?.decodeToString())
-        assertEquals("Test", Attachment(binary = true, data = "VGVz\r\n dA=").decodedBytes()?.decodeToString())
-        assertNull(Attachment(binary = true, data = "!!!").decodedBytes())
+        assertEquals("Test", Attachment(binary = true, value = "VGVzdA==").decodedBytes()?.decodeToString())
+        assertEquals("Test", Attachment(binary = true, value = "VGVzdA").decodedBytes()?.decodeToString())
+        assertEquals("Test", Attachment(binary = true, value = "VGVz\r\n dA=").decodedBytes()?.decodeToString())
+        assertNull(Attachment(binary = true, value = "!!!").decodedBytes())
     }
 }
 

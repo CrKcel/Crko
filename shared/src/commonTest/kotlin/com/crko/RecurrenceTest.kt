@@ -727,8 +727,8 @@ class RecurrenceTest {
         val todo = Todo(
             id = "t1",
             title = "Report",
-            start = "2026-10-05",
-            due = "2026-10-06",
+            start = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
+            due = IcsTimeValue.Date(LocalDate(2026, 10, 6)),
             repeat = RepeatRule(RepeatFrequency.Weekly, byDay = days(0)),
         )
         // The todo shows under its due date, one day after each Monday start.
@@ -744,7 +744,7 @@ class RecurrenceTest {
         val todo = Todo(
             id = "t2",
             title = "Chore",
-            due = "2026-10-05",
+            due = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
             repeat = RepeatRule(RepeatFrequency.Weekly, byDay = days(0)),
             excludedDates = listOf("2026-10-12"),
         )
@@ -757,8 +757,8 @@ class RecurrenceTest {
         val todo = Todo(
             id = "t3",
             title = "Dose",
-            start = "2026-10-01",
-            due = "2026-10-02",
+            start = IcsTimeValue.Date(LocalDate(2026, 10, 1)),
+            due = IcsTimeValue.Date(LocalDate(2026, 10, 2)),
             repeat = RepeatRule(RepeatFrequency.Daily, interval = 2, count = 2),
         )
         assertEquals(
@@ -775,8 +775,8 @@ class RecurrenceTest {
         val todo = Todo(
             id = "t4",
             title = "Series",
-            start = "2026-10-01",
-            due = "2026-10-02",
+            start = IcsTimeValue.Date(LocalDate(2026, 10, 1)),
+            due = IcsTimeValue.Date(LocalDate(2026, 10, 2)),
             repeat = RepeatRule(RepeatFrequency.Daily, count = 2),
         )
         assertEquals(LocalDate(2026, 10, 3), todo.nextOccurrenceDate(LocalDate(2026, 10, 3)))

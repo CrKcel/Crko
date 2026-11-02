@@ -1,6 +1,7 @@
 package com.crko
 
 import com.crko.domain.Attachment
+import com.crko.domain.CalAddress
 import com.crko.domain.Event
 import com.crko.domain.EventStatus
 import com.crko.domain.EventTransparency
@@ -10,11 +11,13 @@ import com.crko.domain.OrdinalWeekday
 import com.crko.domain.Recurrence
 import com.crko.domain.RecurrenceDate
 import com.crko.domain.RecurrenceRange
+import com.crko.domain.RelatedTo
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.RepeatRule
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
+import com.crko.domain.absoluteTrigger
 import com.crko.domain.exportCalendar
 import com.crko.domain.exportIcs
 import com.crko.domain.importCalendar
@@ -27,10 +30,12 @@ import com.crko.domain.occursOn
 import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.plusDays
 import com.crko.domain.safeAttachmentFileName
+import com.crko.domain.triggerMinutes
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
+import kotlin.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -632,8 +637,8 @@ class IcsTest {
         assertEquals(EventTransparency.Transparent, event.transparency)
         assertEquals(1, event.priority)
         assertEquals("https://example.com/x", event.url)
-        assertEquals("mailto:host@example.com", event.organizer)
-        assertEquals(listOf("mailto:guest@example.com"), event.attendees)
+        assertEquals(CalAddress("mailto:host@example.com"), event.organizer)
+        assertEquals(listOf(CalAddress("mailto:guest@example.com")), event.attendees)
         assertEquals(4, event.sequence)
         assertEquals(15, event.alarms.single().triggerMinutes)
         assertTrue(event.extraProperties.any { it.startsWith("X-CUSTOM") })
@@ -674,7 +679,10 @@ class IcsTest {
         val event = importIcs(text, utc, "Untitled").single()
         assertEquals(2, event.alarms.size)
         assertEquals(-15, event.alarms[0].triggerMinutes)
-        assertEquals("20261027T083000Z", event.alarms[1].absoluteTrigger)
+        assertEquals(
+            IcsTimeValue.Utc(Instant.parse("2026-10-27T08:30:00Z")),
+            event.alarms[1].absoluteTrigger,
+        )
         assertTrue(event.alarms[0].extraProperties.any { it.startsWith("X-WR-ALARMUID") })
 
         val exported = exportIcs(listOf(event), now)
@@ -698,8 +706,11 @@ class IcsTest {
             """,
         )
         val event = importIcs(text, utc, "Untitled").single()
-        assertEquals("mailto:host@example.com", event.organizer)
-        assertEquals(listOf("mailto:guest@example.com"), event.attendees)
+        assertEquals(CalAddress("mailto:host@example.com", cn = "Host"), event.organizer)
+        assertEquals(
+            listOf(CalAddress("mailto:guest@example.com", cn = "Guest", role = "REQ-PARTICIPANT", partStat = com.crko.domain.IcsPartStat.Accepted)),
+            event.attendees,
+        )
 
         val exported = exportIcs(listOf(event), now).replace("\r\n ", "")
         assertTrue(
@@ -749,8 +760,8 @@ class IcsTest {
         val todo = importCalendar(text, utc, "Untitled").todos.single()
         assertEquals("File taxes", todo.title)
         assertEquals("Bring receipts", todo.note)
-        assertEquals("2026-11-01", todo.due)
-        assertEquals(TodoPriority.High, todo.priority)
+        assertEquals(IcsTimeValue.Date(LocalDate(2026, 11, 1)), todo.due)
+        assertEquals(1, todo.priority)
         assertTrue(todo.done)
         assertEquals("2026-10-31", todo.completedAt)
         assertEquals(TodoStatus.Completed, todo.status)
@@ -782,8 +793,7 @@ class IcsTest {
             """,
         )
         val todo = importCalendar(text, utc, "Untitled").todos.single()
-        assertEquals("2026-11-01", todo.due)
-        assertEquals("2026-11-01T09:30:00Z", todo.dueTime)
+        assertEquals(IcsTimeValue.Utc(Instant.parse("2026-11-01T09:30:00Z")), todo.due)
         assertEquals(1, todo.alarms.size)
         assertEquals(30, todo.alarms.single().triggerMinutes)
         assertEquals("Reminder", todo.alarms.single().description)
@@ -853,7 +863,7 @@ class IcsTest {
             """,
         )
         val todo = importCalendar(text, utc, "Untitled").todos.single()
-        assertEquals("2026-10-31T12:34:56Z", todo.completedTime)
+        assertEquals(Instant.parse("2026-10-31T12:34:56Z"), todo.completed)
         val exported = exportCalendar(emptyList(), listOf(todo), now)
         assertTrue(exported.contains("COMPLETED:20261031T123456Z\r\n"), exported)
     }
@@ -1274,8 +1284,8 @@ class IcsTest {
     fun uriValuedPropertiesKeepCommasAndSemicolonsLiteral() {
         val event = baseEvent.copy(
             url = "https://example.com/d?team=a,b;ref=1",
-            organizer = "mailto:host@example.com?subject=A;B",
-            attendees = listOf("mailto:guest@example.com?opt=1,2"),
+            organizer = CalAddress("mailto:host@example.com?subject=A;B"),
+            attendees = listOf(CalAddress("mailto:guest@example.com?opt=1,2")),
             geo = "37.386013;-122.082932",
         )
         val exported = exportIcs(listOf(event), now)
@@ -2067,11 +2077,11 @@ class IcsTest {
             """,
         )
         val todo = importCalendar(text, utc, "Untitled").todos.single()
-        assertEquals("2026-10-26", todo.start)
+        assertEquals(IcsTimeValue.Date(LocalDate(2026, 10, 26)), todo.start)
         assertEquals("Office", todo.location)
         assertEquals(listOf("Work", "Reports"), todo.categories)
         assertEquals("https://example.com/report", todo.url)
-        assertEquals(listOf("parent-todo"), todo.relatedTo)
+        assertEquals(listOf(RelatedTo("parent-todo")), todo.relatedTo)
         val exported = exportCalendar(emptyList(), listOf(todo), now)
         assertTrue(exported.contains("DTSTART;VALUE=DATE:20261026\r\n"), exported)
         assertTrue(exported.contains("LOCATION:Office\r\n"), exported)
@@ -2098,18 +2108,16 @@ class IcsTest {
             """,
         )
         val todo = importCalendar(text, utc, "Untitled").todos.single()
-        // Only the default PARENT relation drives the sub-task hierarchy.
-        assertEquals(listOf("parent-todo"), todo.relatedTo)
+        assertEquals(
+            listOf(RelatedTo("parent-todo"), RelatedTo("child-todo", "CHILD"), RelatedTo("sibling-todo", "SIBLING")),
+            todo.relatedTo,
+        )
         val exported = exportCalendar(emptyList(), listOf(todo), now)
         // The other relations keep their parameter instead of being re-written as parent links.
         assertTrue(exported.contains("RELATED-TO;RELTYPE=CHILD:child-todo\r\n"), exported)
         assertTrue(exported.contains("RELATED-TO;RELTYPE=SIBLING:sibling-todo\r\n"), exported)
         val back = importCalendar(exported, utc, "Untitled").todos.single()
         assertEquals(todo.relatedTo, back.relatedTo)
-        assertEquals(
-            todo.extraProperties.filter { it.startsWith("RELATED-TO") },
-            back.extraProperties.filter { it.startsWith("RELATED-TO") },
-        )
     }
 
     @Test
@@ -2178,9 +2186,18 @@ class IcsTest {
             """,
         )
         val import = importCalendar(text, utc, "Untitled")
-        assertEquals("2026-11-01T10:00:00Z", import.todos.single().dueTime)
-        assertEquals("2026-10-30T10:00:00Z", import.todos.single().startTime)
-        assertEquals("2026-11-01T10:00:00Z", import.journals.single().startTime)
+        assertEquals(
+            IcsTimeValue.Zoned(LocalDateTime(2026, 11, 1, 18, 0), "TESTZONE"),
+            import.todos.single().due,
+        )
+        assertEquals(
+            IcsTimeValue.Zoned(LocalDateTime(2026, 10, 30, 18, 0), "TESTZONE"),
+            import.todos.single().start,
+        )
+        assertEquals(
+            IcsTimeValue.Zoned(LocalDateTime(2026, 11, 1, 18, 0), "TESTZONE"),
+            import.journals.single().start,
+        )
     }
 
     @Test
@@ -2196,13 +2213,12 @@ class IcsTest {
             """,
         )
         val todo = importCalendar(text, newYork, "Untitled").todos.single()
-        assertEquals("2026-11-01", todo.due)
+        assertEquals(IcsTimeValue.Floating(LocalDateTime(2026, 11, 1, 4, 0)), todo.due)
         // Reading the same record back must land on the same day: stamping the wall clock as UTC
         // would turn 04:00 into the previous evening and move the deadline.
         val exported = exportCalendar(emptyList(), listOf(todo), now)
         val back = importCalendar(exported, newYork, "Untitled").todos.single()
         assertEquals(todo.due, back.due)
-        assertEquals(todo.dueTime, back.dueTime)
     }
 
     @Test
@@ -2308,13 +2324,13 @@ class IcsTest {
 
     @Test
     fun attachmentNamesNeverCarryAPath() {
-        assertEquals("Secrets.pdf", safeAttachmentFileName(Attachment(name = "../../Documents/Secrets.pdf")))
-        assertEquals("config", safeAttachmentFileName(Attachment(name = "..\\..\\windows\\config")))
-        assertEquals("note.txt", safeAttachmentFileName(Attachment(name = "/etc/note.txt")))
-        assertEquals("attachment", safeAttachmentFileName(Attachment(name = "....")))
-        assertEquals("a".repeat(80), safeAttachmentFileName(Attachment(name = "a".repeat(400))))
-        assertEquals("report.pdf", safeAttachmentFileName(Attachment(uri = "https://x.test/a/b/report.pdf")))
-        val cleaned = safeAttachmentFileName(Attachment(name = "evil\u0000name"))
+        assertEquals("Secrets.pdf", safeAttachmentFileName(Attachment(parameters = mapOf("FILENAME" to "../../Documents/Secrets.pdf"))))
+        assertEquals("config", safeAttachmentFileName(Attachment(parameters = mapOf("FILENAME" to "..\\..\\windows\\config"))))
+        assertEquals("note.txt", safeAttachmentFileName(Attachment(parameters = mapOf("FILENAME" to "/etc/note.txt"))))
+        assertEquals("attachment", safeAttachmentFileName(Attachment(parameters = mapOf("FILENAME" to "...."))))
+        assertEquals("a".repeat(80), safeAttachmentFileName(Attachment(parameters = mapOf("FILENAME" to "a".repeat(400)))))
+        assertEquals("report.pdf", safeAttachmentFileName(Attachment(value = "https://x.test/a/b/report.pdf")))
+        val cleaned = safeAttachmentFileName(Attachment(parameters = mapOf("FILENAME" to "evil\u0000name")))
         assertTrue(cleaned.none { it.code < 0x20 }, cleaned)
     }
 }
