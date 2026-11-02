@@ -60,6 +60,15 @@ object InstantIso8601Serializer : KSerializer<Instant> {
     override fun deserialize(decoder: Decoder): Instant = Instant.parse(decoder.decodeString())
 }
 
+/** Whole seconds of a duration, the granularity an `RDATE;VALUE=PERIOD` length has. */
+object DurationSecondsSerializer : KSerializer<Duration> {
+    override val descriptor = PrimitiveSerialDescriptor("kotlin.time.Duration", PrimitiveKind.LONG)
+
+    override fun serialize(encoder: Encoder, value: Duration) = encoder.encodeLong(value.inWholeSeconds)
+
+    override fun deserialize(decoder: Decoder): Duration = decoder.decodeLong().seconds
+}
+
 /** Wall-clock date of the value, i.e. the date the calendar file itself names. */
 val IcsTimeValue.wallDate: LocalDate
     get() = when (this) {

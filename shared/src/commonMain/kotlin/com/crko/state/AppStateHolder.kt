@@ -20,6 +20,9 @@ import com.crko.domain.IcsPartStat
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.Journal
 import com.crko.domain.PersistedSettings
+import com.crko.domain.Recurrence
+import com.crko.domain.RecurrenceDate
+import com.crko.domain.RecurrenceRange
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.SubscriptionFailure
@@ -36,7 +39,6 @@ import com.crko.domain.importCalendarLines
 import com.crko.domain.instantOrNull
 import com.crko.domain.itipDecision
 import com.crko.domain.itipReply
-import com.crko.domain.localDate
 import com.crko.domain.shiftedByDays
 import com.crko.domain.todoForest
 import com.crko.domain.mergeBusyPeriods
@@ -45,8 +47,13 @@ import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.occursOn
 import com.crko.domain.occurringOn
 import com.crko.domain.decodedBytes
-import com.crko.domain.parseRepeatUntil
 import com.crko.domain.parseStoredDate
+import com.crko.domain.plusWallDays
+import com.crko.domain.recurrenceSlotDate
+import com.crko.domain.recurrenceSlotOn
+import com.crko.domain.shiftedByWallDays
+import com.crko.domain.wallDate
+import com.crko.domain.withExclusion
 import com.crko.domain.plusDays
 import com.crko.domain.safeAttachmentFileName
 import com.crko.domain.resolveSubscriptionUrl
@@ -294,59 +301,38 @@ class AppStateHolder(
         val shift = occurrenceDate.daysTo(edited.day)
         val anchorWall = series.wallDay.plusDays(shift)
         val shiftToAnchor = edited.wallDay.daysTo(anchorWall)
-        val shiftedExclusions = when {
-            edited.repeat == null -> emptyList()
-            shift == 0 -> series.excludedDates
-            else -> series.excludedDates.mapNotNull { shiftDateText(it, shift) }
-        }
-        // If the repeat rule itself was not edited, its dates move with the series too. This keeps
-        // imported THISANDFUTURE boundaries and extra dates aligned with the new anchor.
-        val savedRepeat = edited.repeat?.let { rule ->
-            if (shift != 0 && sameRepeatRule(rule, series.repeat)) {
-                rule.copy(
-                    until = rule.until?.let { shiftRepeatUntil(it, shift) },
-                    rDates = rule.rDates.mapNotNull { shiftDateText(it, shift) },
+        // If the repeat rule itself was not edited, its typed dates move with the series too. This
+        // keeps `UNTIL`, `RDATE` and `EXDATE` aligned with the new anchor. The stored set is merged
+        // in because an editor loaded before an exception was added still carries the old one.
+        val savedRecurrence = edited.recurrence?.let { set ->
+            val merged = if (sameRepeatRule(set.rule, series.repeat)) {
+                set.copy(
+                    rdates = (series.recurrence?.rdates.orEmpty() + set.rdates).distinct(),
+                    exdates = (series.recurrence?.exdates.orEmpty() + set.exdates).distinct(),
                 )
             } else {
-                rule
+                set
             }
+            if (shift == 0) merged else merged.shiftedByWallDays(shift)
         }
         val saved = edited.shiftedByDays(shiftToAnchor).copy(
-            repeat = savedRepeat,
-            excludedDates = shiftedExclusions,
+            recurrence = savedRecurrence,
             created = series.created ?: now.toString(),
             lastModified = now.toString(),
             dtStamp = now.toString(),
             sequence = series.sequence + 1,
         )
-        // Exceptions (and imported THISANDFUTURE segments) belong to the same timeline. Moving the
-        // series anchor shifts their dates and RECURRENCE-IDs with it, so they cannot collide with
-        // or become detached from the moved series.
+        // Exceptions belong to the same timeline through their shared UID. Moving the series anchor
+        // shifts their dates and RECURRENCE-IDs with it, so they cannot collide with or become
+        // detached from the moved series.
         val seriesUid = series.uid
-        val affected = if (seriesUid == null) {
-            emptySet()
-        } else {
-            buildSet {
-                add(seriesUid)
-                var changed = true
-                while (changed) {
-                    changed = false
-                    appState.events.forEach { event ->
-                        val parent = event.seriesUid
-                        val uid = event.uid
-                        if (parent != null && parent in this && uid != null) {
-                            changed = add(uid) || changed
-                        }
-                    }
-                }
-            }
-        }
         val updated = appState.events.mapNotNull { current ->
+            val isException = seriesUid != null && current.icsUid == seriesUid && current.recurrenceId != null
             when {
                 current.id == series.id -> saved
-                // Without a repeat the series no longer owns its exceptions.
-                edited.repeat == null && current.seriesUid in affected -> null
-                shift != 0 && current.seriesUid in affected -> current.shiftedBy(shift).copy(
+                // Without a recurrence the series no longer owns its exceptions.
+                edited.recurrence == null && isException -> null
+                shift != 0 && isException -> current.shiftedBy(shift).copy(
                     lastModified = now.toString(),
                     sequence = current.sequence + 1,
                 )
@@ -364,32 +350,31 @@ class AppStateHolder(
         now: kotlin.time.Instant,
     ): WriteResult {
         val occurrence = occurrenceDate ?: edited.day
-        val occurrenceKey = occurrence.toString()
         val seriesUid = series.uid
+        // The full slot, not just its date, so two exceptions on one day stay distinguishable.
+        val slot = series.recurrenceSlotOn(occurrence)
         val existingOverride = appState.events.firstOrNull {
-            it.seriesUid == seriesUid && it.recurrenceId == occurrenceKey
+            it.icsUid == seriesUid && it.recurrenceId == slot
         }
         // The editor starts on the occurrence date, so a different date is an intentional move.
         val moved = edited.day != occurrence
-        val slotWall = series.wallDateFor(occurrence)
-        val shiftToSlot = if (moved) 0 else edited.wallDay.daysTo(slotWall)
+        val shiftToSlot = if (moved) 0 else edited.wallDay.daysTo(series.wallDateFor(occurrence))
         val placed = edited.shiftedByDays(shiftToSlot)
         val override = placed.copy(
             id = existingOverride?.id ?: idProvider(),
             // RECURRENCE-ID stays on the original slot; DTSTART may move to another date.
-            repeat = null,
-            excludedDates = emptyList(),
-            seriesUid = seriesUid,
-            recurrenceId = occurrenceKey,
-            thisAndFuture = false,
-            icsUid = seriesUid?.let { "$it#override-$occurrenceKey" } ?: existingOverride?.icsUid,
+            recurrence = null,
+            // The exception shares the master's UID, which is what RFC 5545 requires.
+            icsUid = seriesUid,
+            recurrenceId = slot,
+            recurrenceRange = null,
             created = existingOverride?.created ?: now.toString(),
             lastModified = now.toString(),
             dtStamp = now.toString(),
             sequence = (existingOverride?.sequence ?: 0) + if (existingOverride == null) 0 else 1,
         )
         val updatedSeries = series.copy(
-            excludedDates = (series.excludedDates + occurrenceKey).distinct(),
+            recurrence = series.recurrence.withExclusion(slot),
             lastModified = now.toString(),
             dtStamp = now.toString(),
             sequence = series.sequence + 1,
@@ -418,31 +403,31 @@ class AppStateHolder(
             return saveWholeSeries(series, edited, occurrence, now)
         }
         val previous = occurrence.plusDays(-1)
-        // RDATEs belong to whichever segment covers their date, like the exclusions below. A date
-        // kept on the wrong side either duplicates the other segment or comes back as a phantom
-        // occurrence when the calendar is exported; an unparseable one is inert and stays put.
-        val oldRule = series.repeat
+        // RDATEs and EXDATEs belong to whichever segment covers their slot. A value kept on the
+        // wrong side either duplicates the other segment or becomes a phantom occurrence on export.
+        val oldRecurrence = series.recurrence?.let { recurrence ->
+            recurrence.copy(
+                rule = recurrence.rule?.copy(until = IcsTimeValue.Date(previous), count = null, raw = null),
+                rdates = recurrence.rdates.filter { it.value.wallDate < occurrence },
+                exdates = recurrence.exdates.filter { it.wallDate < occurrence },
+            )
+        }
         val oldSeries = series.copy(
-            repeat = oldRule?.copy(
-                until = previous.toString(),
-                count = null,
-                rDates = oldRule.rDates.filter { text -> parseStoredDate(text)?.let { it < occurrence } ?: true },
-            ),
-            excludedDates = series.excludedDates.filter { it < occurrence.toString() },
+            recurrence = oldRecurrence,
             lastModified = now.toString(),
             dtStamp = now.toString(),
             sequence = series.sequence + 1,
         )
-        val futureRepeat = when {
-            edited.repeat == null -> null
+        val futureRecurrence = when {
+            edited.recurrence == null -> null
             sameRepeatRule(edited.repeat, series.repeat) ->
                 // The old series already consumed part of the rule; a new bound would be wrong.
-                edited.repeat.copy(
-                    until = null,
-                    count = null,
-                    rDates = edited.repeat.rDates.filter { text -> parseStoredDate(text)?.let { it >= occurrence } == true },
+                edited.recurrence.copy(
+                    rule = edited.recurrence.rule?.copy(until = null, count = null, raw = null),
+                    rdates = edited.recurrence.rdates.filter { it.value.wallDate >= occurrence },
+                    exdates = edited.recurrence.exdates.filter { it.wallDate >= occurrence },
                 )
-            else -> edited.repeat
+            else -> edited.recurrence
         }
         val moved = edited.day != occurrence
         val slotWall = series.wallDateFor(occurrence)
@@ -450,12 +435,12 @@ class AppStateHolder(
         val newId = idProvider()
         val newSeries = edited.shiftedByDays(shiftToSlot).copy(
             id = newId,
-            repeat = futureRepeat,
-            excludedDates = edited.excludedDates.filter { it >= occurrence.toString() },
+            recurrence = futureRecurrence,
+            // A genuine new UID: this is a separate series rather than an exception, never a
+            // synthetic `#future-…` id derived from the old one.
             icsUid = null,
-            seriesUid = null,
             recurrenceId = null,
-            thisAndFuture = false,
+            recurrenceRange = null,
             created = now.toString(),
             lastModified = now.toString(),
             dtStamp = now.toString(),
@@ -463,17 +448,15 @@ class AppStateHolder(
         )
         val newUid = newSeries.uid
         val events = appState.events.mapNotNull { current ->
+            val isException = current.icsUid == series.uid && current.recurrenceId != null
             when {
                 current.id == series.id -> oldSeries
-                current.seriesUid == series.uid &&
-                    current.recurrenceId != null &&
-                    current.recurrenceId >= occurrence.toString() ->
-                    if (futureRepeat == null) {
+                isException && current.recurrenceId.wallDate >= occurrence ->
+                    if (futureRecurrence == null) {
                         null
                     } else {
                         current.copy(
-                            seriesUid = newUid,
-                            icsUid = newUid?.let { "$it#override-${current.recurrenceId}" },
+                            icsUid = newUid,
                             lastModified = now.toString(),
                         )
                     }
@@ -503,25 +486,20 @@ class AppStateHolder(
         // An exception's slot is its RECURRENCE-ID even when the record was moved to another day;
         // for a series the opened date has to resolve to the start of the occurrence covering it,
         // so deleting a multi-day occurrence from its second day still hits the right slot.
-        val occurrence = stored.recurrenceId?.let { parseStoredDate(it) }
+        val occurrence = stored.recurrenceId?.wallDate
             ?: occurrenceDate?.let { stored.occurrenceStartOn(it) ?: it }
             ?: stored.day
-        val occurrenceKey = occurrence.toString()
+        val storedSlot = stored.recurrenceId
+        val occurrenceSlot = storedSlot ?: stored.recurrenceSlotOn(occurrence)
 
-        // Exceptions and one-off events are removed on their own; their series stays untouched.
-        if (stored.repeat == null) {
-            val parent = stored.seriesUid?.let { uid -> appState.events.firstOrNull { it.uid == uid } }
-            if (parent == null) {
-                appState.events.firstOrNull { it.id == stored.id }?.let { deleteEvent(it.id) }
-                return
+        // An exception is removed on its own; the master only gains its slot as an exclusion.
+        if (storedSlot != null) {
+            val master = appState.events.firstOrNull {
+                it.id != stored.id && it.icsUid == stored.icsUid && it.recurrenceId == null
             }
-            val parentUid = parent.uid
-            val updated = appState.events.filterNot { current ->
-                current.id == stored.id ||
-                    (current.seriesUid == parentUid && current.recurrenceId == occurrenceKey)
-            }.map { current ->
-                if (current.id == parent.id) {
-                    current.copy(excludedDates = (current.excludedDates + occurrenceKey).distinct())
+            val updated = appState.events.filterNot { it.id == stored.id }.map { current ->
+                if (master != null && current.id == master.id) {
+                    current.copy(recurrence = current.recurrence.withExclusion(storedSlot))
                 } else {
                     current
                 }
@@ -530,24 +508,26 @@ class AppStateHolder(
             return
         }
 
+        // A one-off event is removed as is.
+        if (stored.recurrence == null) {
+            appState.events.firstOrNull { it.id == stored.id }?.let { deleteEvent(it.id) }
+            return
+        }
+
         val seriesUid = stored.uid
         val belongsToSeries: (Event) -> Boolean = { current ->
-            current.seriesUid == seriesUid ||
-                (stored.recurrenceId != null &&
-                    current.seriesUid == stored.seriesUid &&
-                    current.recurrenceId != null &&
-                    current.recurrenceId >= stored.recurrenceId)
+            seriesUid != null && current.icsUid == seriesUid && current.recurrenceId != null
         }
         val updated = when (scope) {
-            EditScope.ThisEvent -> appState.events.filterNot { current ->
-                current.seriesUid == seriesUid && current.recurrenceId == occurrenceKey
-            }.map { current ->
-                if (current.id == stored.id) {
-                    current.copy(excludedDates = (current.excludedDates + occurrenceKey).distinct())
-                } else {
-                    current
+            EditScope.ThisEvent -> appState.events
+                .filterNot { current -> belongsToSeries(current) && current.recurrenceId == occurrenceSlot }
+                .map { current ->
+                    if (current.id == stored.id) {
+                        current.copy(recurrence = current.recurrence.withExclusion(occurrenceSlot))
+                    } else {
+                        current
+                    }
                 }
-            }
             EditScope.ThisAndFuture -> {
                 if (occurrence <= stored.day) {
                     appState.events.filterNot { it.id == stored.id || belongsToSeries(it) }
@@ -555,14 +535,19 @@ class AppStateHolder(
                     appState.events.mapNotNull { current ->
                         when {
                             current.id == stored.id -> current.copy(
-                                repeat = current.repeat?.copy(
-                                    until = occurrence.plusDays(-1).toString(),
-                                    count = null,
-                                ),
+                                recurrence = current.recurrence?.let { recurrence ->
+                                    recurrence.copy(
+                                        rule = recurrence.rule?.copy(
+                                            until = IcsTimeValue.Date(occurrence.plusDays(-1)),
+                                            count = null,
+                                            raw = null,
+                                        ),
+                                        rdates = recurrence.rdates.filter { it.value.wallDate < occurrence },
+                                        exdates = recurrence.exdates.filter { it.wallDate < occurrence },
+                                    )
+                                },
                             )
-                            belongsToSeries(current) &&
-                                current.recurrenceId != null &&
-                                current.recurrenceId >= occurrenceKey -> null
+                            belongsToSeries(current) && current.recurrenceId!!.wallDate >= occurrence -> null
                             else -> current
                         }
                     }
@@ -675,11 +660,7 @@ class AppStateHolder(
     private fun applyItipReply(import: IcsImport): ImportOutcome {
         val reply = import.itipReply() ?: return ImportOutcome()
         val target = appState.events.firstOrNull { event ->
-            if (reply.recurrenceId != null) {
-                event.seriesUid == reply.uid && event.recurrenceId == reply.recurrenceId
-            } else {
-                event.uid == reply.uid && event.recurrenceId == null
-            }
+            event.uid == reply.uid && event.recurrenceId == reply.recurrenceId
         }
         if (target == null) {
             notify(AppMessage.ItipReplyUnknown(reply.attendee.displayName))
@@ -752,11 +733,12 @@ class AppStateHolder(
                 changed++
                 return@forEach
             }
-            if (!seen.add(uid)) return@forEach
-            val exact = merged.indexOfFirst { it.icsUid == uid }
+            // A master and every exception share the UID, so the storage identity is the pair.
+            if (!seen.add(uid + "|" + incoming.recurrenceId)) return@forEach
+            val exact = merged.indexOfFirst { it.icsUid == uid && it.recurrenceId == incoming.recurrenceId }
             val index = if (exact >= 0) {
                 exact
-            } else if ('#' !in uid) {
+            } else if (incoming.recurrenceId == null) {
                 merged.indexOfFirst { matchesOwnExport(it.id, uid) }
             } else {
                 -1
@@ -874,14 +856,14 @@ class AppStateHolder(
      * so clearing today never wipes a whole series.
      */
     fun deleteEventsOn(date: LocalDate) {
-        val key = date.toString()
         val updated = appState.events.mapNotNull { event ->
             when {
                 !event.occursOn(date) -> event
-                event.repeat == null -> null
+                event.recurrenceId != null -> null
+                event.recurrence == null -> null
                 else -> {
                     val occurrence = event.occurrenceStartOn(date) ?: date
-                    event.copy(excludedDates = (event.excludedDates + occurrence.toString()).distinct())
+                    event.copy(recurrence = event.recurrence.withExclusion(event.recurrenceSlotOn(occurrence)))
                 }
             }
         }
@@ -1278,16 +1260,14 @@ class AppStateHolder(
 
     private fun validationError(event: Event): WriteResult = when {
         event.title.isBlank() -> WriteResult.EmptyTitle
-        event.repeat?.frequency == RepeatFrequency.Custom &&
-            event.repeat.weekdays.isEmpty() -> WriteResult.InvalidRepeat
         else -> WriteResult.InvalidTimeRange
     }
 
     /** Compares rules semantically: an editor round trip may reduce `UNTIL` to its calendar date. */
     private fun sameRepeatRule(a: RepeatRule?, b: RepeatRule?): Boolean {
         if (a == null || b == null) return a == b
-        return a.copy(until = null) == b.copy(until = null) &&
-            a.until?.let(::parseRepeatUntil)?.localDate() == b.until?.let(::parseRepeatUntil)?.localDate()
+        return a.copy(until = null, raw = null) == b.copy(until = null, raw = null) &&
+            a.until?.wallDate == b.until?.wallDate
     }
 
     /**
@@ -1296,19 +1276,16 @@ class AppStateHolder(
      */
     private fun normalize(event: Event): Event? {
         if (event.title.isBlank()) return null
-        val repeat = event.repeat?.let { rule ->
-            if (rule.frequency == RepeatFrequency.Custom) {
-                val days = rule.weekdays.filter { it in 0..6 }.distinct().sorted()
-                if (days.isEmpty()) return null
-                rule.copy(weekdays = days)
-            } else {
-                rule
-            }.copy(
-                interval = rule.interval.coerceAtLeast(1),
-                count = rule.count?.takeIf { it > 0 },
-                until = rule.until?.takeIf { parseRepeatUntil(it) != null },
+        val recurrence = event.recurrence?.let { set ->
+            set.copy(
+                rule = set.rule?.copy(
+                    interval = set.rule.interval.coerceAtLeast(1),
+                    count = set.rule.count?.takeIf { it > 0 },
+                ),
+                rdates = set.rdates.distinct(),
+                exdates = set.exdates.distinct(),
             )
-        }
+        }?.takeIf { it.rule != null || it.rdates.isNotEmpty() || it.rawRule != null }
         val start = normalizeTime(event.start) ?: return null
         val end = event.end?.let { normalizeTime(it) ?: return null }
         if (end != null && !end.isAfter(start)) return null
@@ -1325,9 +1302,8 @@ class AppStateHolder(
             title = event.title.trim(),
             start = start,
             end = normalizedEnd,
-            repeat = repeat,
-            // Skips only make sense for a series; a one-off event must not inherit stale ones.
-            excludedDates = if (repeat == null) emptyList() else event.excludedDates.distinct(),
+            recurrence = recurrence,
+            // A one-off event must not inherit stale recurrence values.
             status = if (event.status == EventStatus.Cancelled) EventStatus.Confirmed else event.status,
         )
     }
@@ -1384,16 +1360,11 @@ class AppStateHolder(
 }
 
 /**
- * Whether [event] belongs to [uid], including this app's own export ids (`<id>@crko`) and the
- * `#override-`, `#future-` and `#prior-` copies derived from a series UID.
+ * Whether [event] belongs to [uid]. The master and its exceptions share the UID, so no synthetic
+ * suffix is involved; own-export ids (`<id>@crko`) are recognized as before.
  */
-private fun matchesUid(event: Event, uid: String): Boolean {
-    val eventUid = event.icsUid
-    if (eventUid == uid || event.seriesUid == uid) return true
-    if (eventUid != null && eventUid.substringBefore('#') == uid) return true
-    if (event.seriesUid?.substringBefore('#') == uid) return true
-    return '#' !in uid && matchesOwnExport(event.id, uid)
-}
+private fun matchesUid(event: Event, uid: String): Boolean =
+    event.icsUid == uid || matchesOwnExport(event.id, uid)
 
 /** Whether [uid] is the own-export id (`<recordId>@crko`) of [recordId]. */
 private fun matchesOwnExport(recordId: String?, uid: String): Boolean {
@@ -1476,31 +1447,11 @@ private fun isNewer(
 private fun parseInstantOrNull(value: String?): kotlin.time.Instant? =
     value?.let { runCatching { kotlin.time.Instant.parse(it) }.getOrNull() }
 
-private fun shiftDateText(text: String, days: Int): String? =
-    runCatching { LocalDate.parse(text) }.getOrNull()?.plusDays(days)?.toString()
-
-private fun shiftRepeatUntil(text: String, days: Int): String? {
-    val parsed = parseRepeatUntil(text) ?: return text
-    return when {
-        parsed.instant != null -> (parsed.instant + days.days).toString()
-        parsed.localDateTime != null -> LocalDateTime(
-            parsed.localDateTime.date.plusDays(days),
-            parsed.localDateTime.time,
-        ).toString()
-        else -> parsed.date.plusDays(days).toString()
-    }
-}
-
-/** Moves an event (and its associated series/exception dates) by whole calendar days. */
+/** Moves an event (and its associated recurrence values) by whole calendar days. */
 private fun Event.shiftedBy(days: Int): Event {
     if (days == 0) return this
     return shiftedByDays(days).copy(
-        excludedDates = excludedDates.mapNotNull { shiftDateText(it, days) },
-        recurrenceId = recurrenceId?.let { shiftDateText(it, days) ?: it },
-        repeat = repeat?.copy(
-            until = repeat.until?.let { shiftRepeatUntil(it, days) },
-            rDates = repeat.rDates.mapNotNull { shiftDateText(it, days) },
-        ),
-        timeZoneDefinition = timeZoneDefinition,
+        recurrence = recurrence?.shiftedByWallDays(days),
+        recurrenceId = recurrenceId?.plusWallDays(days),
     )
 }

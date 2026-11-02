@@ -11,6 +11,10 @@ import com.crko.domain.IcsWarning
 import com.crko.domain.IcsWarningDetail
 import com.crko.domain.Journal
 import com.crko.domain.MaxEndMinutes
+import com.crko.domain.OrdinalWeekday
+import com.crko.domain.Recurrence
+import com.crko.domain.RecurrenceDate
+import com.crko.domain.RecurrenceRange
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
@@ -23,7 +27,9 @@ import com.crko.domain.localStart
 import com.crko.domain.occurrenceStartOn
 import com.crko.domain.occursOn
 import com.crko.domain.plusDays
+import com.crko.domain.recurrenceSlotOn
 import com.crko.domain.shiftedByDays
+import com.crko.domain.wallDate
 import com.crko.domain.wallDateTime
 import com.crko.domain.PersistedSettings
 import com.crko.domain.TodoPriority
@@ -183,7 +189,10 @@ class StateHolderTest {
                 start.toString(),
                 420,
                 480,
-                repeat = RepeatRule(RepeatFrequency.Custom, listOf(0, 3)),
+                repeat = RepeatRule(
+                    RepeatFrequency.Weekly,
+                    byDay = listOf(OrdinalWeekday(0, 0), OrdinalWeekday(0, 3)),
+                ),
             ),
         )
         assertTrue(f.holder.eventsOn(start.plusDays(1)).isEmpty())
@@ -192,13 +201,14 @@ class StateHolderTest {
     }
 
     @Test
-    fun customRepeatRequiresAtLeastOneWeekday() {
+    fun weeklyRepeatWithoutSelectedDaysUsesTheStartWeekday() {
         val f = Fixture()
         val result = f.holder.saveEvent(
-            Event("e1", "Gym", "2026-10-27", 420, 480, repeat = RepeatRule(RepeatFrequency.Custom)),
+            Event("e1", "Gym", "2026-10-27", 420, 480, repeat = RepeatRule(RepeatFrequency.Weekly)),
         )
-        assertEquals(WriteResult.InvalidRepeat, result)
-        assertTrue(f.holder.appState.events.isEmpty())
+        assertEquals(WriteResult.Success, result)
+        assertEquals(1, f.holder.appState.events.size)
+        assertTrue(f.holder.appState.events.single().occursOn(LocalDate(2026, 11, 3)))
     }
 
     @Test
@@ -435,8 +445,8 @@ class StateHolderTest {
         val override = f.holder.eventsOn(occurrence).single()
         assertEquals("Moved", override.title)
         assertEquals(660, override.startMinutes)
-        assertEquals(series.uid, override.seriesUid)
-        assertEquals(occurrence.toString(), override.recurrenceId)
+        assertEquals(series.uid, override.icsUid)
+        assertEquals(series.recurrenceSlotOn(occurrence), override.recurrenceId)
         assertEquals("Standup", f.holder.eventsOn(occurrence.plusDays(1)).single().title)
     }
 
@@ -453,7 +463,7 @@ class StateHolderTest {
         val events = f.holder.appState.events
         assertEquals(2, events.size)
         val oldSeries = events.first { it.id == series.id }
-        assertEquals(split.plusDays(-1).toString(), oldSeries.repeat?.until)
+        assertEquals(IcsTimeValue.Date(split.plusDays(-1)), oldSeries.repeat?.until)
         assertEquals("Standup", f.holder.eventsOn(split.plusDays(-1)).single().title)
         val newSeries = events.first { it.id != series.id }
         assertEquals(split.toString(), newSeries.date)
@@ -465,16 +475,21 @@ class StateHolderTest {
     fun savingThisAndFuturePartitionsRDatesAcrossTheSplit() {
         val f = Fixture()
         val split = f.holder.today.plusDays(2)
-        val before = split.plusDays(-1).toString()
-        val after = split.plusDays(10).toString()
+        val before = split.plusDays(-1)
+        val after = split.plusDays(10)
         f.holder.saveEvent(
             Event(
                 "series",
                 "Standup",
-                f.holder.today.toString(),
-                540,
-                555,
-                repeat = RepeatRule(RepeatFrequency.Daily, rDates = listOf(before, after)),
+                IcsTimeValue.Floating(LocalDateTime(f.holder.today, LocalTime(9, 0))),
+                IcsTimeValue.Floating(LocalDateTime(f.holder.today, LocalTime(9, 15))),
+                recurrence = Recurrence(
+                    rule = RepeatRule(RepeatFrequency.Daily),
+                    rdates = listOf(
+                        RecurrenceDate(IcsTimeValue.Date(before)),
+                        RecurrenceDate(IcsTimeValue.Date(after)),
+                    ),
+                ),
             ),
         )
         val series = f.holder.appState.events.single()
@@ -488,8 +503,14 @@ class StateHolderTest {
         val newSeries = events.first { it.id != series.id }
         // Each extra date belongs to the segment that covers it; keeping both on one side would
         // duplicate the occurrence or bring it back as a phantom on export.
-        assertEquals(listOf(before), oldSeries.repeat?.rDates)
-        assertEquals(listOf(after), newSeries.repeat?.rDates)
+        assertEquals(
+            listOf(IcsTimeValue.Date(before)),
+            oldSeries.recurrence?.rdates?.map { it.value },
+        )
+        assertEquals(
+            listOf(IcsTimeValue.Date(after)),
+            newSeries.recurrence?.rdates?.map { it.value },
+        )
         assertEquals("Standup", f.holder.eventsOn(split.plusDays(-1)).single().title)
         assertEquals("New standup", f.holder.eventsOn(split.plusDays(10)).single().title)
     }
@@ -512,7 +533,7 @@ class StateHolderTest {
         f.holder.deleteEvent(series, occurrenceDate = cut, scope = EditScope.ThisAndFuture)
         assertEquals(1, f.holder.appState.events.size)
         val stored = f.holder.appState.events.single()
-        assertEquals(cut.plusDays(-1).toString(), stored.repeat?.until)
+        assertEquals(IcsTimeValue.Date(cut.plusDays(-1)), stored.repeat?.until)
         assertEquals(1, f.holder.eventsOn(cut.plusDays(-1)).size)
         assertTrue(f.holder.eventsOn(cut).isEmpty())
     }
@@ -604,7 +625,7 @@ class StateHolderTest {
             title = "Series",
             start = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 0, 30), "Asia/Shanghai"),
             end = IcsTimeValue.Zoned(LocalDateTime(2026, 10, 27, 1, 0), "Asia/Shanghai"),
-            repeat = RepeatRule(RepeatFrequency.Daily),
+            recurrence = Recurrence(rule = RepeatRule(RepeatFrequency.Daily)),
         )
         val moved = series.shiftedByDays(2)
         assertEquals(IcsTimeValue.Zoned(LocalDateTime(2026, 10, 29, 0, 30), "Asia/Shanghai"), moved.start)
@@ -635,7 +656,7 @@ class StateHolderTest {
         val occurrence = f.holder.today.plusDays(1)
         f.holder.saveEvent(series.copy(title = "Moved").movedTo(occurrence), occurrence, EditScope.ThisEvent)
         assertEquals(2, f.holder.appState.events.size)
-        f.holder.saveEvent(series.copy(repeat = null).movedTo(occurrence), occurrence, EditScope.AllEvents)
+        f.holder.saveEvent(series.copy(recurrence = null).movedTo(occurrence), occurrence, EditScope.AllEvents)
         val stored = f.holder.appState.events.single()
         assertNull(stored.repeat)
         assertTrue(stored.excludedDates.isEmpty())
@@ -667,7 +688,7 @@ class StateHolderTest {
         f.holder.saveEvent(series.copy(title = "Moved").movedTo(moved), occurrence, EditScope.ThisEvent)
         val override = f.holder.eventsOn(moved).single()
         assertEquals("Moved", override.title)
-        assertEquals(occurrence.toString(), override.recurrenceId)
+        assertEquals(series.recurrenceSlotOn(occurrence), override.recurrenceId)
         assertTrue(f.holder.eventsOn(occurrence).isEmpty())
     }
 
@@ -688,7 +709,7 @@ class StateHolderTest {
 
         val override = f.holder.appState.events.first { it.title == "Moved" }
         assertEquals(start.toString(), override.date)
-        assertEquals(occurrence.toString(), override.recurrenceId)
+        assertEquals(series.recurrenceSlotOn(occurrence), override.recurrenceId)
         assertTrue(f.holder.eventsOn(start).any { it.title == "Moved" })
         assertTrue(f.holder.eventsOn(occurrence).isEmpty())
     }
@@ -718,7 +739,7 @@ class StateHolderTest {
         assertEquals(start.plusDays(1).toString(), shiftedSeries.date)
         assertEquals(listOf(start.plusDays(2).toString()), shiftedSeries.excludedDates)
         assertEquals(start.plusDays(3).toString(), shiftedException.date)
-        assertEquals(start.plusDays(2).toString(), shiftedException.recurrenceId)
+        assertEquals(start.plusDays(2), shiftedException.recurrenceId?.wallDate)
     }
 
     @Test
@@ -752,7 +773,7 @@ class StateHolderTest {
                 start.toString(),
                 540,
                 555,
-                repeat = RepeatRule(RepeatFrequency.Daily, until = start.plusDays(5).toString()),
+                repeat = RepeatRule(RepeatFrequency.Daily, until = IcsTimeValue.Date(start.plusDays(5))),
             ),
         )
         val series = f.holder.appState.events.single()
@@ -763,7 +784,7 @@ class StateHolderTest {
         )
         val stored = f.holder.appState.events.single()
         assertEquals(start.plusDays(1).toString(), stored.date)
-        assertEquals(start.plusDays(6).toString(), stored.repeat?.until)
+        assertEquals(IcsTimeValue.Date(start.plusDays(6)), stored.repeat?.until)
     }
 
     @Test
@@ -775,23 +796,20 @@ class StateHolderTest {
                 Event(
                     id = null,
                     title = "Base",
-                    date = today.toString(),
-                    startMinutes = 540,
-                    endMinutes = 600,
-                    repeat = RepeatRule(RepeatFrequency.Daily),
+                    start = IcsTimeValue.Floating(LocalDateTime(today, LocalTime(9, 0))),
+                    end = IcsTimeValue.Floating(LocalDateTime(today, LocalTime(10, 0))),
+                    recurrence = Recurrence(rule = RepeatRule(RepeatFrequency.Daily)),
                     icsUid = "base-uid",
                 ),
                 Event(
                     id = null,
                     title = "Future",
-                    date = today.plusDays(2).toString(),
-                    startMinutes = 540,
-                    endMinutes = 600,
-                    repeat = RepeatRule(RepeatFrequency.Daily, count = 5),
-                    icsUid = "base-uid#future-x",
-                    seriesUid = "base-uid",
-                    recurrenceId = today.plusDays(2).toString(),
-                    thisAndFuture = true,
+                    start = IcsTimeValue.Floating(LocalDateTime(today.plusDays(2), LocalTime(9, 0))),
+                    end = IcsTimeValue.Floating(LocalDateTime(today.plusDays(2), LocalTime(10, 0))),
+                    recurrence = Recurrence(rule = RepeatRule(RepeatFrequency.Daily, count = 5)),
+                    icsUid = "base-uid",
+                    recurrenceId = IcsTimeValue.Floating(LocalDateTime(today.plusDays(2), LocalTime(9, 0))),
+                    recurrenceRange = RecurrenceRange.ThisAndFuture,
                 ),
             ),
         )
@@ -806,8 +824,9 @@ class StateHolderTest {
 
         val shifted = f.holder.appState.events.first { it.title == "Future" }
         assertEquals(today.plusDays(3).toString(), shifted.date)
-        assertEquals(today.plusDays(3).toString(), shifted.recurrenceId)
+        assertEquals(today.plusDays(3), shifted.recurrenceId?.wallDate)
         assertEquals(futureUid, shifted.uid)
+        assertEquals("base-uid", shifted.icsUid)
     }
 
     @Test
@@ -878,7 +897,7 @@ class StateHolderTest {
         )
         assertEquals(1, f.holder.eventsOn(middle).size)
         assertEquals("Edited", f.holder.eventsOn(middle).single().title)
-        assertEquals(start.toString(), f.holder.eventsOn(middle).single().recurrenceId)
+        assertEquals(series.recurrenceSlotOn(occurrence), f.holder.eventsOn(middle).single().recurrenceId)
     }
 
     @Test
@@ -978,10 +997,8 @@ class StateHolderTest {
             "2026-10-28",
             600,
             660,
-            icsUid = "cancel-uid#override-2026-10-28",
-            seriesUid = "cancel-uid",
-            recurrenceId = "2026-10-28",
-        )
+            icsUid = "cancel-uid",
+        ).copy(recurrenceId = IcsTimeValue.Date(LocalDate(2026, 10, 28)))
         assertEquals(2, f.holder.importEvents(listOf(series, exception)))
         f.holder.importCalendar(IcsImport(cancelledUids = setOf("cancel-uid")))
         assertTrue(f.holder.appState.events.isEmpty())
@@ -1177,10 +1194,8 @@ class StateHolderTest {
             "2026-10-28",
             600,
             660,
-            icsUid = "native-1@crko#override-2026-10-28",
-            seriesUid = "native-1@crko",
-            recurrenceId = "2026-10-28",
-        )
+            icsUid = "native-1@crko",
+        ).copy(recurrenceId = IcsTimeValue.Date(LocalDate(2026, 10, 28)))
         assertEquals(2, f.holder.importEvents(listOf(master, exception)))
         val updated = exception.copy(
             id = null,

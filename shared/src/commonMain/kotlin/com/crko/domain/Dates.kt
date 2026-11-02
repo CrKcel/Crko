@@ -89,33 +89,3 @@ fun parseStoredDate(text: String): LocalDate? =
 
 fun LocalTime.minutesOfDay(): Int = hour * 60 + minute
 
-/**
- * Parsed `UNTIL` value. [instant] is set for UTC values, [localDateTime] for floating values and
- * both are null for a date-only value, whose whole day is included.
- */
-data class RepeatUntil(
-    val date: LocalDate,
-    val localDateTime: LocalDateTime? = null,
-    val instant: Instant? = null,
-)
-
-fun parseRepeatUntil(text: String): RepeatUntil? {
-    val value = text.trim()
-    if (value.isEmpty()) return null
-    if (value.endsWith("Z", ignoreCase = true)) {
-        return runCatching { Instant.parse(value) }.getOrNull()
-            ?.let { RepeatUntil(it.toLocalDateTime(TimeZone.UTC).date, instant = it) }
-    }
-    if ('T' !in value) {
-        return runCatching { LocalDate.parse(value) }.getOrNull()?.let { RepeatUntil(it) }
-    }
-    runCatching { LocalDateTime.parse(value) }.getOrNull()?.let {
-        return RepeatUntil(it.date, localDateTime = it)
-    }
-    return runCatching { Instant.parse(value) }.getOrNull()
-        ?.let { RepeatUntil(it.toLocalDateTime(TimeZone.UTC).date, instant = it) }
-}
-
-/** Calendar date of an `UNTIL` value in [zone]; date-only values are zone-independent. */
-fun RepeatUntil.localDate(zone: TimeZone = TimeZone.currentSystemDefault()): LocalDate =
-    instant?.toLocalDateTime(zone)?.date ?: date

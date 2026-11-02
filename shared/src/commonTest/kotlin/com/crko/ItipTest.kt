@@ -3,6 +3,7 @@ package com.crko
 import com.crko.domain.Event
 import com.crko.domain.IcsAttendee
 import com.crko.domain.IcsImport
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.ItipDecision
 import com.crko.domain.ItipMethod
 import com.crko.domain.IcsPartStat
@@ -22,6 +23,8 @@ import com.crko.i18n.EnStrings
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -188,11 +191,10 @@ class ItipTest {
         val override = Event(
             id = "e2",
             title = "Review moved",
-            date = "2026-03-05",
-            startMinutes = 600,
-            endMinutes = 660,
-            seriesUid = "series@crko",
-            recurrenceId = "2026-03-02",
+            start = IcsTimeValue.Floating(LocalDateTime(2026, 3, 5, 10, 0)),
+            end = IcsTimeValue.Floating(LocalDateTime(2026, 3, 5, 11, 0)),
+            icsUid = "series@crko",
+            recurrenceId = IcsTimeValue.Date(LocalDate(2026, 3, 2)),
             attendeeRaw = listOf("ATTENDEE;CN=Jane;PARTSTAT=NEEDS-ACTION:mailto:jane@example.com"),
         )
         val reply = import(
@@ -205,7 +207,7 @@ class ItipTest {
             ),
         )
         val message = assertNotNull(reply.itipReply())
-        assertEquals("2026-03-02", message.recurrenceId)
+        assertEquals(IcsTimeValue.Date(LocalDate(2026, 3, 2)), message.recurrenceId)
         val result = listOf(override).applyingReply(message)
         assertTrue(result.applied)
         assertEquals(IcsPartStat.Tentative, result.events.single().attendeeEntries.single().partStat)
@@ -331,7 +333,9 @@ class ItipTest {
         )
         // The single-start model keeps the series and skips the cancelled slot.
         assertTrue(f.appState.events.isNotEmpty())
-        val cancelled = f.appState.events.firstOrNull { it.recurrenceId == "2026-03-01" }
+        val cancelled = f.appState.events.firstOrNull {
+            it.recurrenceId == IcsTimeValue.Date(LocalDate(2026, 3, 1))
+        }
         assertTrue(cancelled == null || cancelled.status == com.crko.domain.EventStatus.Confirmed)
     }
 

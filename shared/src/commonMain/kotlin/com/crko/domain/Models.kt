@@ -9,9 +9,22 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
-enum class RepeatFrequency { Daily, Weekly, Monthly, Yearly, Custom }
+enum class RepeatFrequency { Daily, Weekly, Monthly, Yearly }
+
+/** `RECURRENCE-ID;RANGE=…`; only `THISANDFUTURE` belongs to RFC 5545, `THISANDPRIOR` is a legacy extension. */
+@Serializable
+enum class RecurrenceRange(val wireName: String) {
+    ThisAndFuture("THISANDFUTURE"),
+    ThisAndPrior("THISANDPRIOR");
+
+    companion object {
+        fun parse(value: String?): RecurrenceRange? =
+            value?.trim()?.uppercase()?.let { raw -> entries.firstOrNull { it.wireName == raw } }
+    }
+}
 
 @Serializable
 enum class EventStatus { Confirmed, Tentative, Cancelled }
@@ -189,17 +202,21 @@ fun attachmentMimeType(attachment: Attachment): String {
     return extensionMimeTypes[extension] ?: "application/octet-stream"
 }
 
+/**
+ * RFC 5545 `RRULE`. `RDATE`/`EXDATE` belong to [Recurrence], so this type describes the rule alone.
+ * [raw] keeps the original property text when a part of it cannot be represented exactly (an
+ * unsupported `FREQ`, an ordinal `BYDAY` on a daily/weekly rule, an unknown part, ...), so opening
+ * and saving the event does not silently drop what the importer could not model.
+ */
 @Serializable
 data class RepeatRule(
     val frequency: RepeatFrequency,
-    /** Plain weekdays (0 = Monday) from `BYDAY`, used by weekly, daily and monthly rules. */
-    val weekdays: List<Int> = emptyList(),
     val interval: Int = 1,
     /** Number of occurrences including the first one. */
     val count: Int? = null,
-    /** Inclusive last occurrence: an ISO date, a floating date-time, or a UTC instant. */
-    val until: String? = null,
-    /** `BYDAY` values carrying an ordinal, for monthly and yearly rules. */
+    /** Inclusive last occurrence, in the value type the rule declares. */
+    val until: IcsTimeValue? = null,
+    /** `BYDAY` values; an ordinal of 0 is a plain weekday, e.g. `MO`. */
     val byDay: List<OrdinalWeekday> = emptyList(),
     val byMonthDay: List<Int> = emptyList(),
     val byMonth: List<Int> = emptyList(),
@@ -214,8 +231,29 @@ data class RepeatRule(
     val byMinute: List<Int> = emptyList(),
     /** `BYSECOND`, in seconds of the minute. Kept for round trips; occurrences are day-granular. */
     val bySecond: List<Int> = emptyList(),
-    /** `RDATE` dates, ISO-8601. */
-    val rDates: List<String> = emptyList(),
+    /** Original `RRULE` text when [frequency]-agnostic parts of it could not be represented. */
+    val raw: String? = null,
+)
+
+/** One `RDATE` value. A period keeps the length of that particular instance. */
+@Serializable
+data class RecurrenceDate(
+    val value: IcsTimeValue,
+    @Serializable(with = DurationSecondsSerializer::class)
+    val duration: Duration? = null,
+)
+
+/**
+ * The recurrence set of a component: the `RRULE`, the additional `RDATE` instances and the excluded
+ * `EXDATE` instances. A component without a rule can still add or exclude single instances.
+ */
+@Serializable
+data class Recurrence(
+    val rule: RepeatRule? = null,
+    val rdates: List<RecurrenceDate> = emptyList(),
+    val exdates: List<IcsTimeValue> = emptyList(),
+    /** Original `RRULE` text when even the frequency could not be represented. */
+    val rawRule: String? = null,
 )
 
 @Serializable
@@ -242,18 +280,17 @@ data class Event(
     val organizer: String? = null,
     val attendees: List<String> = emptyList(),
     val alarms: List<Alarm> = emptyList(),
-    /** Null for a one-off event. */
-    val repeat: RepeatRule? = null,
-    /** Dates on which a repeating event is skipped, as display dates (stage 2 types these). */
-    val excludedDates: List<String> = emptyList(),
-    /** UID from an imported ICS file; keeps re-importing the same file from duplicating events. */
+    /** Null for a one-off event; carries `RRULE`, `RDATE` and `EXDATE` together. */
+    val recurrence: Recurrence? = null,
+    /**
+     * UID from an imported ICS file. The master and its exceptions share it; keeps re-importing the
+     * same file from duplicating events.
+     */
     val icsUid: String? = null,
-    /** UID of the series this event overrides, for a `RECURRENCE-ID` exception. */
-    val seriesUid: String? = null,
-    /** Original occurrence date of an exception, as a display date. */
-    val recurrenceId: String? = null,
-    /** The exception was imported from `RECURRENCE-ID;RANGE=THISANDFUTURE`. */
-    val thisAndFuture: Boolean = false,
+    /** Original occurrence slot of an exception (`RECURRENCE-ID`), in the master's value type. */
+    val recurrenceId: IcsTimeValue? = null,
+    /** `RANGE` parameter of [recurrenceId]; null for an ordinary single-instance exception. */
+    val recurrenceRange: RecurrenceRange? = null,
     /**
      * Original raw `VTIMEZONE` block when the zone is not known to the platform. Kept here until
      * the calendar-level time zone store of stage 3 takes over.
@@ -291,6 +328,18 @@ data class Event(
 
     /** Stable UID used for series/exception relationships and exports. */
     val uid: String? get() = icsUid?.takeIf { it.isNotBlank() } ?: id?.let { "$it@crko" }
+
+    /** `RRULE` of the recurrence set, for call sites that do not need the added/excluded instances. */
+    val repeat: RepeatRule? get() = recurrence?.rule
+
+    /** Display dates the series skips, projected from the typed `EXDATE` values. */
+    val excludedDates: List<String>
+        get() = recurrence?.exdates
+            ?.map { it.displayDate(TimeZone.currentSystemDefault()).toString() }
+            .orEmpty()
+
+    /** The exception was imported from `RECURRENCE-ID;RANGE=THISANDFUTURE`. */
+    val thisAndFuture: Boolean get() = recurrenceRange == RecurrenceRange.ThisAndFuture
 
     /*
      * Read-only views of the pre-migration fields. Nothing here is stored: each value is projected
@@ -427,12 +476,13 @@ data class Event(
         organizer = organizer,
         attendees = attendees,
         alarms = alarms,
-        repeat = repeat,
-        excludedDates = excludedDates,
-        icsUid = icsUid,
-        seriesUid = seriesUid,
-        recurrenceId = recurrenceId,
-        thisAndFuture = thisAndFuture,
+        recurrence = legacyRecurrence(repeat, excludedDates),
+        // An old exception stored its series UID separately; the RFC identity is the shared UID.
+        icsUid = seriesUid ?: stripSyntheticSeriesUid(icsUid),
+        recurrenceId = recurrenceId?.let { text ->
+            parseStoredDate(text)?.let(IcsTimeValue::Date)
+        },
+        recurrenceRange = if (thisAndFuture) RecurrenceRange.ThisAndFuture else null,
         timeZoneDefinition = timeZoneDefinition,
         created = created,
         lastModified = lastModified,
@@ -503,6 +553,8 @@ data class Todo(
     val alarms: List<Alarm> = emptyList(),
     /** Recurrence of the series an imported `RRULE` describes; null for a one-off todo. */
     val repeat: RepeatRule? = null,
+    /** Additional `RDATE` instances of the series, keeping their own time and length. */
+    val rDates: List<RecurrenceDate> = emptyList(),
     /** Occurrence dates the series skips, from `EXDATE`. */
     val excludedDates: List<String> = emptyList(),
     /** Name of the file this record was imported from; local records have none. */
@@ -536,8 +588,8 @@ data class Journal(
     val sourceLine: Int = 0,
 )
 
-/** Current persisted layout; stage 1 moved event times to [IcsTimeValue]. */
-const val CurrentSchemaVersion = 2
+/** Current persisted layout; stage 2 moved recurrence sets to [Recurrence]. */
+const val CurrentSchemaVersion = 3
 
 @Serializable
 data class AppState(
@@ -572,7 +624,12 @@ fun Event.occursOn(
     date: LocalDate,
     zone: TimeZone = TimeZone.currentSystemDefault(),
 ): Boolean {
-    if (repeat == null) return date >= day && date <= lastOccupiedDay
+    // A cancelled exception is stored so its SEQUENCE survives, but it occupies no time.
+    if (status == EventStatus.Cancelled) return false
+    val recurrence = recurrence
+    if (recurrence == null || (recurrence.rule == null && recurrence.rdates.isEmpty())) {
+        return date >= day && date <= lastOccupiedDay
+    }
     return occurrenceStartOn(date, zone) != null
 }
 
@@ -581,17 +638,19 @@ fun Event.occurrenceStartOn(
     date: LocalDate,
     zone: TimeZone = TimeZone.currentSystemDefault(),
 ): LocalDate? {
+    if (status == EventStatus.Cancelled) return null
     val anchor = day
-    val rule = repeat ?: return if (date >= anchor && date <= lastOccupiedDay) anchor else null
-    if (date < anchor) return null
+    val recurrence = recurrence
+    if (recurrence == null || (recurrence.rule == null && recurrence.rdates.isEmpty())) {
+        return if (date >= anchor && date <= lastOccupiedDay) anchor else null
+    }
     val span = anchor.daysTo(lastOccupiedDay).coerceAtLeast(0)
     // A zone projection can move an occurrence by one day, so the window has one extra day of
-    // slack; an occurrence never starts before the anchor itself.
+    // slack; an RDATE may also name an instance before the anchor.
     for (offset in 0..span + 1) {
         val candidate = date.plusDays(-offset)
-        if (candidate < anchor) break
         val wall = wallDateFor(candidate, zone)
-        if (!isOccurrenceStart(wall, rule)) continue
+        if (!isOccurrenceStart(wall, recurrence.rule)) continue
         if (date <= displayLastOccupiedDayOf(candidate, wall, zone)) return candidate
     }
     return null
@@ -605,7 +664,7 @@ internal fun Event.displayLastOccupiedDayOf(
 ): LocalDate {
     if (allDay) return displayStart.plusDays(wallDay.daysTo(wallLastOccupiedDay()))
     val startInstant = occurrenceStartInstant(wallStart, wallStartTime(), zone)
-    val endInstant = startInstant + occurrenceDurationSeconds.seconds
+    val endInstant = startInstant + occurrenceDurationOn(wallStart)
     val startLocal = startInstant.toLocalDateTime(zone)
     val endLocal = endInstant.toLocalDateTime(zone)
     val last = if (endLocal.date > startLocal.date && endLocal.time == LocalTime(0, 0)) {
@@ -635,8 +694,9 @@ fun Event.timeRangeOn(
     // Slicing past the occurrence (or an uncovered date) has no meaningful clip, so the raw range is
     // returned for callers that bypass occursOn.
     val displayStart = occurrenceStartOn(date, zone) ?: return startMinutes to endMinutes
-    val startInstant = occurrenceStartInstant(wallDateFor(displayStart, zone), wallStartTime(), zone)
-    val endInstant = startInstant + occurrenceDurationSeconds.seconds
+    val wallStart = wallDateFor(displayStart, zone)
+    val startInstant = occurrenceStartInstant(wallStart, wallStartTime(), zone)
+    val endInstant = startInstant + occurrenceDurationOn(wallStart)
     val startLocal = startInstant.toLocalDateTime(zone)
     val endLocal = endInstant.toLocalDateTime(zone)
     // An end at exactly midnight occupies the previous day through 24:00.

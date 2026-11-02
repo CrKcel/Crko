@@ -5,7 +5,10 @@ import com.crko.domain.AppState
 import com.crko.domain.CurrentSchemaVersion
 import com.crko.domain.Event
 import com.crko.domain.IcsTimeValue
+import com.crko.domain.OrdinalWeekday
 import com.crko.domain.PersistedSettings
+import com.crko.domain.RecurrenceDate
+import com.crko.domain.RepeatFrequency
 import com.crko.domain.isZeroDuration
 import com.crko.storage.FileStateStorage
 import com.crko.storage.KeyValueStore
@@ -108,6 +111,57 @@ class StorageTest {
         val zero = decoded.state.events.first { it.id == "zero" }
         assertNull(zero.end)
         assertTrue(zero.isZeroDuration)
+    }
+
+    @Test
+    fun legacyRecurrencePayloadMigratesToTheTypedSet() {
+        val payload = """{"schemaVersion":2,"events":[""" +
+            """{"id":"series","title":"Series","date":"2026-10-27","startMinutes":540,"endMinutes":600,""" +
+            """"repeat":{"frequency":"Weekly","weekdays":[0,2],"until":"2026-12-01","rDates":["2026-11-20"]},""" +
+            """"excludedDates":["2026-10-29"]},""" +
+            """{"id":"override","title":"Moved","date":"2026-10-28","startMinutes":600,"endMinutes":660,""" +
+            """"icsUid":"series#override-2026-10-28","seriesUid":"series","recurrenceId":"2026-10-28"},""" +
+            """{"id":"custom","title":"Custom","date":"2026-10-27","startMinutes":540,"endMinutes":600,""" +
+            """"repeat":{"frequency":"Custom","weekdays":[1]}}],""" +
+            """"todos":[{"id":"todo","title":"Report","due":"2026-10-06",""" +
+            """"repeat":{"frequency":"Weekly","weekdays":[0],"rDates":["2026-12-24"]},""" +
+            """"excludedDates":["2026-10-12"]}],""" +
+            """"journals":[{"id":"j","title":"Journal","date":"2026-10-27"}]}"""
+        val decoded = decodeStateWithReport(payload)
+        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
+        assertEquals(CurrentSchemaVersion, decoded.state.schemaVersion)
+
+        val series = decoded.state.events.first { it.id == "series" }
+        assertEquals(RepeatFrequency.Weekly, series.repeat?.frequency)
+        assertEquals(listOf(OrdinalWeekday(0, 0), OrdinalWeekday(0, 2)), series.repeat?.byDay)
+        assertEquals(IcsTimeValue.Date(LocalDate(2026, 12, 1)), series.repeat?.until)
+        assertEquals(
+            listOf(RecurrenceDate(IcsTimeValue.Date(LocalDate(2026, 11, 20)))),
+            series.recurrence?.rdates,
+        )
+        assertEquals(
+            listOf(IcsTimeValue.Date(LocalDate(2026, 10, 29))),
+            series.recurrence?.exdates,
+        )
+
+        // The old synthetic exception identity collapses onto the master's shared UID.
+        val override = decoded.state.events.first { it.id == "override" }
+        assertEquals("series", override.icsUid)
+        assertEquals(IcsTimeValue.Date(LocalDate(2026, 10, 28)), override.recurrenceId)
+
+        val custom = decoded.state.events.first { it.id == "custom" }
+        assertEquals(RepeatFrequency.Weekly, custom.repeat?.frequency)
+        assertEquals(listOf(OrdinalWeekday(0, 1)), custom.repeat?.byDay)
+
+        val todo = decoded.state.todos.single()
+        assertEquals(RepeatFrequency.Weekly, todo.repeat?.frequency)
+        assertEquals(listOf(OrdinalWeekday(0, 0)), todo.repeat?.byDay)
+        assertEquals(
+            listOf(RecurrenceDate(IcsTimeValue.Date(LocalDate(2026, 12, 24)))),
+            todo.rDates,
+        )
+        assertEquals(listOf("2026-10-12"), todo.excludedDates)
+        assertEquals("Journal", decoded.state.journals.single().title)
     }
 
     @Test

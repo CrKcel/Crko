@@ -41,17 +41,18 @@ import com.crko.domain.EventStatus
 import com.crko.domain.EventTransparency
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.MaxEndMinutes
+import com.crko.domain.OrdinalWeekday
+import com.crko.domain.Recurrence
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.attachmentMimeType
 import com.crko.domain.attachmentBytes
 import com.crko.domain.daysTo
-import com.crko.domain.localDate
 import com.crko.domain.mondayIndex
-import com.crko.domain.parseRepeatUntil
 import com.crko.domain.plusDays
 import com.crko.domain.safeAttachmentFileName
 import com.crko.domain.startOfWeek
+import com.crko.domain.wallDate
 import com.crko.domain.withDeviceDateTime
 import com.crko.i18n.Strings
 import com.crko.i18n.alarmLabel
@@ -113,7 +114,11 @@ private fun EventEditorContent(
     var start by remember(event) { mutableStateOf(minutesToTime(event.startMinutes)) }
     var end by remember(event) { mutableStateOf(minutesToTime(event.endMinutes)) }
     var repeatFrequency by remember(event) { mutableStateOf(event.repeat?.frequency) }
-    var repeatDays by remember(event) { mutableStateOf(event.repeat?.weekdays?.toSet().orEmpty()) }
+    var repeatDays by remember(event) {
+        mutableStateOf(
+            event.repeat?.byDay?.filter { it.ordinal == 0 }?.map { it.weekday }?.toSet().orEmpty(),
+        )
+    }
     var intervalText by remember(event) { mutableStateOf((event.repeat?.interval ?: 1).toString()) }
     var endMode by remember(event) {
         mutableStateOf(
@@ -126,10 +131,7 @@ private fun EventEditorContent(
     }
     var countText by remember(event) { mutableStateOf((event.repeat?.count ?: 10).toString()) }
     var untilDate by remember(event) {
-        mutableStateOf(
-            event.repeat?.until?.let(::parseRepeatUntil)?.localDate()
-                ?: startDate.plusDays(30),
-        )
+        mutableStateOf(event.repeat?.until?.wallDate ?: startDate.plusDays(30))
     }
     var location by remember(event) { mutableStateOf(event.location) }
     var categories by remember(event) { mutableStateOf(event.categories.joinToString(", ")) }
@@ -176,8 +178,7 @@ private fun EventEditorContent(
     val resolvedEndDate = if (endDate < date) date else endDate
     val interval = intervalText.toIntOrNull()?.takeIf { it > 0 } ?: 1
     val repeatCount = countText.toIntOrNull()?.takeIf { it > 0 }
-    val repeatValid = (repeatFrequency != RepeatFrequency.Custom || repeatDays.isNotEmpty()) &&
-        (repeatFrequency == null || endMode != RepeatEndMode.Count || repeatCount != null)
+    val repeatValid = repeatFrequency == null || endMode != RepeatEndMode.Count || repeatCount != null
     val timeValid = allDay || resolvedEndDate > date || endMinutes >= startMinutes
     val valid = title.isNotBlank() && timeValid && repeatValid
     val canScope = event.repeat != null && occurrenceDate != null
@@ -341,7 +342,8 @@ private fun EventEditorContent(
                     weekdays = repeatDays,
                     onFrequencyChange = { next ->
                         repeatFrequency = next
-                        if (next == RepeatFrequency.Custom && repeatDays.isEmpty()) {
+                        // A weekly rule with no explicit BYDAY follows the start weekday.
+                        if (next == RepeatFrequency.Weekly && repeatDays.isEmpty()) {
                             repeatDays = setOf(date.mondayIndex)
                         }
                     },
@@ -589,14 +591,16 @@ private fun EventEditorContent(
                                 originalAtEnd,
                                 reminderAtEnd,
                             ),
-                            repeat = buildRule(
-                                frequency = repeatFrequency,
-                                old = event.repeat,
-                                weekdays = repeatDays,
-                                interval = interval,
-                                endMode = endMode,
-                                count = repeatCount,
-                                until = untilDate,
+                            recurrence = event.recurrence.withRule(
+                                buildRule(
+                                    frequency = repeatFrequency,
+                                    old = event.repeat,
+                                    weekdays = repeatDays,
+                                    interval = interval,
+                                    endMode = endMode,
+                                    count = repeatCount,
+                                    until = untilDate,
+                                ),
                             ),
                         ),
                         selectedScope,
@@ -660,22 +664,24 @@ private fun buildRule(
 ): RepeatRule? {
     if (frequency == null) return null
     val keep = old?.takeIf { it.frequency == frequency }
-    return RepeatRule(
+    val untilValue = if (endMode == RepeatEndMode.Until) {
+        // Keep the imported value (instant/floating/TZID) when the picked date did not change.
+        val original = keep?.until
+        if (original != null && original.wallDate == until) original else IcsTimeValue.Date(until)
+    } else {
+        null
+    }
+    val byDay = when (frequency) {
+        RepeatFrequency.Weekly -> weekdays.filter { it in 0..6 }.sorted()
+            .map { OrdinalWeekday(0, it) }
+        else -> keep?.byDay ?: emptyList()
+    }
+    val built = RepeatRule(
         frequency = frequency,
-        weekdays = when (frequency) {
-            RepeatFrequency.Custom -> weekdays.filter { it in 0..6 }.sorted()
-            else -> keep?.weekdays ?: emptyList()
-        },
         interval = interval.coerceAtLeast(1),
         count = if (endMode == RepeatEndMode.Count) count else null,
-        until = if (endMode == RepeatEndMode.Until) {
-            // Keep the imported value (instant/floating) when the picked date did not change.
-            val original = keep?.until
-            if (original != null && parseRepeatUntil(original)?.localDate() == until) original else until.toString()
-        } else {
-            null
-        },
-        byDay = keep?.byDay ?: emptyList(),
+        until = untilValue,
+        byDay = byDay,
         byMonthDay = keep?.byMonthDay ?: emptyList(),
         byMonth = keep?.byMonth ?: emptyList(),
         bySetPos = keep?.bySetPos ?: emptyList(),
@@ -685,8 +691,19 @@ private fun buildRule(
         byHour = keep?.byHour ?: emptyList(),
         byMinute = keep?.byMinute ?: emptyList(),
         bySecond = keep?.bySecond ?: emptyList(),
-        rDates = keep?.rDates ?: emptyList(),
     )
+    // An untouched rule keeps the imported text (including parts this model cannot represent).
+    val unchanged = keep != null &&
+        built.copy(raw = null, until = null) == keep.copy(raw = null, until = null) &&
+        built.until?.wallDate == keep.until?.wallDate
+    return built.copy(raw = if (unchanged) keep.raw else null)
+}
+
+/** Replaces the RRULE of a recurrence set, dropping the set when the rule is removed. */
+private fun Recurrence?.withRule(rule: RepeatRule?): Recurrence? = when {
+    rule == null -> null
+    this == null -> Recurrence(rule = rule)
+    else -> copy(rule = rule)
 }
 
 internal enum class TimeField { START, END }
@@ -944,7 +961,6 @@ private fun repeatSummary(strings: Strings, frequency: RepeatFrequency?): String
     RepeatFrequency.Weekly -> strings.repeatWeekly
     RepeatFrequency.Monthly -> strings.repeatMonthly
     RepeatFrequency.Yearly -> strings.repeatYearly
-    RepeatFrequency.Custom -> strings.repeatCustom
 }
 
 private fun reminderSummary(strings: Strings, reminder: Int?, atEnd: Boolean): String = when (reminder) {
@@ -1122,14 +1138,9 @@ private fun RepeatSection(
                 { onFrequencyChange(RepeatFrequency.Yearly) },
                 Modifier.weight(1f),
             )
-            RepeatChip(
-                strings.repeatCustom,
-                frequency == RepeatFrequency.Custom,
-                { onFrequencyChange(RepeatFrequency.Custom) },
-                Modifier.weight(1f),
-            )
         }
-        if (frequency == RepeatFrequency.Custom) {
+        // Custom weekdays are just `FREQ=WEEKLY;BYDAY=…`, so they live on the weekly rule.
+        if (frequency == RepeatFrequency.Weekly) {
             Spacer(Modifier.height(6.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 strings.weekdaysFull.forEachIndexed { index, label ->

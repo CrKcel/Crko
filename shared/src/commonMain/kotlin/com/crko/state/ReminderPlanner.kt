@@ -139,7 +139,7 @@ private fun collectEventReminders(
         }
     }
 
-    if (event.repeat == null) {
+    if (event.recurrence == null) {
         // A one-off event has exactly one occurrence; no walk over the horizon.
         if (event.day <= horizonEnd) emitOccurrence(event.day, event.occurrenceTimesOn(event.wallDay))
         return

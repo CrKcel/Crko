@@ -4,7 +4,10 @@ import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.EndOfDayMinutes
 import com.crko.domain.Event
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.OrdinalWeekday
+import com.crko.domain.Recurrence
+import com.crko.domain.RecurrenceDate
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
@@ -21,6 +24,8 @@ import com.crko.domain.plusDays
 import com.crko.domain.plusMonths
 import com.crko.domain.plusYears
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.LocalTime
 import kotlinx.datetime.number
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -32,17 +37,26 @@ class RecurrenceTest {
     // 2026-10-27 is a Tuesday.
     private val anchor = LocalDate(2026, 10, 27)
 
+    private fun days(vararg values: Int): List<OrdinalWeekday> = values.map { OrdinalWeekday(0, it) }
+
     private fun event(
         repeat: RepeatRule? = null,
+        rdates: List<RecurrenceDate> = emptyList(),
         excludedDates: List<String> = emptyList(),
     ) = Event(
         id = "e1",
         title = "Event",
-        date = anchor.toString(),
-        startMinutes = 9 * 60,
-        endMinutes = 10 * 60,
-        repeat = repeat,
-        excludedDates = excludedDates,
+        start = IcsTimeValue.Floating(LocalDateTime(anchor, LocalTime(9, 0))),
+        end = IcsTimeValue.Floating(LocalDateTime(anchor, LocalTime(10, 0))),
+        recurrence = if (repeat == null && rdates.isEmpty() && excludedDates.isEmpty()) {
+            null
+        } else {
+            Recurrence(
+                rule = repeat,
+                rdates = rdates,
+                exdates = excludedDates.map { IcsTimeValue.Date(LocalDate.parse(it)) },
+            )
+        },
     )
 
     @Test
@@ -72,7 +86,7 @@ class RecurrenceTest {
     @Test
     fun customRepeatMatchesOnlySelectedWeekdays() {
         // Monday and Thursday.
-        val event = event(RepeatRule(RepeatFrequency.Custom, listOf(0, 3)))
+        val event = event(RepeatRule(RepeatFrequency.Weekly, byDay = days(0, 3)))
         assertFalse(event.occursOn(anchor.plusDays(1)))
         assertTrue(event.occursOn(anchor.plusDays(2)))
         assertTrue(event.occursOn(anchor.plusDays(6)))
@@ -97,7 +111,7 @@ class RecurrenceTest {
     @Test
     fun countIncludesTheStartEvenWhenItMissesByDay() {
         // 2026-10-27 is a Tuesday; the rule only names Fridays.
-        val event = event(RepeatRule(RepeatFrequency.Custom, listOf(4), count = 2))
+        val event = event(RepeatRule(RepeatFrequency.Weekly, byDay = days(4), count = 2))
         assertTrue(event.occursOn(LocalDate(2026, 10, 30)))
         assertFalse(event.occursOn(LocalDate(2026, 11, 6)))
     }
@@ -166,7 +180,7 @@ class RecurrenceTest {
             endMinutes = 600,
             repeat = RepeatRule(
                 frequency = RepeatFrequency.Monthly,
-                weekdays = listOf(0, 1, 2, 3, 4),
+                byDay = days(0, 1, 2, 3, 4),
                 bySetPos = listOf(-1),
             ),
         )
@@ -209,9 +223,9 @@ class RecurrenceTest {
         val event = event(
             RepeatRule(
                 frequency = RepeatFrequency.Daily,
-                until = anchor.plusDays(1).toString(),
-                rDates = listOf(LocalDate(2026, 11, 5).toString()),
+                until = IcsTimeValue.Date(anchor.plusDays(1)),
             ),
+            rdates = listOf(RecurrenceDate(IcsTimeValue.Date(LocalDate(2026, 11, 5)))),
         )
         assertTrue(event.occursOn(anchor.plusDays(1)))
         assertFalse(event.occursOn(anchor.plusDays(2)))
@@ -234,7 +248,11 @@ class RecurrenceTest {
         assertTrue(event.occursOn(anchor.plusDays(7)))
         assertTrue(event.occursOn(anchor.plusDays(9)))
         assertFalse(event.occursOn(anchor.plusDays(6)))
-        val skipped = event.copy(excludedDates = listOf(anchor.plusDays(7).toString()))
+        val skipped = event.copy(
+            recurrence = event.recurrence?.copy(
+                exdates = listOf(IcsTimeValue.Date(anchor.plusDays(7))),
+            ),
+        )
         assertFalse(skipped.occursOn(anchor.plusDays(7)))
         assertFalse(skipped.occursOn(anchor.plusDays(8)))
         assertTrue(skipped.occursOn(anchor.plusDays(14)))
@@ -251,7 +269,7 @@ class RecurrenceTest {
             endMinutes = 600,
             repeat = RepeatRule(
                 frequency = RepeatFrequency.Monthly,
-                weekdays = listOf(4),
+                byDay = days(4),
                 byMonthDay = listOf(13),
             ),
         )
@@ -285,7 +303,10 @@ class RecurrenceTest {
             date = "2026-10-25",
             startMinutes = 10 * 60,
             endMinutes = 11 * 60,
-            repeat = RepeatRule(RepeatFrequency.Daily, until = "2026-10-27T09:00"),
+            repeat = RepeatRule(
+                RepeatFrequency.Daily,
+                until = IcsTimeValue.Floating(LocalDateTime(2026, 10, 27, 9, 0)),
+            ),
         )
         assertTrue(event.occursOn(LocalDate(2026, 10, 26)))
         assertFalse(event.occursOn(LocalDate(2026, 10, 27)))
@@ -312,8 +333,8 @@ class RecurrenceTest {
     fun weeklySetPosKeepsOnlyTheSelectedWeekday() {
         val event = event(
             RepeatRule(
-                frequency = RepeatFrequency.Custom,
-                weekdays = listOf(0, 1, 2, 3, 4),
+                frequency = RepeatFrequency.Weekly,
+                byDay = days(0, 1, 2, 3, 4),
                 bySetPos = listOf(-1),
             ),
         )
@@ -334,8 +355,8 @@ class RecurrenceTest {
             startMinutes = 540,
             endMinutes = 600,
             repeat = RepeatRule(
-                frequency = RepeatFrequency.Custom,
-                weekdays = listOf(0),
+                frequency = RepeatFrequency.Weekly,
+                byDay = days(0),
                 byMonth = listOf(3),
                 count = 3,
             ),
@@ -376,7 +397,7 @@ class RecurrenceTest {
             endMinutes = 600,
             repeat = RepeatRule(
                 frequency = RepeatFrequency.Yearly,
-                weekdays = listOf(6),
+                byDay = days(6),
                 byWeekNo = listOf(1),
                 weekStart = 6,
             ),
@@ -395,7 +416,7 @@ class RecurrenceTest {
             endMinutes = 600,
             repeat = RepeatRule(
                 frequency = RepeatFrequency.Yearly,
-                weekdays = listOf(6),
+                byDay = days(6),
                 byWeekNo = listOf(1),
                 weekStart = 6,
                 count = 2,
@@ -410,7 +431,7 @@ class RecurrenceTest {
         val state = AppState(
             events = listOf(
                 event(
-                    RepeatRule(RepeatFrequency.Custom, listOf(0, 3)),
+                    RepeatRule(RepeatFrequency.Weekly, byDay = days(0, 3)),
                     excludedDates = listOf(anchor.plusDays(2).toString()),
                 ),
             ),
@@ -428,16 +449,16 @@ class RecurrenceTest {
         val rules = listOf(
             RepeatRule(RepeatFrequency.Weekly),
             RepeatRule(RepeatFrequency.Weekly, interval = 2),
-            RepeatRule(RepeatFrequency.Custom, weekdays = listOf(0, 2, 4)),
-            RepeatRule(RepeatFrequency.Custom, weekdays = listOf(0, 2, 4), interval = 2),
-            RepeatRule(RepeatFrequency.Custom, weekdays = listOf(5, 6), interval = 4),
+            RepeatRule(RepeatFrequency.Weekly, byDay = days(0, 2, 4)),
+            RepeatRule(RepeatFrequency.Weekly, byDay = days(0, 2, 4), interval = 2),
+            RepeatRule(RepeatFrequency.Weekly, byDay = days(5, 6), interval = 4),
             RepeatRule(RepeatFrequency.Weekly, weekStart = 2, interval = 2),
-            RepeatRule(RepeatFrequency.Custom, weekdays = listOf(1), weekStart = 4, interval = 3),
+            RepeatRule(RepeatFrequency.Weekly, byDay = days(1), weekStart = 4, interval = 3),
             // Non-uniform weekly rules must keep using the scan, with the same answers.
             RepeatRule(RepeatFrequency.Weekly, interval = 2, byMonth = listOf(1, 2)),
-            RepeatRule(RepeatFrequency.Custom, weekdays = listOf(0, 4), bySetPos = listOf(-1)),
+            RepeatRule(RepeatFrequency.Weekly, byDay = days(0, 4), bySetPos = listOf(-1)),
             RepeatRule(RepeatFrequency.Daily),
-            RepeatRule(RepeatFrequency.Daily, interval = 3, weekdays = listOf(0, 2)),
+            RepeatRule(RepeatFrequency.Daily, interval = 3, byDay = days(0, 2)),
             RepeatRule(RepeatFrequency.Monthly, byDay = listOf(OrdinalWeekday(-1, 4))),
         )
         for (rule in rules) {
@@ -547,7 +568,7 @@ class RecurrenceTest {
             RepeatRule(RepeatFrequency.Monthly, byMonthDay = listOf(1, 15), count = 4),
             RepeatRule(RepeatFrequency.Monthly, byDay = listOf(OrdinalWeekday(-1, 4)), count = 3),
             RepeatRule(RepeatFrequency.Yearly, byMonth = listOf(3), byMonthDay = listOf(14), count = 5),
-            RepeatRule(RepeatFrequency.Yearly, weekdays = listOf(6), byWeekNo = listOf(1), weekStart = 6, count = 2),
+            RepeatRule(RepeatFrequency.Yearly, byDay = days(6), byWeekNo = listOf(1), weekStart = 6, count = 2),
         )
         rules.forEach { rule ->
             // A decades-old anchor is exactly what made every cell query walk hundreds of periods.
@@ -575,16 +596,17 @@ class RecurrenceTest {
             RepeatFrequency.Monthly,
             byMonthDay = listOf(1),
             count = 3,
-            rDates = listOf("2026-11-20"),
         )
         val record = Event(
             id = "x",
             title = "X",
-            date = "2026-10-01",
-            startMinutes = 540,
-            endMinutes = 600,
-            repeat = rule,
-            excludedDates = listOf("2026-11-01"),
+            start = IcsTimeValue.Floating(LocalDateTime(2026, 10, 1, 9, 0)),
+            end = IcsTimeValue.Floating(LocalDateTime(2026, 10, 1, 10, 0)),
+            recurrence = Recurrence(
+                rule = rule,
+                rdates = listOf(RecurrenceDate(IcsTimeValue.Date(LocalDate(2026, 11, 20)))),
+                exdates = listOf(IcsTimeValue.Date(LocalDate(2026, 11, 1))),
+            ),
         )
         assertTrue(record.occursOn(LocalDate(2026, 10, 1)))
         assertFalse(record.occursOn(LocalDate(2026, 11, 1)))
@@ -633,15 +655,16 @@ class RecurrenceTest {
         val event = Event(
             id = "extra",
             title = "Extra",
-            date = anchor.toString(),
-            startMinutes = 9 * 60,
-            endMinutes = 10 * 60,
+            start = IcsTimeValue.Floating(LocalDateTime(anchor, LocalTime(9, 0))),
+            end = IcsTimeValue.Floating(LocalDateTime(anchor, LocalTime(10, 0))),
             // The rule only fires on Tuesdays; the RDATE adds a Friday at the stored time.
-            repeat = RepeatRule(
-                RepeatFrequency.Weekly,
-                weekdays = listOf(1),
-                byHour = listOf(9, 17),
-                rDates = listOf("2026-10-30"),
+            recurrence = Recurrence(
+                rule = RepeatRule(
+                    RepeatFrequency.Weekly,
+                    byDay = days(1),
+                    byHour = listOf(9, 17),
+                ),
+                rdates = listOf(RecurrenceDate(IcsTimeValue.Date(LocalDate(2026, 10, 30)))),
             ),
         )
         assertEquals(
@@ -706,7 +729,7 @@ class RecurrenceTest {
             title = "Report",
             start = "2026-10-05",
             due = "2026-10-06",
-            repeat = RepeatRule(RepeatFrequency.Weekly, weekdays = listOf(0)),
+            repeat = RepeatRule(RepeatFrequency.Weekly, byDay = days(0)),
         )
         // The todo shows under its due date, one day after each Monday start.
         assertTrue(todo.occursOn(LocalDate(2026, 10, 6)))
@@ -722,7 +745,7 @@ class RecurrenceTest {
             id = "t2",
             title = "Chore",
             due = "2026-10-05",
-            repeat = RepeatRule(RepeatFrequency.Weekly, weekdays = listOf(0)),
+            repeat = RepeatRule(RepeatFrequency.Weekly, byDay = days(0)),
             excludedDates = listOf("2026-10-12"),
         )
         assertFalse(todo.occursOn(LocalDate(2026, 10, 12)))

@@ -155,8 +155,8 @@ internal fun icsParameterValue(value: String): String =
 data class ItipReply(
     /** UID of the series the reply refers to. */
     val uid: String,
-    /** Original `RECURRENCE-ID` date for a reply about one occurrence; null for the master. */
-    val recurrenceId: String? = null,
+    /** Original `RECURRENCE-ID` slot for a reply about one occurrence; null for the master. */
+    val recurrenceId: IcsTimeValue? = null,
     val organizer: String? = null,
     /** `SEQUENCE` of the copy the reply was produced from; 0 when the sender omitted it. */
     val sequence: Int = 0,
@@ -170,7 +170,7 @@ data class ItipReply(
 fun IcsImport.itipReply(): ItipReply? {
     if (method != ItipMethod.Reply) return null
     val event = events.firstOrNull { it.attendeeRaw.isNotEmpty() } ?: return null
-    val uid = event.seriesUid ?: event.icsUid ?: return null
+    val uid = event.icsUid ?: event.uid ?: return null
     val attendee = event.attendeeRaw.lastOrNull()?.let(IcsAttendee::parse) ?: return null
     return ItipReply(
         uid = uid,
@@ -236,9 +236,4 @@ fun List<Event>.applyingReply(reply: ItipReply, now: Instant = Clock.System.now(
  * `RECURRENCE-ID`, the series master otherwise.
  */
 private fun matchesReplyTarget(event: Event, reply: ItipReply): Boolean =
-    if (reply.recurrenceId != null) {
-        // The reply names one occurrence, so only its override record can carry the answer.
-        event.seriesUid == reply.uid && event.recurrenceId == reply.recurrenceId
-    } else {
-        event.uid == reply.uid && event.recurrenceId == null
-    }
+    event.uid == reply.uid && event.recurrenceId == reply.recurrenceId

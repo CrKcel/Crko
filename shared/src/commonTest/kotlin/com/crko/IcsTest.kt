@@ -6,6 +6,10 @@ import com.crko.domain.EventStatus
 import com.crko.domain.EventTransparency
 import com.crko.domain.IcsWarning
 import com.crko.domain.MaxEndMinutes
+import com.crko.domain.OrdinalWeekday
+import com.crko.domain.Recurrence
+import com.crko.domain.RecurrenceDate
+import com.crko.domain.RecurrenceRange
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.RepeatRule
@@ -17,6 +21,7 @@ import com.crko.domain.importCalendar
 import com.crko.domain.importIcs
 import com.crko.domain.localEnd
 import com.crko.domain.localStart
+import com.crko.domain.occurrenceDurationOn
 import com.crko.domain.occurrenceRangesOn
 import com.crko.domain.occursOn
 import com.crko.domain.nextOccurrenceDate
@@ -80,8 +85,13 @@ class IcsTest {
             listOf(
                 baseEvent.copy(
                     note = "Line one\nLine two; with, comma",
-                    repeat = RepeatRule(RepeatFrequency.Custom, listOf(0, 2, 4)),
-                    excludedDates = listOf("2026-11-02", "2026-10-28"),
+                    recurrence = Recurrence(
+                        rule = RepeatRule(
+                            RepeatFrequency.Weekly,
+                            byDay = listOf(0, 2, 4).map { OrdinalWeekday(0, it) },
+                        ),
+                        exdates = listOf("2026-11-02", "2026-10-28").map { IcsTimeValue.Date(LocalDate.parse(it)) },
+                    ),
                     icsUid = "external-1",
                 ),
             ),
@@ -171,7 +181,13 @@ class IcsTest {
             """,
         )
         val event = importIcs(text, utc, "Untitled").single()
-        assertEquals(RepeatRule(RepeatFrequency.Custom, listOf(1, 3)), event.repeat)
+        assertEquals(
+            RepeatRule(
+                RepeatFrequency.Weekly,
+                byDay = listOf(OrdinalWeekday(0, 1), OrdinalWeekday(0, 3)),
+            ),
+            event.repeat,
+        )
         assertEquals(listOf("2026-10-29"), event.excludedDates)
     }
 
@@ -211,7 +227,10 @@ class IcsTest {
         )
         val event = importIcs(text, utc, "Untitled").single()
         assertEquals(2, event.repeat?.interval)
-        assertEquals("2026-10-31T09:00:00Z", event.repeat?.until)
+        assertEquals(
+            IcsTimeValue.Utc(kotlin.time.Instant.parse("2026-10-31T09:00:00Z")),
+            event.repeat?.until,
+        )
         assertTrue(event.occursOn(LocalDate(2026, 10, 27)))
         assertTrue(event.occursOn(LocalDate(2026, 10, 29)))
         assertTrue(event.occursOn(LocalDate(2026, 10, 31)))
@@ -286,11 +305,16 @@ class IcsTest {
         assertEquals("Daily (moved)", events[1].title)
         assertEquals("2026-10-28", events[1].date)
         assertEquals(660, events[1].startMinutes)
-        assertEquals("series-2#override-2026-10-28", events[1].icsUid)
+        // The exception shares the master's UID and is distinguished by its typed slot.
+        assertEquals("series-2", events[1].icsUid)
+        assertEquals(
+            IcsTimeValue.Floating(LocalDateTime(2026, 10, 28, 9, 0)),
+            events[1].recurrenceId,
+        )
     }
 
     @Test
-    fun importSkipsCancelledEventsButKeepsTheSkipOnTheSeries() {
+    fun aCancelledExceptionIsKeptWithItsStatusAndSkipsTheSlot() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -308,8 +332,12 @@ class IcsTest {
             """,
         )
         val events = importIcs(text, utc, "Untitled")
-        assertEquals(1, events.size)
-        assertEquals(listOf("2026-10-28"), events.single().excludedDates)
+        assertEquals(2, events.size)
+        val master = events.first { it.recurrenceId == null }
+        assertEquals(listOf("2026-10-28"), master.excludedDates)
+        val cancelled = events.first { it.recurrenceId != null }
+        assertEquals(EventStatus.Cancelled, cancelled.status)
+        assertEquals(master.icsUid, cancelled.icsUid)
     }
 
     @Test
@@ -351,8 +379,10 @@ class IcsTest {
     fun exportImportRoundTripPreservesEventsAndSeries() {
         val original = listOf(
             baseEvent.copy(
-                repeat = RepeatRule(RepeatFrequency.Weekly),
-                excludedDates = listOf("2026-11-03"),
+                recurrence = Recurrence(
+                    rule = RepeatRule(RepeatFrequency.Weekly),
+                    exdates = listOf(IcsTimeValue.Floating(LocalDateTime(2026, 11, 3, 9, 0))),
+                ),
                 icsUid = "uid-1",
             ),
             baseEvent.copy(
@@ -361,7 +391,12 @@ class IcsTest {
                 start = IcsTimeValue.Floating(LocalDateTime(2026, 10, 28, 0, 0)),
                 end = IcsTimeValue.Floating(LocalDateTime(2026, 10, 28, 23, 59)),
                 note = "first\nsecond\\third",
-                repeat = RepeatRule(RepeatFrequency.Custom, listOf(0, 3, 5)),
+                recurrence = Recurrence(
+                    rule = RepeatRule(
+                        RepeatFrequency.Weekly,
+                        byDay = listOf(0, 3, 5).map { OrdinalWeekday(0, it) },
+                    ),
+                ),
                 icsUid = null,
             ),
         )
@@ -514,7 +549,7 @@ class IcsTest {
     }
 
     @Test
-    fun rdateWithoutRruleBecomesOneOffEventsWithTheSameDuration() {
+    fun rdateWithoutRruleStaysAnAddedOccurrenceWithTheSeriesDuration() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -526,12 +561,13 @@ class IcsTest {
             END:VEVENT
             """,
         )
-        val events = importIcs(text, utc, "Untitled")
-        assertEquals(2, events.size)
-        val extra = events.first { it.date == "2026-11-05" }
-        assertEquals(14 * 60, extra.startMinutes)
-        assertEquals(15 * 60 + 30, extra.endMinutes)
-        assertEquals("rdate-only#rdate-0", extra.icsUid)
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals(
+            IcsTimeValue.Floating(LocalDateTime(2026, 11, 5, 14, 0)),
+            event.recurrence?.rdates?.single()?.value,
+        )
+        assertTrue(event.occursOn(LocalDate(2026, 11, 5)))
+        assertEquals(90, event.occurrenceDurationOn(LocalDate(2026, 11, 5)).inWholeMinutes)
     }
 
     @Test
@@ -549,7 +585,10 @@ class IcsTest {
             """,
         )
         val event = importIcs(text, utc, "Untitled").single()
-        assertEquals(listOf("2026-11-05"), event.repeat?.rDates)
+        assertEquals(
+            listOf(IcsTimeValue.Floating(LocalDateTime(2026, 11, 5, 9, 0))),
+            event.recurrence?.rdates?.map { it.value },
+        )
         assertTrue(event.occursOn(LocalDate(2026, 11, 5)))
         val exported = exportIcs(listOf(event), now)
         assertTrue(exported.contains("RDATE:20261105T090000\r\n"), exported)
@@ -842,7 +881,7 @@ class IcsTest {
     }
 
     @Test
-    fun thisAndFutureOverrideSplitsTheSeriesAndRoundTrips() {
+    fun thisAndFutureStaysAnExceptionAndRoundTripsItsRange() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -864,32 +903,33 @@ class IcsTest {
         )
         val events = importIcs(text, utc, "Untitled")
         assertEquals(2, events.size)
-        val oldSeries = events.first { it.title == "Daily" }
-        assertEquals("2026-10-29", oldSeries.repeat?.until)
-        assertTrue(oldSeries.occursOn(LocalDate(2026, 10, 29)))
-        assertFalse(oldSeries.occursOn(LocalDate(2026, 10, 30)))
+        val master = events.first { it.title == "Daily" }
+        assertEquals(10, master.repeat?.count)
+        assertTrue(master.occursOn(LocalDate(2026, 10, 29)))
+        assertFalse(master.occursOn(LocalDate(2026, 10, 30)))
         val future = events.first { it.title == "Later" }
         assertTrue(future.thisAndFuture)
         assertEquals("2026-10-30", future.date)
         assertEquals(11 * 60, future.startMinutes)
-        assertEquals("split", future.seriesUid)
-        assertTrue(future.occursOn(LocalDate(2026, 11, 5)))
+        assertEquals(master.uid, future.icsUid)
+        assertEquals(
+            IcsTimeValue.Floating(LocalDateTime(2026, 10, 30, 9, 0)),
+            future.recurrenceId,
+        )
 
         val exported = exportIcs(events, now)
-        // Split segments are exported as two independent series, so every RECURRENCE-ID in the
-        // file belongs to a master that still contains that instance.
-        assertFalse(exported.contains("RANGE=THISANDFUTURE"), exported)
-        assertTrue(exported.contains("UID:split#future-2026-10-30\r\n"), exported)
+        // The range is written back instead of being split into a synthetic second series.
+        assertTrue(exported.contains("RECURRENCE-ID;RANGE=THISANDFUTURE:20261030T090000"), exported)
+        assertFalse(exported.contains("#future-"), exported)
         val reparsed = importIcs(exported, utc, "Untitled")
         assertEquals(2, reparsed.size)
         val later = reparsed.first { it.title == "Later" }
-        assertTrue(later.repeat != null)
-        assertFalse(later.thisAndFuture)
-        assertTrue(later.occursOn(LocalDate(2026, 11, 5)))
+        assertTrue(later.thisAndFuture)
+        assertEquals(master.uid, later.icsUid)
     }
 
     @Test
-    fun thisAndFutureWithoutOwnRuleKeepsTheOriginalCount() {
+    fun thisAndFutureWithoutOwnRuleKeepsTheMasterCount() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -908,14 +948,17 @@ class IcsTest {
             END:VEVENT
             """,
         )
-        val future = importIcs(text, utc, "Untitled").first { it.title == "Later" }
-        assertEquals(7, future.repeat?.count)
-        assertTrue(future.occursOn(LocalDate(2026, 11, 5)))
-        assertFalse(future.occursOn(LocalDate(2026, 11, 6)))
+        val events = importIcs(text, utc, "Untitled")
+        val master = events.first { it.title == "Daily" }
+        val future = events.first { it.title == "Later" }
+        assertEquals(10, master.repeat?.count)
+        assertTrue(future.thisAndFuture)
+        // The master still describes every instance; the exception replaces its own slot only.
+        assertTrue(master.occursOn(LocalDate(2026, 11, 5)))
     }
 
     @Test
-    fun thisAndFutureKeepsExdatesAfterTheSplit() {
+    fun thisAndFutureKeepsTheMasterExdates() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -935,13 +978,14 @@ class IcsTest {
             END:VEVENT
             """,
         )
-        val future = importIcs(text, utc, "Untitled").first { it.title == "Later" }
-        assertFalse(future.occursOn(LocalDate(2026, 11, 1)))
-        assertTrue(future.occursOn(LocalDate(2026, 11, 2)))
+        val events = importIcs(text, utc, "Untitled")
+        val master = events.first { it.title == "Daily" }
+        assertFalse(master.occursOn(LocalDate(2026, 11, 1)))
+        assertTrue(master.occursOn(LocalDate(2026, 11, 2)))
     }
 
     @Test
-    fun exceptionAfterThisAndFutureBelongsToTheFutureSeries() {
+    fun exceptionAfterThisAndFutureSharesTheSameUid() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -968,17 +1012,19 @@ class IcsTest {
             """,
         )
         val events = importIcs(text, utc, "Untitled")
+        val master = events.first { it.title == "Daily" }
         val future = events.first { it.title == "Later" }
         val moved = events.first { it.title == "Moved" }
-        assertEquals(future.uid, moved.seriesUid)
-        assertTrue("2026-11-02" in future.excludedDates)
-        assertTrue(events.none { it.title == "Later" && it.occursOn(LocalDate(2026, 11, 2)) })
+        // Master, THISANDFUTURE exception and ordinary exception all share the RFC UID.
+        assertEquals(master.uid, future.icsUid)
+        assertEquals(master.uid, moved.icsUid)
+        assertTrue("2026-11-02" in master.excludedDates)
+        assertFalse(master.occursOn(LocalDate(2026, 11, 2)))
         assertEquals(1, events.count { it.occursOn(LocalDate(2026, 11, 3)) && it.title == "Moved" })
-        assertEquals(future.uid, moved.uid?.substringBefore("#override-"))
     }
 
     @Test
-    fun cancelledThisAndFutureCapsTheFutureSegment() {
+    fun cancelledThisAndFutureIsKeptAsACancelledException() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -1002,9 +1048,13 @@ class IcsTest {
             END:VEVENT
             """,
         )
-        val future = importIcs(text, utc, "Untitled").first { it.title == "Later" }
-        assertTrue(future.occursOn(LocalDate(2026, 11, 2)))
-        assertFalse(future.occursOn(LocalDate(2026, 11, 3)))
+        val events = importIcs(text, utc, "Untitled")
+        val master = events.first { it.title == "Daily" }
+        val cancelled = events.first { it.status == EventStatus.Cancelled }
+        assertEquals(RecurrenceRange.ThisAndFuture, cancelled.recurrenceRange)
+        // The cancelled copy keeps its SEQUENCE-carrying identity, and the master skips its slot.
+        assertFalse(master.occursOn(LocalDate(2026, 11, 3)))
+        assertTrue(master.occursOn(LocalDate(2026, 11, 2)))
     }
 
     @Test
@@ -1022,13 +1072,10 @@ class IcsTest {
         val exception = Event(
             id = "all-day-override",
             title = "Holiday moved",
-            date = "2026-10-28",
-            startMinutes = 0,
-            endMinutes = 0,
-            allDay = true,
-            seriesUid = "all-day-series",
-            recurrenceId = "2026-11-03",
-            icsUid = "all-day-series#override",
+            start = IcsTimeValue.Date(LocalDate(2026, 10, 28)),
+            end = IcsTimeValue.Date(LocalDate(2026, 10, 29)),
+            icsUid = "all-day-series",
+            recurrenceId = IcsTimeValue.Date(LocalDate(2026, 11, 3)),
         )
         val exported = exportIcs(listOf(series, exception), now)
         assertTrue(exported.contains("RECURRENCE-ID;VALUE=DATE:20261103\r\n"), exported)
@@ -1077,18 +1124,25 @@ class IcsTest {
             END:VEVENT
             """,
         )
-        val events = importIcs(text, utc, "Untitled")
-        assertEquals(3, events.size)
-        val hour = events.first { it.date == "2026-11-05" }
-        assertEquals(14 * 60, hour.localStart(utc).hour * 60 + hour.localStart(utc).minute)
-        assertEquals(15 * 60, hour.localEnd(utc)?.let { it.hour * 60 + it.minute })
-        val threeHours = events.first { it.date == "2026-11-06" }
-        assertEquals(9 * 60, threeHours.localStart(utc).hour * 60 + threeHours.localStart(utc).minute)
-        assertEquals(12 * 60, threeHours.localEnd(utc)?.let { it.hour * 60 + it.minute })
+        val event = importIcs(text, utc, "Untitled").single()
+        val rdates = event.recurrence?.rdates.orEmpty()
+        assertEquals(2, rdates.size)
+        assertEquals(
+            IcsTimeValue.Utc(kotlin.time.Instant.parse("2026-11-05T14:00:00Z")),
+            rdates[0].value,
+        )
+        assertEquals(60, rdates[0].duration?.inWholeMinutes)
+        assertEquals(
+            IcsTimeValue.Utc(kotlin.time.Instant.parse("2026-11-06T09:00:00Z")),
+            rdates[1].value,
+        )
+        assertEquals(180, rdates[1].duration?.inWholeMinutes)
+        assertEquals(60, event.occurrenceDurationOn(LocalDate(2026, 11, 5)).inWholeMinutes)
+        assertEquals(180, event.occurrenceDurationOn(LocalDate(2026, 11, 6)).inWholeMinutes)
     }
 
     @Test
-    fun recurringRdatePeriodWithAnotherLengthBecomesItsOwnEvent() {
+    fun recurringRdatePeriodKeepsItsOwnLength() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -1101,14 +1155,12 @@ class IcsTest {
             END:VEVENT
             """,
         )
-        val events = importIcs(text, utc, "Untitled")
-        assertEquals(2, events.size)
-        val series = events.first { it.repeat != null }
-        assertTrue(series.repeat?.rDates.isNullOrEmpty(), series.repeat?.rDates.toString())
-        val extra = events.first { it.date == "2026-11-05" }
-        assertNull(extra.repeat)
-        assertEquals(14 * 60, extra.localStart(utc).hour * 60 + extra.localStart(utc).minute)
-        assertEquals(14 * 60 + 30, extra.localEnd(utc)?.let { it.hour * 60 + it.minute })
+        val series = importIcs(text, utc, "Untitled").single()
+        val period = series.recurrence?.rdates?.single()
+        assertNotNull(period)
+        assertEquals(IcsTimeValue.Utc(kotlin.time.Instant.parse("2026-11-05T14:00:00Z")), period.value)
+        assertEquals(30, period.duration?.inWholeMinutes)
+        assertEquals(30, series.occurrenceDurationOn(LocalDate(2026, 11, 5)).inWholeMinutes)
     }
 
     @Test
@@ -1133,15 +1185,13 @@ class IcsTest {
         val event = Event(
             id = "all-day-rule",
             title = "Weekly",
-            date = "2026-10-27",
-            startMinutes = 0,
-            endMinutes = 0,
-            allDay = true,
-            repeat = RepeatRule(
-                frequency = RepeatFrequency.Weekly,
-                rDates = listOf("2026-11-05"),
+            start = IcsTimeValue.Date(LocalDate(2026, 10, 27)),
+            end = IcsTimeValue.Date(LocalDate(2026, 10, 28)),
+            recurrence = Recurrence(
+                rule = RepeatRule(RepeatFrequency.Weekly),
+                rdates = listOf(RecurrenceDate(IcsTimeValue.Date(LocalDate(2026, 11, 5)))),
+                exdates = listOf(IcsTimeValue.Date(LocalDate(2026, 11, 3))),
             ),
-            excludedDates = listOf("2026-11-03"),
         )
         val text = exportIcs(listOf(event), now)
         assertTrue(text.contains("RDATE;VALUE=DATE:20261105\r\n"), text)
@@ -1162,7 +1212,7 @@ class IcsTest {
             """,
         )
         val event = importIcs(text, utc, "Untitled").single()
-        assertEquals("2026-10-27T09:00", event.repeat?.until)
+        assertEquals(IcsTimeValue.Floating(LocalDateTime(2026, 10, 27, 9, 0)), event.repeat?.until)
         assertTrue(event.occursOn(LocalDate(2026, 10, 26)))
         assertFalse(event.occursOn(LocalDate(2026, 10, 27)))
         val exported = exportIcs(listOf(event), now)
@@ -1340,6 +1390,61 @@ class IcsTest {
     }
 
     @Test
+    fun aTimedExdateOnlySkipsThatStartOfTheDay() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:twice-daily-exdate
+            SUMMARY:Rounds
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            RRULE:FREQ=DAILY;BYHOUR=9,17
+            EXDATE:20261028T170000
+            END:VEVENT
+            """,
+        )
+        val event = importIcs(text, utc, "Untitled").single()
+        assertEquals(
+            listOf(IcsTimeValue.Floating(LocalDateTime(2026, 10, 28, 17, 0))),
+            event.recurrence?.exdates,
+        )
+        // The 17:00 instance is gone, the 09:00 one on the same day stays.
+        assertEquals(listOf(9 * 60 to 10 * 60), event.occurrenceRangesOn(LocalDate(2026, 10, 28)))
+        assertTrue(event.occursOn(LocalDate(2026, 10, 28)))
+        assertTrue(event.occursOn(LocalDate(2026, 10, 29)))
+        val exported = exportIcs(listOf(event), now)
+        assertTrue(exported.contains("EXDATE:20261028T170000\r\n"), exported)
+    }
+
+    @Test
+    fun exportsNeverWriteSyntheticSeriesUids() {
+        val text = calendar(
+            """
+            BEGIN:VEVENT
+            UID:native-series
+            SUMMARY:Daily
+            DTSTART:20261027T090000
+            DTEND:20261027T100000
+            RRULE:FREQ=DAILY;COUNT=3
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:native-series
+            RECURRENCE-ID:20261028T090000
+            SUMMARY:Moved
+            DTSTART:20261028T110000
+            DTEND:20261028T120000
+            END:VEVENT
+            """,
+        )
+        val exported = exportIcs(importIcs(text, utc, "Untitled"), now)
+        listOf("#override-", "#future-", "#prior-").forEach { marker ->
+            assertFalse(exported.contains(marker), "found $marker\n$exported")
+        }
+        assertEquals(2, exported.split("\r\n").count { it == "UID:native-series" })
+        assertTrue(exported.contains("RECURRENCE-ID:20261028T090000\r\n"), exported)
+    }
+
+    @Test
     fun exportWritesTheCalendarName() {
         val exported = exportCalendar(listOf(baseEvent), emptyList(), now, calendarName = "Crko")
         assertTrue(exported.contains("X-WR-CALNAME:Crko\r\n"), exported)
@@ -1361,7 +1466,7 @@ class IcsTest {
         val imported = importCalendar(text, utc, "Untitled")
         val event = imported.events.single()
         assertTrue(IcsWarning.UnsupportedRecurrence in imported.warnings, imported.warnings.toString())
-        assertEquals(0, event.repeat?.byDay?.size)
+        assertEquals(listOf(OrdinalWeekday(0, 0)), event.repeat?.byDay)
         val exported = exportIcs(listOf(event), now)
         // RFC 5545 gives an ordinal no meaning for WEEKLY, and other clients reject the rule.
         assertTrue(exported.contains("RRULE:FREQ=WEEKLY;BYDAY=MO\r\n"), exported)
@@ -1560,7 +1665,7 @@ class IcsTest {
     }
 
     @Test
-    fun twoChangesOnTheSameOccurrenceDateKeepDistinctStorageKeys() {
+    fun twoChangesOnOneDateAreDistinguishedByTheirFullRecurrenceId() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -1589,16 +1694,15 @@ class IcsTest {
         val imported = importCalendar(text, utc, "Untitled")
         val events = imported.events
         assertEquals(3, events.size)
-        // Both exceptions collapse onto one date, so the keys have to differ or the importer's
-        // de-duplication drops the second record.
-        val keys = events.map { it.icsUid }
-        assertEquals(keys.size, keys.distinct().size, keys.toString())
-        assertTrue(IcsWarning.AmbiguousRecurrenceId in imported.warnings, imported.warnings.toString())
-        // The first key stays in the historic shape so already stored data keeps matching on re-import.
-        assertEquals("twice-daily#override-2026-10-29", events[1].icsUid)
-        assertEquals("twice-daily#override-2026-10-29-T1300", events[2].icsUid)
+        // Both exceptions share the UID; their full RECURRENCE-ID values keep them apart.
+        assertEquals(setOf("twice-daily"), events.mapNotNull { it.icsUid }.toSet())
+        val slots = events.mapNotNull { it.recurrenceId }
+        assertEquals(2, slots.size)
+        assertEquals(slots.size, slots.distinct().size, slots.toString())
+        assertFalse(IcsWarning.AmbiguousRecurrenceId in imported.warnings, imported.warnings.toString())
         val reparsed = importCalendar(exportIcs(events, now), utc, "Untitled")
         assertEquals(3, reparsed.events.size)
+        assertEquals(2, reparsed.events.mapNotNull { it.recurrenceId }.distinct().size)
     }
 
     @Test
@@ -1671,8 +1775,11 @@ class IcsTest {
         val todo = importCalendar(text, utc, "Untitled").todos.single()
         val rule = todo.repeat
         assertEquals(RepeatFrequency.Weekly, rule?.frequency)
-        assertEquals(listOf(0), rule?.weekdays)
-        assertEquals(listOf("2026-12-24"), rule?.rDates)
+        assertEquals(listOf(OrdinalWeekday(0, 0)), rule?.byDay)
+        assertEquals(
+            listOf(IcsTimeValue.Date(LocalDate(2026, 12, 24))),
+            todo.rDates.map { it.value },
+        )
         assertEquals(listOf("2026-10-12"), todo.excludedDates)
         // The series expands under its due date, one day after each Monday start; the excluded
         // Monday disappears and the RDATE Thursday appears.
@@ -1689,7 +1796,7 @@ class IcsTest {
     }
 
     @Test
-    fun hourlyRecurrenceIsImportedAsOneEventWithAWarning() {
+    fun unsupportedFrequencyKeepsItsRawRuleForExport() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -1703,7 +1810,10 @@ class IcsTest {
         )
         val imported = importCalendar(text, utc, "Untitled")
         assertTrue(IcsWarning.UnsupportedRecurrence in imported.warnings, imported.warnings.toString())
-        assertNull(imported.events.single().repeat)
+        val event = imported.events.single()
+        assertNull(event.repeat)
+        assertEquals("FREQ=HOURLY;COUNT=3", event.recurrence?.rawRule)
+        assertTrue(exportIcs(imported.events, now).contains("RRULE:FREQ=HOURLY;COUNT=3"))
     }
 
     @Test
@@ -1789,7 +1899,7 @@ class IcsTest {
     }
 
     @Test
-    fun thisAndPriorSplitsTheSeriesAndKeepsTheFutureMaster() {
+    fun thisAndPriorIsKeptAsACompatibilityException() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -1808,21 +1918,27 @@ class IcsTest {
             END:VEVENT
             """,
         )
-        val events = importCalendar(text, utc, "Untitled").events
+        val imported = importCalendar(text, utc, "Untitled")
+        val events = imported.events
         assertEquals(2, events.size, events.toString())
         val past = events.first { it.title == "Past" }
-        assertEquals("2026-10-27", past.date)
-        assertEquals("2026-10-29", past.repeat?.until)
-        assertTrue(past.occursOn(LocalDate(2026, 10, 28)))
-        val future = events.first { it.title == "Base" }
-        assertEquals("2026-10-30", future.date)
-        assertEquals(2, future.repeat?.count)
-        assertTrue(future.occursOn(LocalDate(2026, 10, 31)))
-        assertFalse(future.occursOn(LocalDate(2026, 10, 29)))
+        assertEquals(RecurrenceRange.ThisAndPrior, past.recurrenceRange)
+        assertEquals(
+            IcsTimeValue.Floating(LocalDateTime(2026, 10, 29, 9, 0)),
+            past.recurrenceId,
+        )
+        // THISANDPRIOR is not RFC 5545, so the import says so while keeping the range for export.
+        assertTrue(IcsWarning.UnsupportedRecurrence in imported.warnings, imported.warnings.toString())
+        val master = events.first { it.title == "Base" }
+        assertTrue(master.occursOn(LocalDate(2026, 10, 31)))
+        assertFalse(master.occursOn(LocalDate(2026, 10, 29)))
+        assertTrue(
+            exportIcs(events, now).contains("RECURRENCE-ID;RANGE=THISANDPRIOR:20261029T090000"),
+        )
     }
 
     @Test
-    fun thisAndPriorSplitKeepsTimeZonesForTheNextExport() {
+    fun thisAndPriorExceptionKeepsItsTimeZoneForTheNextExport() {
         val text = calendar(
             """
             BEGIN:VEVENT
@@ -1843,23 +1959,22 @@ class IcsTest {
         )
         val events = importCalendar(text, utc, "Untitled").events
         val past = events.first { it.title == "Past" }
-        val future = events.first { it.title == "Base" }
-        // Clearing the zone made the next export fall back to floating time; both segments must
-        // keep the source text (with the anchor's new date) and the zone they were read in.
+        val master = events.first { it.title == "Base" }
+        // The exception and the master keep the zone they were read in.
         assertEquals("Asia/Shanghai", past.timeZoneId)
-        assertEquals("20261027T100000", past.sourceStart)
-        assertEquals("20261027T110000", past.sourceEnd)
-        assertEquals("Asia/Shanghai", future.timeZoneId)
-        assertEquals("20261030T090000", future.sourceStart)
+        assertEquals("20261029T100000", past.sourceStart)
+        assertEquals("20261029T110000", past.sourceEnd)
+        assertEquals("Asia/Shanghai", master.timeZoneId)
+        assertEquals("20261027T090000", master.sourceStart)
         val exported = exportIcs(events, now)
-        assertTrue(exported.contains("DTSTART;TZID=Asia/Shanghai:20261027T100000\r\n"), exported)
-        assertTrue(exported.contains("DTSTART;TZID=Asia/Shanghai:20261030T090000\r\n"), exported)
-        // The round trip keeps the wall clock of both segments in the same zone.
+        assertTrue(exported.contains("DTSTART;TZID=Asia/Shanghai:20261029T100000\r\n"), exported)
+        assertTrue(exported.contains("DTSTART;TZID=Asia/Shanghai:20261027T090000\r\n"), exported)
+        // The round trip keeps the wall clock of both records in the same zone.
         val back = importCalendar(exported, utc, "Untitled").events
         assertEquals(past.date to past.startMinutes, back.first { it.title == "Past" }.let { it.date to it.startMinutes })
-        assertEquals(future.date to future.startMinutes, back.first { it.title == "Base" }.let { it.date to it.startMinutes })
-        assertEquals("20261027T100000", back.first { it.title == "Past" }.sourceStart)
-        assertEquals("20261030T090000", back.first { it.title == "Base" }.sourceStart)
+        assertEquals(master.date to master.startMinutes, back.first { it.title == "Base" }.let { it.date to it.startMinutes })
+        assertEquals("20261029T100000", back.first { it.title == "Past" }.sourceStart)
+        assertEquals("20261027T090000", back.first { it.title == "Base" }.sourceStart)
     }
 
     @Test

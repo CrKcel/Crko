@@ -8,15 +8,19 @@ import com.crko.domain.Event
 import com.crko.domain.Journal
 import com.crko.domain.LegacyAppState
 import com.crko.domain.LegacyEvent
+import com.crko.domain.LegacyTodo
 import com.crko.domain.PersistedSettings
 import com.crko.domain.Todo
 import com.crko.domain.toCurrentEvent
+import com.crko.domain.toCurrentTodo
 import com.crko.domain.today
 import com.crko.isDebugBuild
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /**
  * Minimal key-value persistence. Reads are synchronous so the first frame shows restored data.
@@ -178,10 +182,15 @@ internal fun decodeState(raw: String): AppState = decodeStateWithReport(raw).sta
  * stage 1 is decoded through [LegacyEvent] and migrated in place.
  */
 internal fun decodeStateWithReport(raw: String): StateDecode {
-    runCatching { AppJson.decodeFromString(AppState.serializer(), raw) }.getOrNull()
-        ?.let { return StateDecode(it, LoadDamage.None) }
     val root = runCatching { AppJson.parseToJsonElement(raw) }.getOrNull() as? JsonObject
         ?: return StateDecode(AppState(), LoadDamage(unreadable = true))
+    val version = (root["schemaVersion"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
+    // Only a payload already in the current layout may be decoded directly; an older one would
+    // silently lose the fields this version moved into `recurrence` under `ignoreUnknownKeys`.
+    if (version == CurrentSchemaVersion) {
+        runCatching { AppJson.decodeFromString(AppState.serializer(), raw) }.getOrNull()
+            ?.let { return StateDecode(it, LoadDamage.None) }
+    }
     runCatching {
         AppJson.decodeFromJsonElement(LegacyAppState.serializer(), root)
     }.getOrNull()?.let { legacy ->
@@ -189,7 +198,7 @@ internal fun decodeStateWithReport(raw: String): StateDecode {
         return StateDecode(
             state = AppState(
                 events = events,
-                todos = legacy.todos,
+                todos = legacy.todos.map { it.toCurrentTodo() },
                 journals = legacy.journals,
                 subscriptions = legacy.subscriptions,
                 busyPeriods = legacy.busyPeriods,
@@ -199,7 +208,7 @@ internal fun decodeStateWithReport(raw: String): StateDecode {
         )
     }
     val (events, droppedEvents) = decodeEventRecords(root["events"])
-    val (todos, droppedTodos) = decodeRecords(root["todos"], Todo.serializer())
+    val (todos, droppedTodos) = decodeTodoRecords(root["todos"])
     val (journals, droppedJournals) = decodeRecords(root["journals"], Journal.serializer())
     return StateDecode(
         AppState(events = events, todos = todos, journals = journals),
@@ -207,7 +216,7 @@ internal fun decodeStateWithReport(raw: String): StateDecode {
     )
 }
 
-/** One event at a time: the current shape first, then the pre-stage-1 shape. */
+/** One event at a time: the current shape first, then either pre-stage-2 layout. */
 private fun decodeEventRecords(element: JsonElement?): Pair<List<Event>, Int> {
     if (element == null) return emptyList<Event>() to 0
     val array = element as? JsonArray ?: return emptyList<Event>() to 1
@@ -216,6 +225,21 @@ private fun decodeEventRecords(element: JsonElement?): Pair<List<Event>, Int> {
         runCatching { AppJson.decodeFromJsonElement(Event.serializer(), item) }.getOrNull()
             ?: runCatching {
                 AppJson.decodeFromJsonElement(LegacyEvent.serializer(), item).toCurrentEvent()
+            }.getOrNull()
+                .also { if (it == null) dropped++ }
+    }
+    return kept to dropped
+}
+
+/** One todo at a time: the current shape first, then the stage-1 shape with its old rule. */
+private fun decodeTodoRecords(element: JsonElement?): Pair<List<Todo>, Int> {
+    if (element == null) return emptyList<Todo>() to 0
+    val array = element as? JsonArray ?: return emptyList<Todo>() to 1
+    var dropped = 0
+    val kept = array.mapNotNull { item ->
+        runCatching { AppJson.decodeFromJsonElement(Todo.serializer(), item) }.getOrNull()
+            ?: runCatching {
+                AppJson.decodeFromJsonElement(LegacyTodo.serializer(), item).toCurrentTodo()
             }.getOrNull()
                 .also { if (it == null) dropped++ }
     }

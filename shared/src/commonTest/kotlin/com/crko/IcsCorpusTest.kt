@@ -222,7 +222,8 @@ class IcsCorpusTest {
             "DTSTART;TZID=America/New_York:20260301T090000",
             "DTSTART;TZID=Europe/Berlin:20261027T090000",
             "DTSTART;TZID=Custom/Plus3:20261027T090000",
-            "RDATE:20261105T090000",
+            "RDATE;TZID=Europe/Berlin:20261105T140000",
+            "RDATE;VALUE=PERIOD:20261105T140000Z/PT1H",
             "EXDATE:20261103T090000",
             "RRULE:FREQ=YEARLY;BYDAY=MO;BYWEEKNO=1",
             "RRULE:FREQ=DAILY;BYHOUR=9,17;BYMINUTE=0",
@@ -237,7 +238,7 @@ class IcsCorpusTest {
     private fun signature(imported: com.crko.domain.IcsImport): String = buildString {
         append("E:")
         imported.events
-            .map { "${it.title}|${it.start}|${it.end}|${it.recurrenceId}|${it.repeat?.frequency}|${it.repeat?.count}|${it.repeat?.until}|${it.excludedDates}" }
+            .map { "${it.title}|${it.start}|${it.end}|${it.recurrenceId}|${it.repeat?.frequency}|${it.repeat?.count}|${it.repeat?.until}|${it.recurrence?.rdates}|${it.recurrence?.exdates}" }
             .sorted()
             .forEach { append(it).append(';') }
         append("|T:")

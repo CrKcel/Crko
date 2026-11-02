@@ -30,6 +30,13 @@ internal fun compactIcsLocal(value: LocalDateTime): String = buildString {
     append(value.second.toString().padStart(2, '0'))
 }
 
+/** Builds a stage-2 recurrence set from the pre-stage-2 rule and date-only exclusions. */
+internal fun legacyRecurrence(rule: RepeatRule?, excludedDates: List<String>): Recurrence? {
+    val exdates = excludedDates.mapNotNull { text -> parseStoredDate(text)?.let(IcsTimeValue::Date) }
+    if (rule == null && exdates.isEmpty()) return null
+    return Recurrence(rule = rule, exdates = exdates)
+}
+
 /** Converts the old device-local start fields into an RFC time value. */
 internal fun legacyIcsTimeValue(
     date: String,

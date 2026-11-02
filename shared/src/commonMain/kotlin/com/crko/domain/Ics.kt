@@ -8,6 +8,7 @@ import kotlinx.datetime.number
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
@@ -443,7 +444,7 @@ fun exportItipReply(
     line("CALSCALE:GREGORIAN")
     line("METHOD:REPLY")
     line("BEGIN:VEVENT")
-    val uid = event.seriesUid ?: event.uid ?: "crko-reply@local"
+    val uid = event.uid ?: "crko-reply@local"
     line("UID:${escapeText(uid)}")
     line("DTSTAMP:${formatUtc(parseInstant(event.dtStamp) ?: now)}")
     if (event.sequence > 0) line("SEQUENCE:${event.sequence}")
@@ -454,11 +455,7 @@ fun exportItipReply(
         event.organizer?.let { if (it.isNotBlank()) line("ORGANIZER:${sanitizeUriValue(it)}") }
     }
     line(attendee.toLine())
-    event.recurrenceId?.let { recurrenceId ->
-        parseDateText(recurrenceId)?.let { date ->
-            appendTimeLine("RECURRENCE-ID", event.start.withWallDate(event.wallDateFor(date)))
-        }
-    }
+    event.recurrenceId?.let { appendTimeLine("RECURRENCE-ID", it) }
     appendTimeLine("DTSTART", event.start)
     line("END:VEVENT")
     line("END:VCALENDAR")
@@ -470,18 +467,7 @@ private fun StringBuilder.line(value: String) {
 }
 
 private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, index: Int, now: Instant) {
-    // A THISANDFUTURE future segment is exported as its own series. Keeping RECURRENCE-ID together
-    // with a truncated master would make the id point at an instance the master no longer contains.
-    val series = if (event.thisAndFuture) {
-        null
-    } else {
-        event.seriesUid?.let { uid -> allEvents.firstOrNull { it.uid == uid } }
-    }
-    val uid = if (event.thisAndFuture) {
-        event.uid ?: "crko-${index + 1}@local"
-    } else {
-        series?.uid ?: event.uid ?: "crko-${index + 1}@local"
-    }
+    val uid = event.uid ?: "crko-${index + 1}@local"
     line("BEGIN:VEVENT")
     line("UID:${escapeText(uid)}")
     line("DTSTAMP:${formatUtc(parseInstant(event.dtStamp) ?: parseInstant(event.lastModified) ?: now)}")
@@ -490,14 +476,12 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     if (event.sequence > 0 || event.lastModified != null) line("SEQUENCE:${event.sequence.coerceAtLeast(0)}")
     // A RECURRENCE-ID is only meaningful inside the file that carries its master series, so an
     // exception whose master is absent is exported as a plain event instead of a dangling one.
-    if (!event.thisAndFuture && series != null) {
-        event.recurrenceId?.let { recurrenceIdDate ->
-            // The value type follows the master series' DTSTART, not the exception's own DTSTART.
-            val date = parseDateText(recurrenceIdDate)
-            if (date != null) {
-                appendTimeLine("RECURRENCE-ID", series.start.withWallDate(series.wallDateFor(date)))
-            }
-        }
+    val masterPresent = event.recurrenceId != null && allEvents.any { candidate ->
+        candidate !== event && candidate.uid == event.uid && candidate.recurrenceId == null
+    }
+    if (masterPresent) {
+        val range = event.recurrenceRange?.let { ";RANGE=${it.wireName}" }.orEmpty()
+        event.recurrenceId.let { appendTimeLine("RECURRENCE-ID$range", it) }
     }
 
     appendTimeLine("DTSTART", event.start)
@@ -529,11 +513,7 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
         event.attendees.forEach { if (it.isNotBlank()) line("ATTENDEE:${sanitizeUriValue(it)}") }
     }
 
-    event.repeat?.let { rule ->
-        line("RRULE:${ruleValue(rule) { formatUntil(it, event) }}")
-        appendRDate(event, rule)
-        appendExDate(event)
-    }
+    event.recurrence?.let { appendRecurrence(it, event) }
 
     event.alarms.forEach { alarm ->
         line("BEGIN:VALARM")
@@ -602,8 +582,8 @@ private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
         todo.due?.let { parseDateText(it)?.let { date -> line("DUE;VALUE=DATE:${formatDate(date)}") } }
     }
     todo.repeat?.let { rule ->
-        line("RRULE:${ruleValue(rule, formatTodoUntil(todo))}")
-        appendTodoRDate(rule)
+        line("RRULE:${rule.raw ?: ruleValue(rule, todo.repeatStartValue())}")
+        appendTodoRDate(todo)
         appendTodoExDate(todo, rule)
     }
     val exportStatus = when {
@@ -653,103 +633,121 @@ private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
     line("END:VTODO")
 }
 
-/**
- * `UNTIL` renderer for a todo series: instants and floating values carry over, and a date-only
- * `UNTIL` is written in the value type the start uses.
- */
-private fun formatTodoUntil(todo: Todo): (String) -> String? {
-    val timed = todo.startTime != null
-    return { untilText ->
-        val until = parseRepeatUntil(untilText)
-        when {
-            until == null -> null
-            until.instant != null -> formatUtc(until.instant)
-            until.localDateTime != null -> formatIcsLocalDateTime(until.localDateTime, utc = false)
-            timed -> formatIcsLocalDateTime(LocalDateTime(until.date, LocalTime(0, 0)), utc = false)
-            else -> formatDate(until.date)
-        }
-    }
+/** Start value a todo series' `UNTIL` is rendered against; a date-only todo keeps the DATE form. */
+private fun Todo.repeatStartValue(): IcsTimeValue? {
+    startTime?.let(::parseInstant)?.let { return IcsTimeValue.Utc(it) }
+    val date = (start ?: due)?.let(::parseDateText)
+    return date?.let(IcsTimeValue::Date)
 }
 
-/** `RDATE` lines of a todo series; the day-granular model writes dates rather than date-times. */
-private fun StringBuilder.appendTodoRDate(rule: RepeatRule) {
-    if (rule.rDates.isEmpty()) return
-    val values = rule.rDates.mapNotNull(::parseDateText).sorted().map(::formatDate)
-    if (values.isNotEmpty()) line("RDATE;VALUE=DATE:${values.joinToString(",")}")
+/** `RDATE` lines of a todo series, keeping each value's own time and length. */
+private fun StringBuilder.appendTodoRDate(todo: Todo) {
+    appendRecurrenceDates(todo.rDates)
 }
 
 private fun StringBuilder.appendTodoExDate(todo: Todo, rule: RepeatRule) {
     if (todo.excludedDates.isEmpty()) return
     val anchor = todo.seriesAnchor ?: return
+    val exdates = todo.excludedDates.mapNotNull { parseStoredDate(it)?.let(IcsTimeValue::Date) }
+    // The exclusions are matched against the untouched set: an EXDATE must not hide itself.
+    val recurrence = Recurrence(rule = rule, rdates = todo.rDates)
     // Only dates that really are occurrences of the rule belong in EXDATE.
-    val values = todo.excludedDates
-        .distinct()
-        .sorted()
-        .mapNotNull(::parseDateText)
-        .filter { date -> isRuleOccurrence(anchor, rule, emptyList(), date) }
-        .map(::formatDate)
+    val values = exdates
+        .filter { date -> isRuleOccurrence(anchor, rule, recurrence, date.date) }
+        .map { formatDate(it.date) }
     if (values.isNotEmpty()) line("EXDATE;VALUE=DATE:${values.joinToString(",")}")
 }
 
-private fun StringBuilder.appendRDate(event: Event, rule: RepeatRule) {
-    if (rule.rDates.isEmpty()) return
-    val values = rule.rDates.mapNotNull(::parseDateText).sorted()
-        .map { date -> formatOccurrenceValue(event.wallDateFor(date), event.start) }
-    if (values.isNotEmpty()) line("RDATE${occurrenceParameter(event.start)}:${values.joinToString(",")}")
+/** Writes the `RRULE`, `RDATE` and `EXDATE` of [recurrence]. */
+private fun StringBuilder.appendRecurrence(recurrence: Recurrence, event: Event) {
+    val rule = recurrence.rule
+    if (rule != null) {
+        line("RRULE:${rule.raw ?: ruleValue(rule, event.start)}")
+    } else {
+        recurrence.rawRule?.let { line("RRULE:$it") }
+    }
+    appendRecurrenceDates(recurrence.rdates)
+    appendExDate(recurrence, event)
 }
 
-private fun StringBuilder.appendExDate(event: Event) {
-    if (event.excludedDates.isEmpty()) return
-    // Only dates that really are occurrences of the rule belong in EXDATE.
-    val probe = event.copy(excludedDates = emptyList())
-    val values = event.excludedDates
-        .distinct()
-        .sorted()
-        .mapNotNull(::parseDateText)
-        .filter { date -> probe.occurrenceStartOn(date)?.let { it == date } == true }
-        .map { date -> formatOccurrenceValue(event.wallDateFor(date), event.start) }
-    if (values.isNotEmpty()) line("EXDATE${occurrenceParameter(event.start)}:${values.joinToString(",")}")
+private fun StringBuilder.appendRecurrenceDates(rdates: List<RecurrenceDate>) {
+    if (rdates.isEmpty()) return
+    rdates.groupBy { occurrenceParameter(it.value, period = it.duration != null) }
+        .forEach { (params, group) ->
+            val values = group.map { rdate ->
+                val value = formatTimeValue(rdate.value)
+                rdate.duration?.let { "$value/${formatDurationSeconds(it.inWholeSeconds)}" } ?: value
+            }
+            line("RDATE$params:${values.joinToString(",")}")
+        }
 }
 
-private fun occurrenceParameter(start: IcsTimeValue): String = when (start) {
-    is IcsTimeValue.Date -> ";VALUE=DATE"
-    is IcsTimeValue.Zoned -> if (start.tzid.equals("UTC", ignoreCase = true)) "" else ";TZID=${start.tzid}"
-    else -> ""
-}
-
-private fun formatOccurrenceValue(date: LocalDate, start: IcsTimeValue): String = when (start) {
-    is IcsTimeValue.Date -> formatDate(date)
-    is IcsTimeValue.Floating -> formatIcsLocalDateTime(LocalDateTime(date, start.dateTime.time), utc = false)
-    is IcsTimeValue.Zoned -> formatIcsLocalDateTime(LocalDateTime(date, start.dateTime.time), utc = false)
-    is IcsTimeValue.Utc ->
-        formatUtc(LocalDateTime(date, start.instant.toLocalDateTime(TimeZone.UTC).time).toInstant(TimeZone.UTC))
+private fun StringBuilder.appendExDate(recurrence: Recurrence, event: Event) {
+    if (recurrence.exdates.isEmpty()) return
+    val values = recurrence.exdates.flatMap { it.exclusionFor(event, recurrence) }
+    values.groupBy { occurrenceParameter(it) }.forEach { (params, group) ->
+        line("EXDATE$params:${group.distinct().sortedBy { it.wallDateTime }.joinToString(",") { formatTimeValue(it) }}")
+    }
 }
 
 /**
- * `RRULE` value of [rule]; [formatUntil] renders `UNTIL` in the value type the series' start uses.
+ * An `EXDATE` must use DTSTART's value type. A date-only exclusion on a timed series therefore
+ * names every start of that day, and a timed exclusion on an all-day series becomes its date.
  */
-private fun ruleValue(rule: RepeatRule, formatUntil: (String) -> String?): String = buildString {
+private fun IcsTimeValue.exclusionFor(event: Event, recurrence: Recurrence): List<IcsTimeValue> {
+    val start = event.start
+    if (start is IcsTimeValue.Date) return listOf(IcsTimeValue.Date(wallDate))
+    if (this !is IcsTimeValue.Date) return listOf(this)
+    val times = event.copy(recurrence = recurrence.copy(exdates = emptyList())).occurrenceTimesOn(wallDate)
+    if (times.isEmpty()) return listOf(start.withWallDate(wallDate))
+    return times.map { time ->
+        start.withWallDateTime(
+            LocalDateTime(wallDate, LocalTime(time.minutes / 60, time.minutes % 60, time.seconds)),
+        )
+    }
+}
+
+private fun occurrenceParameter(value: IcsTimeValue, period: Boolean = false): String = when {
+    period -> ";VALUE=PERIOD"
+    value is IcsTimeValue.Date -> ";VALUE=DATE"
+    value is IcsTimeValue.Zoned -> if (value.tzid.equals("UTC", ignoreCase = true)) "" else ";TZID=${value.tzid}"
+    else -> ""
+}
+
+private fun formatTimeValue(value: IcsTimeValue): String = when (value) {
+    is IcsTimeValue.Date -> formatDate(value.date)
+    is IcsTimeValue.Floating -> formatIcsLocalDateTime(value.dateTime, utc = false)
+    is IcsTimeValue.Zoned -> if (value.tzid.equals("UTC", ignoreCase = true)) {
+        formatUtc(value.dateTime.toInstant(TimeZone.UTC))
+    } else {
+        formatIcsLocalDateTime(value.dateTime, utc = false)
+    }
+    is IcsTimeValue.Utc -> formatUtc(value.instant)
+}
+
+/**
+ * `RRULE` value of [rule]; [start] is the component's `DTSTART`, which decides the `UNTIL` value
+ * type (a DATE series always writes a DATE).
+ */
+private fun ruleValue(rule: RepeatRule, start: IcsTimeValue? = null): String = buildString {
     append(
         when (rule.frequency) {
             RepeatFrequency.Daily -> "FREQ=DAILY"
-            RepeatFrequency.Weekly, RepeatFrequency.Custom -> "FREQ=WEEKLY"
+            RepeatFrequency.Weekly -> "FREQ=WEEKLY"
             RepeatFrequency.Monthly -> "FREQ=MONTHLY"
             RepeatFrequency.Yearly -> "FREQ=YEARLY"
         },
     )
     if (rule.interval > 1) append(";INTERVAL=${rule.interval}")
     if (rule.count != null && rule.count > 0) append(";COUNT=${rule.count}")
-    else rule.until?.let { until -> formatUntil(until)?.let { append(";UNTIL=$it") } }
+    else rule.until?.let { until -> append(";UNTIL=${formatUntil(until, start)}") }
     // RFC 5545 only gives an ordinal in BYDAY a meaning for MONTHLY and YEARLY rules.
     val ordinalsAllowed = rule.frequency == RepeatFrequency.Monthly || rule.frequency == RepeatFrequency.Yearly
-    val days = buildList {
-        rule.weekdays.filter { it in 0..6 }.distinct().sorted().forEach { add(weekdayCodes[it]) }
-        rule.byDay.forEach { entry ->
-            val code = weekdayCodes[entry.weekday.coerceIn(0, 6)]
-            add(if (ordinalsAllowed) "${entry.ordinal}$code" else code)
-        }
-    }
-    if (days.isNotEmpty()) append(";BYDAY=${days.distinct().joinToString(",")}")
+    val days = rule.byDay.map { entry ->
+        val code = weekdayCodes[entry.weekday.coerceIn(0, 6)]
+        if (ordinalsAllowed && entry.ordinal != 0) "${entry.ordinal}$code" else code
+    }.distinct()
+    if (days.isNotEmpty()) append(";BYDAY=${days.joinToString(",")}")
     if (rule.byMonthDay.isNotEmpty()) append(";BYMONTHDAY=${rule.byMonthDay.joinToString(",")}")
     if (rule.byMonth.isNotEmpty()) append(";BYMONTH=${rule.byMonth.joinToString(",")}")
     if (rule.bySetPos.isNotEmpty()) append(";BYSETPOS=${rule.bySetPos.joinToString(",")}")
@@ -761,25 +759,28 @@ private fun ruleValue(rule: RepeatRule, formatUntil: (String) -> String?): Strin
     if (rule.bySecond.isNotEmpty()) append(";BYSECOND=${rule.bySecond.joinToString(",")}")
 }
 
-private fun formatUntil(untilText: String, event: Event): String? {
-    val until = parseRepeatUntil(untilText) ?: return null
-    if (event.start is IcsTimeValue.Date) return formatDate(until.localDate())
-    until.instant?.let { return formatUtc(it) }
-    until.localDateTime?.let { return formatIcsLocalDateTime(it, utc = false) }
-    // Date-only UNTIL: the last occurrence on that date at the event's own wall-clock time.
-    val last = LocalDateTime(until.date, event.start.wallDateTime.time)
-    return when (val start = event.start) {
-        is IcsTimeValue.Zoned -> {
-            val zone = resolveZone(start.tzid, start.definition)
-            if (zone == null || zone is IcsZone.Floating) {
-                formatIcsLocalDateTime(last, utc = false)
-            } else {
-                formatUtc(zone.toInstant(last))
-            }
-        }
-        is IcsTimeValue.Utc -> formatUtc(last.toInstant(TimeZone.UTC))
-        else -> formatIcsLocalDateTime(last, utc = false)
+private fun formatUntil(until: IcsTimeValue, start: IcsTimeValue?): String = when {
+    start is IcsTimeValue.Date -> formatDate(until.wallDate)
+    until is IcsTimeValue.Utc -> formatUtc(until.instant)
+    until is IcsTimeValue.Floating -> formatIcsLocalDateTime(until.dateTime, utc = false)
+    until is IcsTimeValue.Zoned -> {
+        val zone = resolveIcsZoneOrNull(until.tzid, until.definition)
+        if (zone != null) formatUtc(until.dateTime.toInstant(zone)) else formatIcsLocalDateTime(until.dateTime, utc = false)
     }
+    // Date-only UNTIL: the last occurrence on that date at the component's own wall-clock time.
+    until is IcsTimeValue.Date -> {
+        val time = start?.wallDateTime?.time ?: LocalTime(0, 0)
+        val last = LocalDateTime(until.date, time)
+        when (start) {
+            is IcsTimeValue.Zoned -> {
+                val zone = resolveIcsZoneOrNull(start.tzid, start.definition)
+                if (zone != null) formatUtc(last.toInstant(zone)) else formatIcsLocalDateTime(last, utc = false)
+            }
+            is IcsTimeValue.Utc -> formatUtc(last.toInstant(TimeZone.UTC))
+            else -> formatIcsLocalDateTime(last, utc = false)
+        }
+    }
+    else -> formatDate(until.wallDate)
 }
 
 internal class ContentLine(
@@ -1014,6 +1015,10 @@ private sealed interface IcsTime {
     ) : IcsTime
 }
 
+/** Length carried by an `RDATE;VALUE=PERIOD` value, if any. */
+private fun IcsTime.periodDuration(): Duration? =
+    (this as? IcsTime.DateTime)?.periodMinutes?.takeIf { it > 0 }?.minutes
+
 private sealed interface IcsZone {
     data object Floating : IcsZone
     data object Utc : IcsZone
@@ -1097,23 +1102,6 @@ private fun resolvePlatformZone(tzid: String): IcsZone.Platform? {
     return null
 }
 
-private data class RawRule(
-    val frequency: String,
-    val interval: Int,
-    val byDay: List<Pair<Int, Int>>,
-    val until: IcsTime?,
-    val count: Int?,
-    val byMonthDay: List<Int>,
-    val byMonth: List<Int>,
-    val bySetPos: List<Int>,
-    val byYearDay: List<Int>,
-    val byWeekNo: List<Int>,
-    val weekStart: Int?,
-    val byHour: List<Int>,
-    val byMinute: List<Int>,
-    val bySecond: List<Int>,
-)
-
 private data class RawAlarm(
     val action: String,
     val triggerMinutes: Int,
@@ -1147,7 +1135,9 @@ private data class RawEvent(
     val durationMinutes: Int? = null,
     val recurrenceId: IcsTime? = null,
     val recurrenceRange: String? = null,
-    val rule: RawRule? = null,
+    val rule: RepeatRule? = null,
+    /** Original `RRULE` text when even its `FREQ` could not be represented. */
+    val rawRule: String? = null,
     val exdates: List<IcsTime> = emptyList(),
     val rDates: List<IcsTime> = emptyList(),
     val created: String? = null,
@@ -1193,7 +1183,8 @@ private fun readEvent(
     var durationMinutes: Int? = null
     var recurrenceId: IcsTime? = null
     var recurrenceRange: String? = null
-    var rule: RawRule? = null
+    var rule: RepeatRule? = null
+    var rawRule: String? = null
     val exdates = mutableListOf<IcsTime>()
     val rdates = mutableListOf<IcsTime>()
     var created: String? = null
@@ -1233,9 +1224,11 @@ private fun readEvent(
                 recurrenceRange = line.params["RANGE"]?.uppercase()
             }
             "RRULE" -> {
-                val parsed = parseRule(line.value, zones, warnings, floatingZone)
-                if (rule == null) {
+                val parsed = parseRule(line.value, zones, warnings, floatingZone, start is IcsTime.AllDay)
+                if (rule == null && rawRule == null) {
                     rule = parsed
+                    // An unrepresentable FREQ keeps the property text so an export does not lose it.
+                    rawRule = line.value.trim().takeIf { parsed == null }
                 } else {
                     warnings += IcsWarning.MultipleRrules
                 }
@@ -1303,6 +1296,7 @@ private fun readEvent(
         recurrenceId = recurrenceId,
         recurrenceRange = recurrenceRange,
         rule = rule,
+        rawRule = rawRule,
         exdates = exdates,
         rDates = rdates,
         created = created,
@@ -1475,20 +1469,35 @@ private fun resolveLineZone(
     }
 }
 
+/** Parts of `RRULE` this model understands; anything else keeps the original text in [RepeatRule.raw]. */
+private val KnownRuleParts = setOf(
+    "FREQ", "INTERVAL", "COUNT", "UNTIL", "BYDAY", "BYMONTHDAY", "BYMONTH", "BYSETPOS",
+    "BYYEARDAY", "BYWEEKNO", "WKST", "BYHOUR", "BYMINUTE", "BYSECOND",
+)
+
 private fun parseRule(
     value: String,
     zones: Map<String, CustomZone>,
     warnings: MutableSet<IcsWarning>,
     defaultZone: IcsZone? = null,
-): RawRule? {
+    startIsDate: Boolean = false,
+): RepeatRule? {
     val parts = value.split(';').mapNotNull { part ->
         val equals = part.indexOf('=')
         if (equals <= 0) null else part.substring(0, equals).trim().uppercase() to part.substring(equals + 1).trim()
     }.toMap()
-    val frequency = parts["FREQ"]?.uppercase() ?: return null
-    if (frequency !in setOf("DAILY", "WEEKLY", "MONTHLY", "YEARLY")) {
-        warnings += IcsWarning.UnsupportedRecurrence
-        return null
+    val rawFrequency = parts["FREQ"]?.uppercase() ?: return null
+    val frequency = when (rawFrequency) {
+        "DAILY" -> RepeatFrequency.Daily
+        "WEEKLY" -> RepeatFrequency.Weekly
+        "MONTHLY" -> RepeatFrequency.Monthly
+        "YEARLY" -> RepeatFrequency.Yearly
+        else -> {
+            // HOURLY/MINUTELY/SECONDLY and private values cannot be expanded by this model; the
+            // caller stores the property text so an edit round trip does not drop it.
+            warnings += IcsWarning.UnsupportedRecurrence
+            return null
+        }
     }
     val interval = parts["INTERVAL"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
     val byDay = parts["BYDAY"].orEmpty().split(',').mapNotNull { day ->
@@ -1499,32 +1508,38 @@ private fun parseRule(
         val ordinal = ordinalText.toIntOrNull() ?: 0
         ordinal to weekday
     }
-    val until = parts["UNTIL"]?.let { parseUntil(it, zones, warnings, defaultZone) }
-    val count = parts["COUNT"]?.toIntOrNull()?.takeIf { it > 0 }
-    val byMonthDay = intList(parts["BYMONTHDAY"])
-    val byMonth = intList(parts["BYMONTH"]).filter { it in 1..12 }
-    val bySetPos = intList(parts["BYSETPOS"])
-    val byYearDay = intList(parts["BYYEARDAY"])
-    val byWeekNo = intList(parts["BYWEEKNO"])
-    val weekStart = parts["WKST"]?.uppercase()?.let { weekdayCodes.indexOf(it) }?.takeIf { it >= 0 }
+    var lossy = (parts.keys - KnownRuleParts).isNotEmpty()
+    // RFC 5545 only gives an ordinal in BYDAY a meaning for MONTHLY and YEARLY rules. Elsewhere the
+    // ordinal is dropped (so the plain days still expand and export), and the user is warned.
+    val effectiveByDay = if (frequency == RepeatFrequency.Daily || frequency == RepeatFrequency.Weekly) {
+        if (byDay.any { it.first != 0 }) warnings += IcsWarning.UnsupportedRecurrence
+        byDay.filter { it.first == 0 }
+    } else {
+        byDay
+    }
     val byHour = intList(parts["BYHOUR"]).filter { it in 0..23 }
     val byMinute = intList(parts["BYMINUTE"]).filter { it in 0..59 }
     val bySecond = intList(parts["BYSECOND"]).filter { it in 0..59 }
-    return RawRule(
+    if (startIsDate && (byHour.isNotEmpty() || byMinute.isNotEmpty() || bySecond.isNotEmpty())) {
+        warnings += IcsWarning.UnsupportedRecurrence
+        lossy = true
+    }
+    return RepeatRule(
         frequency = frequency,
         interval = interval,
-        byDay = byDay,
-        until = until,
-        count = count,
-        byMonthDay = byMonthDay,
-        byMonth = byMonth,
-        bySetPos = bySetPos,
-        byYearDay = byYearDay,
-        byWeekNo = byWeekNo,
-        weekStart = weekStart,
+        count = parts["COUNT"]?.toIntOrNull()?.takeIf { it > 0 },
+        until = parts["UNTIL"]?.let { parseUntil(it, zones, warnings, defaultZone) },
+        byDay = effectiveByDay.map { (ordinal, weekday) -> OrdinalWeekday(ordinal, weekday) },
+        byMonthDay = intList(parts["BYMONTHDAY"]),
+        byMonth = intList(parts["BYMONTH"]).filter { it in 1..12 },
+        bySetPos = intList(parts["BYSETPOS"]),
+        byYearDay = intList(parts["BYYEARDAY"]),
+        byWeekNo = intList(parts["BYWEEKNO"]),
+        weekStart = parts["WKST"]?.uppercase()?.let { weekdayCodes.indexOf(it) }?.takeIf { it >= 0 },
         byHour = byHour,
         byMinute = byMinute,
         bySecond = bySecond,
+        raw = value.takeIf { lossy },
     )
 }
 
@@ -1536,10 +1551,11 @@ private fun parseUntil(
     zones: Map<String, CustomZone>,
     warnings: MutableSet<IcsWarning>,
     defaultZone: IcsZone?,
-): IcsTime? {
+): IcsTimeValue? {
     val utc = value.endsWith("Z", ignoreCase = true)
     val line = ContentLine("UNTIL", if (utc) emptyMap() else mapOf("VALUE" to "DATE-TIME"), value, value)
-    return parseTime(line, zones, warnings, defaultZone)
+    // A date-only UNTIL is written without VALUE=DATE by some clients; parseTime handles it too.
+    return parseTime(line, zones, warnings, defaultZone)?.toValue(null)
 }
 
 private fun parseDurationMinutes(value: String): Int? {
@@ -1698,389 +1714,55 @@ private fun mapSeries(
     // decides whether the user's event survives the import.
     val base = group.filter { it.recurrenceId == null }.maxWithOrNull(masterCopyComparator)
     if (base == null) {
+        // An exception without its master has no series to attach to. Keep the record (and its
+        // RECURRENCE-ID, which a bare iTIP REPLY still needs) but the exporter omits the id when
+        // the master is not in the same file, so no dangling reference leaves the app.
         return group.mapNotNull { override ->
-            mapSingle(override, deviceZone, untitledTitle, zones, warnings)?.let { event ->
-                val rid = override.recurrenceId?.localDate(deviceZone)?.toString()
-                event.copy(
-                    seriesUid = uid,
-                    recurrenceId = rid,
-                    icsUid = rid?.let { "$uid#override-$it" } ?: event.icsUid,
-                )
+            mapSingle(override, deviceZone, untitledTitle, zones, warnings, recurrence = null)?.let { event ->
+                event.copy(icsUid = uid, recurrenceRange = RecurrenceRange.parse(override.recurrenceRange))
             }
         }.filterNot { it.status == EventStatus.Cancelled }
     }
     if (base.isCancelled()) return emptyList()
 
-    val overrides = group.filter { it.recurrenceId != null }
     val series = mapSingle(base, deviceZone, untitledTitle, zones, warnings) ?: return emptyList()
-    val priorOverride = overrides
-        .filter { it.recurrenceRange == "THISANDPRIOR" && !it.isCancelled() }
-        .minWithOrNull(compareBy { it.recurrenceId?.localDate(deviceZone) ?: LocalDate(9999, 12, 31) })
-    if (priorOverride != null) {
-        val priorRid = priorOverride.recurrenceId?.localDate(deviceZone)
-        val mappedPrior = mapSingle(
-            priorOverride,
-            deviceZone,
-            untitledTitle,
-            zones,
-            warnings,
-            repeat = null,
-        )
-        // A moved start would shift every previous occurrence too; that cannot be represented by
-        // the single-anchor model, so keep the ordinary single-exception fallback and say so.
-        if (priorRid != null && mappedPrior != null && mappedPrior.day == priorRid && series.repeat != null) {
-            return mapPriorSplit(
-                uid = uid,
-                series = series,
-                prior = mappedPrior,
-                priorRid = priorRid,
-                overrides = overrides,
-                deviceZone = deviceZone,
-                untitledTitle = untitledTitle,
-                zones = zones,
-                warnings = warnings,
-            )
-        }
-        if (mappedPrior != null && mappedPrior.day != priorRid) {
+    val exceptions = mutableListOf<Event>()
+    val exclusions = mutableListOf<IcsTimeValue>()
+    val seenSlots = mutableSetOf<IcsTimeValue>()
+    var ambiguous = false
+    group.filter { it.recurrenceId != null }.forEach { override ->
+        val slot = override.recurrenceId?.toValue(override.timeZoneDefinition) ?: return@forEach
+        // Two exceptions naming the very same instant are indistinguishable; two on one day but at
+        // different times are fine, which is exactly what the typed slot makes possible.
+        if (!seenSlots.add(slot)) ambiguous = true
+        exclusions += slot
+        val range = RecurrenceRange.parse(override.recurrenceRange)
+        if (range == RecurrenceRange.ThisAndPrior) {
+            // THISANDPRIOR is not RFC 5545; keep it so an export writes the range back, but say so.
             warnings += IcsWarning.UnsupportedRecurrence
         }
-    }
-    val mapped = mutableListOf<Event>()
-    val splitDate = overrides
-        .filter { it.recurrenceRange == "THISANDFUTURE" && !it.isCancelled() }
-        .mapNotNull { it.recurrenceId?.localDate(deviceZone) }
-        .minOrNull()
-    val cancelledFutureDate = overrides
-        .filter { it.recurrenceRange == "THISANDFUTURE" && it.isCancelled() }
-        .mapNotNull { it.recurrenceId?.localDate(deviceZone) }
-        .minOrNull()
-    val futureRidText = splitDate?.toString()
-    val futureUid = futureRidText?.let { "$uid#future-$it" }
-    val oldExclusions = mutableListOf<String>()
-    val futureExclusions = mutableListOf<String>()
-    val normalOverrides = mutableListOf<Event>()
-    val usedOverrideUids = mutableSetOf<String>()
-    var ambiguousOverrides = false
-    var futureSeries: Event? = null
-
-    overrides.forEach { override ->
-        val rid = override.recurrenceId?.localDate(deviceZone) ?: return@forEach
-        val ridText = rid.toString()
-        val afterSplit = splitDate != null && rid >= splitDate
-        if (override.isCancelled()) {
-            // A cancelled THISANDFUTURE is handled by the series end below; a cancelled single
-            // instance is an exclusion on whichever segment owns that occurrence.
-            if (override.recurrenceRange != "THISANDFUTURE") {
-                if (afterSplit) futureExclusions += ridText else oldExclusions += ridText
-            }
-            return@forEach
-        }
-        val isSplit = override.recurrenceRange == "THISANDFUTURE" && rid == splitDate
-        val overrideRepeat = mapRule(
-            override.rule,
-            override.start ?: override.recurrenceId,
-            override.rDates,
-            warnings,
-        )
-        val mappedOverride = mapSingle(
-            override,
-            deviceZone,
-            untitledTitle,
-            zones,
-            warnings,
-            repeat = if (isSplit) overrideRepeat else null,
-        ) ?: return@forEach
-        if (isSplit && futureUid != null) {
-            val inherited = series.repeat?.let { baseRule ->
-                // Without its own RRULE the future segment still has to stop where the original
-                // series would have stopped. COUNT has already consumed the earlier occurrences.
-                val remaining = baseRule.count?.let { count ->
-                    (count - countOccurrencesBefore(series, rid)).coerceAtLeast(1)
-                }
-                baseRule.copy(
-                    count = if (baseRule.until == null) remaining else null,
-                    rDates = baseRule.rDates.filter { r ->
-                        parseDateText(r)?.let { it >= rid } == true
-                    },
-                )
-            }
-            var futureRepeat = mappedOverride.repeat ?: inherited
-            if (futureRepeat != null && cancelledFutureDate != null && cancelledFutureDate > rid) {
-                val cap = cancelledFutureDate.plusDays(-1)
-                val existingUntil = futureRepeat.until?.let(::parseRepeatUntil)?.localDate()
-                val until = if (existingUntil == null || existingUntil > cap) cap else existingUntil
-                futureRepeat = futureRepeat.copy(until = until.toString(), count = null)
-            }
-            futureSeries = mappedOverride.copy(
-                repeat = futureRepeat,
-                seriesUid = uid,
-                recurrenceId = ridText,
-                thisAndFuture = true,
-                icsUid = futureUid,
-                excludedDates = emptyList(),
-            )
-            // Base EXDATEs after the split belong to the new segment, not to the truncated old one.
-            series.excludedDates.mapNotNullTo(futureExclusions) { text ->
-                parseDateText(text)?.takeIf { it > rid }?.toString()
-            }
-        } else {
-            val targetUid = if (afterSplit && futureUid != null) futureUid else uid
-            // `recurrenceId` is a date, so a series with more than one start per day produces two
-            // exceptions with the same storage key; without a distinct key the second one would be
-            // dropped by the importer's de-duplication.
-            val baseUid = "$targetUid#override-$ridText"
-            val overrideUid = nextFreeUid(usedOverrideUids, baseUid, occurrenceTimeKey(override.recurrenceId))
-            if (overrideUid != baseUid) ambiguousOverrides = true
-            normalOverrides += mappedOverride.copy(
-                repeat = null,
-                seriesUid = targetUid,
-                recurrenceId = ridText,
-                thisAndFuture = false,
-                icsUid = overrideUid,
-            )
-            if (afterSplit) futureExclusions += ridText else oldExclusions += ridText
-        }
-    }
-
-    if (ambiguousOverrides) warnings += IcsWarning.AmbiguousRecurrenceId
-
-    val seriesEnd = listOfNotNull(
-        splitDate?.plusDays(-1),
-        cancelledFutureDate?.plusDays(-1),
-    ).minOrNull()
-    val seriesDuration = (series.occurrenceDurationSeconds / 60).toInt()
-    // An RDATE PERIOD carries its own length. The single-duration model keeps it in the series only
-    // when it matches, so differing periods become one-off events instead of silently changing.
-    val periodRdates = if (base.rule == null) {
-        emptyList()
-    } else {
-        base.rDates.mapIndexedNotNull { index, time ->
-            val minutes = (time as? IcsTime.DateTime)?.periodMinutes ?: return@mapIndexedNotNull null
-            if (minutes == seriesDuration) null else index to time
-        }
-    }
-    val periodRdateDates = periodRdates.mapTo(mutableSetOf()) { (_, time) ->
-        time.localDate(deviceZone).toString()
-    }
-    val truncatedSeries = if (seriesEnd != null) {
-        // COUNT must be dropped: export prefers COUNT over UNTIL, which would undo the split.
-        series.copy(repeat = series.repeat?.copy(until = seriesEnd.toString(), count = null))
-    } else {
-        series
-    }
-    val adjustedSeries = if (periodRdateDates.isEmpty()) {
-        truncatedSeries
-    } else {
-        truncatedSeries.repeat?.let { rule ->
-            truncatedSeries.copy(repeat = rule.copy(rDates = rule.rDates.filterNot { it in periodRdateDates }))
-        } ?: truncatedSeries
-    }
-    val oldSeriesExclusions = (oldExclusions + series.excludedDates.filter { text ->
-        splitDate == null || parseDateText(text)?.let { it < splitDate } == true
-    }).distinct()
-    mapped += adjustedSeries.copy(excludedDates = oldSeriesExclusions)
-    // RDATE without RRULE is a list of additional one-off occurrences.
-    if (base.rule == null) {
-        base.rDates.forEachIndexed { index, time ->
-            mapped += rDateEvent(series, uid, time, index, deviceZone, seriesDuration)
-        }
-    } else {
-        periodRdates.forEach { (index, time) ->
-            mapped += rDateEvent(series, uid, time, index, deviceZone, seriesDuration)
-        }
-    }
-    futureSeries?.let { future ->
-        mapped += future.copy(excludedDates = futureExclusions.distinct())
-    }
-    normalOverrides.forEach { mapped += it }
-    return mapped.filterNot { it.status == EventStatus.Cancelled }
-}
-
-/**
- * Splits a series at `RECURRENCE-ID;RANGE=THISANDPRIOR`: the override's properties apply to every
- * occurrence up to the named slot, while the untouched master keeps happening after it.
- */
-private fun mapPriorSplit(
-    uid: String,
-    series: Event,
-    prior: Event,
-    priorRid: LocalDate,
-    overrides: List<RawEvent>,
-    deviceZone: TimeZone,
-    untitledTitle: String,
-    zones: Map<String, CustomZone>,
-    warnings: MutableSet<IcsWarning>,
-): List<Event> {
-    if (overrides.any { it.recurrenceRange == "THISANDPRIOR" && it.isCancelled() }) {
-        warnings += IcsWarning.UnsupportedRecurrence
-    }
-    val pastUid = "$uid#prior-$priorRid"
-    val allOverrides = overrides.mapNotNull { override ->
-        override.recurrenceId?.localDate(deviceZone)?.let { it to override }
-    }.filter { (_, override) -> override.recurrenceRange != "THISANDPRIOR" }
-    val overridesBefore = allOverrides.filter { (rid, _) -> rid <= priorRid }
-    val overridesAfter = allOverrides.filter { (rid, _) -> rid > priorRid }
-    val cancelledBefore = overridesBefore.filter { (_, override) -> override.isCancelled() }.map { it.first.toString() }
-    val pastRepeat = series.repeat?.copy(
-        until = priorRid.toString(),
-        count = null,
-        rDates = series.repeat.rDates.filter { parseDateText(it)?.let { date -> date <= priorRid } == true },
-    )
-    // The override governs every past occurrence; the anchor moves from the overridden slot back to
-    // the series start while the override's own time of day and zone are kept.
-    val pastDelta = priorRid.daysTo(series.day)
-    val past = prior.shiftedByDays(pastDelta).copy(
-        id = null,
-        repeat = pastRepeat,
-        excludedDates = (series.excludedDates.filter { parseDateText(it)?.let { date -> date <= priorRid } == true } + cancelledBefore)
-            .distinct()
-            .filterNot { it == priorRid.toString() },
-        seriesUid = null,
-        recurrenceId = null,
-        thisAndFuture = false,
-        icsUid = pastUid,
-        timeZoneDefinition = prior.timeZoneDefinition ?: series.timeZoneDefinition,
-        created = series.created,
-        lastModified = prior.lastModified ?: series.lastModified,
-        sequence = prior.sequence,
-    )
-
-    val nextDate = nextOccurrenceAfter(series, priorRid)
-    val future = nextDate?.let { start ->
-        val futureRule = series.repeat?.let { rule ->
-            val consumed = rule.count?.let { countOccurrencesBefore(series, start) } ?: 0
-            rule.copy(
-                count = rule.count?.let { (it - consumed).coerceAtLeast(1) },
-                rDates = rule.rDates.filter { parseDateText(it)?.let { date -> date >= start } == true },
-            )
-        }
-        val cancelledAfter = overridesAfter.filter { (_, override) -> override.isCancelled() }
-            .map { it.first.toString() }
-        // The anchor moves to a later occurrence; wall time and zone stay those of the series.
-        series.shiftedByDays(series.day.daysTo(start)).copy(
-            repeat = futureRule,
-            excludedDates = (series.excludedDates.filter { parseDateText(it)?.let { date -> date > priorRid } == true } + cancelledAfter)
-                .distinct(),
-            seriesUid = null,
-            recurrenceId = null,
-            thisAndFuture = false,
-            icsUid = uid,
-            timeZoneDefinition = series.timeZoneDefinition,
-        )
-    }
-
-    val normal = mutableListOf<Event>()
-    fun addOverride(rid: LocalDate, override: RawEvent, targetUid: String) {
-        if (override.isCancelled()) return
-        val ridText = rid.toString()
         val mapped = mapSingle(
             override,
             deviceZone,
             untitledTitle,
             zones,
             warnings,
-            repeat = null,
-        ) ?: return
-        if (override.recurrenceRange != null) warnings += IcsWarning.UnsupportedRecurrence
-        normal += mapped.copy(
-            seriesUid = targetUid,
-            recurrenceId = ridText,
-            thisAndFuture = false,
-            icsUid = "$targetUid#override-$ridText",
-            excludedDates = emptyList(),
+            recurrence = null,
+        ) ?: return@forEach
+        exceptions += mapped.copy(
+            icsUid = uid,
+            recurrenceId = slot,
+            recurrenceRange = range,
         )
     }
-    overridesBefore.forEach { (rid, override) -> addOverride(rid, override, pastUid) }
-    if (future != null) {
-        overridesAfter.forEach { (rid, override) -> addOverride(rid, override, uid) }
-    }
-    return listOfNotNull(past, future) + normal
-}
-
-/** First occurrence after [after] in [event]'s rule, or null when the series has ended. */
-private fun nextOccurrenceAfter(event: Event, after: LocalDate): LocalDate? {
-    val rule = event.repeat ?: return null
-    var cursor = after.plusDays(1)
-    var guard = 0
-    val untilDate = rule.until?.let(::parseRepeatUntil)?.localDate()
-    while (guard < 100_000) {
-        val wallCursor = event.wallDateFor(cursor)
-        if (untilDate != null && wallCursor > untilDate) return null
-        if (event.isOccurrenceStart(wallCursor, rule)) return cursor
-        cursor = cursor.plusDays(1)
-        guard++
-    }
-    return null
-}
-
-/**
- * One-off record for an `RDATE` instance. A PERIOD keeps its own length; everything else uses the
- * series duration, matching how the recurrence engine would place it.
- */
-private fun rDateEvent(
-    series: Event,
-    uid: String,
-    time: IcsTime,
-    index: Int,
-    deviceZone: TimeZone,
-    seriesDuration: Int,
-): Event {
-    val start = time.toValue(series.timeZoneDefinition)
-    val duration = (time as? IcsTime.DateTime)?.periodMinutes ?: seriesDuration
-    return series.copy(
-        start = start,
-        end = if (duration > 0) start.plusDuration(duration.minutes, deviceZone) else null,
-        repeat = null,
-        excludedDates = emptyList(),
-        icsUid = "$uid#rdate-$index",
-        timeZoneDefinition = if (start is IcsTimeValue.Zoned) series.timeZoneDefinition else null,
-    )
-}
-
-/**
- * Storage key for an exception. The plain date key is kept whenever it is free, so data stored by
- * earlier versions still matches on re-import; only a real collision gets a suffix.
- */
-private fun nextFreeUid(used: MutableSet<String>, base: String, timeKey: String?): String {
-    if (used.add(base)) return base
-    val withTime = if (timeKey == null) base else "$base-T$timeKey"
-    if (used.add(withTime)) return withTime
-    var index = 1
-    while (true) {
-        val candidate = "$withTime-$index"
-        if (used.add(candidate)) return candidate
-        index++
-    }
-}
-
-/** `HHmm` of an occurrence start, used to separate exceptions that share one calendar date. */
-private fun occurrenceTimeKey(time: IcsTime?): String? = when (time) {
-    is IcsTime.DateTime -> time.value.time.let {
-        it.hour.toString().padStart(2, '0') + it.minute.toString().padStart(2, '0')
-    }
-    else -> null
-}
-
-/** Occurrences of [event]'s RRULE before [before], ignoring EXDATE and RDATE; used for COUNT splits. */
-private fun countOccurrencesBefore(event: Event, before: LocalDate): Int {
-    val rule = event.repeat ?: return 0
-    val probe = event.copy(excludedDates = emptyList(), repeat = rule.copy(rDates = emptyList()))
-    // Splits always happen on an occurrence, so the ordinal is usually computable without walking
-    // every day from a decades-old anchor.
-    if (probe.isOccurrenceStart(before, rule)) {
-        occurrenceOrdinal(rule, event.wallDay, before, rule.count)?.let { return (it - 1).coerceAtLeast(0) }
-    }
-    var count = 0
-    var cursor = event.wallDay
-    val limit = rule.count ?: Int.MAX_VALUE
-    val untilDate = rule.until?.let(::parseRepeatUntil)?.localDate()
-    while (cursor < before && count < limit) {
-        if (untilDate != null && cursor > untilDate) break
-        if (probe.isOccurrenceStart(cursor, rule)) count++
-        cursor = cursor.plusDays(1)
-        if (event.wallDay.daysTo(cursor) > 100_000) break
-    }
-    return count
+    if (ambiguous) warnings += IcsWarning.AmbiguousRecurrenceId
+    if (exclusions.isEmpty()) return listOf(series) + exceptions
+    // The master skips every slot an exception describes; the exception itself carries the change,
+    // including a `STATUS:CANCELLED` copy that must keep its SEQUENCE for later imports.
+    val recurrence = series.recurrence?.copy(
+        exdates = (series.recurrence.exdates + exclusions).distinct(),
+    ) ?: Recurrence(exdates = exclusions.distinct())
+    return listOf(series.copy(recurrence = recurrence)) + exceptions
 }
 
 private fun mapSingle(
@@ -2089,7 +1771,7 @@ private fun mapSingle(
     untitledTitle: String,
     zones: Map<String, CustomZone>,
     warnings: MutableSet<IcsWarning>,
-    repeat: RepeatRule? = mapRule(raw.rule, raw.start, raw.rDates, warnings),
+    recurrence: Recurrence? = mapRecurrence(raw.rule, raw.rawRule, raw.rDates, raw.exdates, raw.timeZoneDefinition),
 ): Event? {
     val parsedStart = raw.start ?: raw.recurrenceId
     if (parsedStart == null) {
@@ -2100,7 +1782,6 @@ private fun mapSingle(
     val title = raw.summary.ifBlank { untitledTitle }
     val start = parsedStart.toValue(raw.timeZoneDefinition)
     val end = mapEnd(start, raw, deviceZone)
-    val exclusions = mappedExclusions(raw, deviceZone, start, warnings)
     return Event(
         id = null,
         title = title,
@@ -2121,9 +1802,10 @@ private fun mapSingle(
         organizerRaw = raw.organizerRaw,
         attendeeRaw = raw.attendeeRaw,
         alarms = raw.alarms.map { it.toAlarm() },
-        repeat = repeat,
-        excludedDates = exclusions,
+        recurrence = recurrence,
         icsUid = raw.uid,
+        recurrenceId = raw.recurrenceId?.toValue(raw.timeZoneDefinition),
+        recurrenceRange = RecurrenceRange.parse(raw.recurrenceRange),
         timeZoneDefinition = raw.timeZoneDefinition,
         created = raw.created,
         lastModified = raw.lastModified,
@@ -2131,7 +1813,46 @@ private fun mapSingle(
         sequence = raw.sequence,
         extraProperties = raw.extraProperties,
         sourceLine = raw.lineNumber,
-    )
+    ).withValidExdates(warnings)
+}
+
+/**
+ * Drops `EXDATE` values that name no start of the series. An exclusion at another time of day can
+ * never match a typed occurrence, so storing it would only hide the problem; the importer reports
+ * it instead. Rules kept as raw text cannot be expanded, so their exclusions are left alone.
+ */
+private fun Event.withValidExdates(warnings: MutableSet<IcsWarning>): Event {
+    val set = recurrence ?: return this
+    if (set.exdates.isEmpty() || set.rawRule != null) return this
+    val unexcluded = copy(recurrence = set.copy(exdates = emptyList()))
+    val kept = set.exdates.filter { exdate ->
+        val day = exdate.wallDate
+        if (exdate is IcsTimeValue.Date) {
+            unexcluded.occursOn(day)
+        } else {
+            val time = exdate.wallTime
+            time != null && unexcluded.occurrenceTimesOn(day).any {
+                it.minutes == time.hour * 60 + time.minute && it.seconds == time.second
+            }
+        }
+    }
+    if (kept.size == set.exdates.size) return this
+    warnings += IcsWarning.ExdateMismatch
+    return copy(recurrence = set.copy(exdates = kept))
+}
+
+/** Typed recurrence set of a component; null when it carries neither rule nor added/excluded values. */
+private fun mapRecurrence(
+    rule: RepeatRule?,
+    rawRule: String?,
+    rDates: List<IcsTime>,
+    exdates: List<IcsTime>,
+    definition: String?,
+): Recurrence? {
+    val rdates = rDates.map { RecurrenceDate(it.toValue(definition), it.periodDuration()) }
+    val excluded = exdates.map { it.toValue(definition) }
+    if (rule == null && rawRule == null && rdates.isEmpty() && excluded.isEmpty()) return null
+    return Recurrence(rule = rule, rdates = rdates, exdates = excluded, rawRule = rawRule)
 }
 
 /** RFC 5545 value of a parsed time; [definition] is the record's stored `VTIMEZONE`, if any. */
@@ -2211,103 +1932,6 @@ private fun alignEndTo(start: IcsTimeValue, end: IcsTimeValue, deviceZone: TimeZ
     }
 }
 
-private fun mappedExclusions(
-    raw: RawEvent,
-    deviceZone: TimeZone,
-    start: IcsTimeValue,
-    warnings: MutableSet<IcsWarning>,
-): List<String> {
-    val dates = mutableListOf<String>()
-    var mismatched = false
-    val startLocal = start.displayDateTime(deviceZone)
-    val startMinutes = startLocal.hour * 60 + startLocal.minute
-    val allDay = start is IcsTimeValue.Date
-    raw.exdates.forEach { time ->
-        when (time) {
-            is IcsTime.AllDay -> dates += time.date.toString()
-            is IcsTime.DateTime -> {
-                val local = time.localDateTime(deviceZone)
-                val minutes = local.time.hour * 60 + local.time.minute
-                if (allDay || minutes == startMinutes) {
-                    dates += local.date.toString()
-                } else {
-                    mismatched = true
-                }
-            }
-        }
-    }
-    if (mismatched) warnings += IcsWarning.ExdateMismatch
-    raw.recurrenceId?.let { dates += it.localDate(deviceZone).toString() }
-    return dates.distinct()
-}
-
-private fun mapRule(
-    raw: RawRule?,
-    start: IcsTime?,
-    rDates: List<IcsTime>,
-    warnings: MutableSet<IcsWarning>,
-): RepeatRule? {
-    if (raw == null) return null
-    val anchor = start?.localWallDate() ?: LocalDate(1970, 1, 1)
-    val frequency = when (raw.frequency) {
-        "DAILY" -> RepeatFrequency.Daily
-        "WEEKLY" -> {
-            val plain = raw.byDay.filter { it.first == 0 }.map { it.second }.distinct().sorted()
-            if (plain.isEmpty() || plain == listOf(anchor.mondayIndex)) RepeatFrequency.Weekly
-            else RepeatFrequency.Custom
-        }
-        "MONTHLY" -> RepeatFrequency.Monthly
-        "YEARLY" -> RepeatFrequency.Yearly
-        else -> return null
-    }
-    val weekdays = raw.byDay.filter { it.first == 0 }.map { it.second }.distinct().sorted()
-    val ordinalEntries = raw.byDay.filter { it.first != 0 }.map { OrdinalWeekday(it.first, it.second) }
-    // Only MONTHLY/YEARLY can carry an ordinal; for DAILY/WEEKLY the app ignores it and RFC 5545
-    // forbids writing it back, so it is dropped here instead of returning in a later export.
-    val ordinals = when (frequency) {
-        RepeatFrequency.Monthly, RepeatFrequency.Yearly -> ordinalEntries
-        else -> {
-            if (ordinalEntries.isNotEmpty()) warnings += IcsWarning.UnsupportedRecurrence
-            emptyList()
-        }
-    }
-    // `BYHOUR`/`BYMINUTE` expand into several starts on the same day; against a DATE-valued start
-    // they have no time of day to expand and are dropped with a warning.
-    if ((raw.byHour.isNotEmpty() || raw.byMinute.isNotEmpty()) && start is IcsTime.AllDay) {
-        warnings += IcsWarning.UnsupportedRecurrence
-    }
-    val until = raw.until?.let { time ->
-        when (time) {
-            is IcsTime.AllDay -> time.date.toString()
-            is IcsTime.DateTime -> when (time.zone) {
-                IcsZone.Floating -> time.value.toString()
-                // UNTIL of a UTC/TZID event is an instant; keep it absolute so the time of day
-                // survives import even when the device zone differs.
-                else -> time.zone.toInstant(time.value).toString()
-            }
-        }
-    }
-    val rDatesText = rDates.map { it.localWallDate().toString() }
-    return RepeatRule(
-        frequency = frequency,
-        weekdays = weekdays,
-        interval = raw.interval,
-        count = raw.count,
-        until = until,
-        byDay = ordinals,
-        byMonthDay = raw.byMonthDay,
-        byMonth = raw.byMonth,
-        bySetPos = raw.bySetPos,
-        byYearDay = raw.byYearDay,
-        byWeekNo = raw.byWeekNo,
-        weekStart = raw.weekStart,
-        byHour = raw.byHour,
-        byMinute = raw.byMinute,
-        bySecond = raw.bySecond,
-        rDates = rDatesText,
-    )
-}
-
 private fun rawStatus(value: String?): EventStatus = when (value?.uppercase()) {
     "TENTATIVE" -> EventStatus.Tentative
     "CANCELLED" -> EventStatus.Cancelled
@@ -2352,7 +1976,8 @@ private fun readTodo(
     var due: String? = null
     var dueTime: String? = null
     var dueValue: IcsTime? = null
-    var rule: RawRule? = null
+    var rule: RepeatRule? = null
+    var rawRule: String? = null
     val exdates = mutableListOf<IcsTime>()
     val rdates = mutableListOf<IcsTime>()
     var location = ""
@@ -2398,9 +2023,16 @@ private fun readTodo(
                 if (time == null) warnings += IcsWarning.InvalidValue
             }
             "RRULE" -> {
-                val parsed = parseRule(line.value, zones, warnings, floatingZone)
-                if (rule == null) {
+                val parsed = parseRule(
+                    line.value,
+                    zones,
+                    warnings,
+                    floatingZone,
+                    startIsDate = startValue is IcsTime.AllDay,
+                )
+                if (rule == null && rawRule == null) {
                     rule = parsed
+                    rawRule = line.value.trim().takeIf { parsed == null }
                 } else {
                     warnings += IcsWarning.MultipleRrules
                 }
@@ -2455,6 +2087,8 @@ private fun readTodo(
     if (component.children.any { it.name != "VALARM" }) {
         warnings += IcsWarning.UnknownSubcomponent
     }
+    // A rule this model cannot expand is kept verbatim so a later export does not drop it.
+    rawRule?.let { extra += "RRULE:$it" }
     if (title.isBlank() && uid == null) {
         // Nothing identifies this record, but the user still learns that a part of the file was
         // dropped instead of wondering where a todo went.
@@ -2479,7 +2113,7 @@ private fun readTodo(
     val record = title.ifBlank { uid }
     warnings.forEach { details += warningDetail(it, component.lineNumber, record) }
     // The series is anchored on DTSTART, falling back to DUE the way RFC 5545 anchors a VTODO.
-    val repeat = mapRule(rule, startValue ?: dueValue, rdates, warnings)
+    val repeat = rule
     return Todo(
         id = "",
         title = title.ifBlank { uid ?: "" },
@@ -2512,6 +2146,7 @@ private fun readTodo(
         completedTime = completedTime,
         alarms = alarms.map { it.toAlarm() },
         repeat = repeat,
+        rDates = rdates.map { RecurrenceDate(it.toValue(null), it.periodDuration()) },
         excludedDates = exdates.map { it.localDate(deviceZone).toString() }.distinct(),
         sourceLine = component.lineNumber,
     )
@@ -2706,7 +2341,7 @@ private class Observance(
     val offsetFromSeconds: Int,
     /** Offset after the transition, in seconds. */
     val offsetToSeconds: Int,
-    val rule: RawRule?,
+    val rule: RepeatRule?,
     /** Explicit `RDATE` transitions. */
     val rDates: List<LocalDateTime> = emptyList(),
 ) {
@@ -2722,7 +2357,7 @@ private class Observance(
 
     /** Every transition of this observance up to and including the year [year] + 1. */
     fun transitionsThrough(year: Int): List<LocalDateTime> {
-        val repeat = rule?.asObservanceRule()
+        val repeat = rule
         // Rules without UNTIL or COUNT are open ended, so generation stops at a horizon far beyond
         // any calendar the app schedules; later values keep the offset of the last known transition.
         val targetYear = (year + 1).coerceAtMost(MaxTransitionYear)
@@ -2751,13 +2386,11 @@ private class Observance(
         val until = rule?.until ?: return true
         val local = LocalDateTime(date, start.time)
         return when (until) {
-            is IcsTime.AllDay -> date <= until.date
-            is IcsTime.DateTime -> when (until.zone) {
-                IcsZone.Utc -> local.toInstant(TimeZone.UTC).minusSeconds(offsetFromSeconds) <=
-                    until.zone.toInstant(until.value)
-                IcsZone.Floating -> local <= until.value
-                else -> local <= until.value
-            }
+            is IcsTimeValue.Date -> date <= until.date
+            is IcsTimeValue.Floating -> local <= until.dateTime
+            is IcsTimeValue.Zoned -> local <= until.dateTime
+            is IcsTimeValue.Utc ->
+                local.toInstant(TimeZone.UTC).minusSeconds(offsetFromSeconds) <= until.instant
         }
     }
 
@@ -2766,26 +2399,6 @@ private class Observance(
         val ordinal = occurrenceOrdinal(repeat, anchor, date, count) ?: return false
         return ordinal <= count
     }
-}
-
-private fun RawRule.asObservanceRule(): RepeatRule? {
-    val frequency = when (this.frequency) {
-        "YEARLY" -> RepeatFrequency.Yearly
-        "MONTHLY" -> RepeatFrequency.Monthly
-        else -> return null
-    }
-    return RepeatRule(
-        frequency = frequency,
-        weekdays = byDay.filter { it.first == 0 }.map { it.second },
-        interval = interval,
-        count = count,
-        byDay = byDay.filter { it.first != 0 }.map { OrdinalWeekday(it.first, it.second) },
-        byMonthDay = byMonthDay,
-        byMonth = byMonth,
-        bySetPos = bySetPos,
-        byYearDay = byYearDay,
-        byWeekNo = byWeekNo,
-    )
 }
 
 private fun parseCustomZone(component: IcsComponent): CustomZone? {
@@ -2885,6 +2498,29 @@ private fun formatDuration(minutes: Int): String {
             append('T')
             if (hours > 0) append(hours).append('H')
             if (remaining > 0 || (hours == 0 && days == 0)) append(remaining).append('M')
+        }
+    }
+}
+
+/** ISO-8601 duration with second precision, the form an `RDATE;VALUE=PERIOD` length is written in. */
+private fun formatDurationSeconds(totalSeconds: Long): String {
+    if (totalSeconds == 0L) return "PT0S"
+    val sign = if (totalSeconds < 0) "-" else ""
+    var remaining = kotlin.math.abs(totalSeconds)
+    val days = remaining / 86_400
+    remaining %= 86_400
+    val hours = remaining / 3_600
+    remaining %= 3_600
+    val minutes = remaining / 60
+    val seconds = remaining % 60
+    return buildString {
+        append(sign).append('P')
+        if (days > 0) append(days).append('D')
+        if (hours > 0 || minutes > 0 || seconds > 0 || days == 0L) {
+            append('T')
+            if (hours > 0) append(hours).append('H')
+            if (minutes > 0) append(minutes).append('M')
+            if (seconds > 0 || (hours == 0L && minutes == 0L)) append(seconds).append('S')
         }
     }
 }
