@@ -3,7 +3,6 @@ package com.crko
 import com.crko.domain.BusyInterval
 import com.crko.domain.BusyType
 import com.crko.domain.Event
-import com.crko.migration.legacyEvent
 import com.crko.domain.EventStatus
 import com.crko.domain.EventTransparency
 import com.crko.domain.RepeatFrequency
@@ -39,7 +38,7 @@ private fun event(
     status: EventStatus = EventStatus.Confirmed,
     transparency: EventTransparency = EventTransparency.Opaque,
     repeat: RepeatRule? = null,
-) = legacyEvent(
+) = testEvent(
     id = title,
     title = title,
     date = date,

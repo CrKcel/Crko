@@ -1,21 +1,16 @@
 package com.crko
 
-import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.Calendar
 import com.crko.domain.CalendarMetadata
 import com.crko.domain.CalendarSubscription
 import com.crko.domain.CalendarTimeZone
-import com.crko.domain.CurrentSchemaVersion
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.LocalCalendarId
-import com.crko.domain.LocalRecordMeta
 import com.crko.domain.PersistedSettings
-import com.crko.migration.StageFiveAppState
 import com.crko.domain.icsTimeZoneConflicts
 import com.crko.domain.icsTimeZoneDefinition
 import com.crko.domain.instantOrNull
-import com.crko.migration.legacyEvent
 import com.crko.domain.registerIcsTimeZones
 import com.crko.domain.replaceIcsTimeZones
 import kotlinx.coroutines.Dispatchers
@@ -27,7 +22,6 @@ import com.crko.storage.HttpRequest
 import com.crko.storage.HttpResponse
 import com.crko.storage.StateStorage
 import com.crko.storage.SubscriptionHttp
-import com.crko.storage.decodeStateWithReport
 import com.crko.state.AppStateHolder
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
@@ -117,7 +111,7 @@ class CalendarScopeTest {
     @Test
     fun theSameUidInTwoCalendarsDoesNotOverwriteTheOtherCalendar() {
         val sharedUid = "shared@example.com"
-        val remote = legacyEvent(
+        val remote = testEvent(
             id = "remote-1",
             title = "Remote",
             date = "2026-10-27",
@@ -126,7 +120,7 @@ class CalendarScopeTest {
             icsUid = sharedUid,
             dtStamp = "2026-10-01T00:00:00Z",
         )
-        val local = legacyEvent(
+        val local = testEvent(
             id = "local-1",
             title = "Local",
             date = "2026-10-27",
@@ -161,7 +155,7 @@ class CalendarScopeTest {
 
     @Test
     fun syncingOneSubscriptionNeverTouchesAnotherCalendarWithTheSameUid() = runTest {
-        val localEvent = legacyEvent(
+        val localEvent = testEvent(
             id = "local-1",
             title = "Mine",
             date = "2026-03-01",
@@ -210,7 +204,7 @@ class CalendarScopeTest {
 
     @Test
     fun removingASubscriptionDeletesOnlyItsOwnCalendar() = runTest {
-        val localEvent = legacyEvent(
+        val localEvent = testEvent(
             id = "local-1",
             title = "Mine",
             date = "2026-03-01",
@@ -243,101 +237,6 @@ class CalendarScopeTest {
         assertNull(holder.appState.calendars.firstOrNull { it.id == subscription.id })
         assertEquals(listOf("Mine"), holder.appState.events.map { it.title })
         assertNotNull(holder.appState.calendars.firstOrNull { it.isLocal })
-    }
-
-    @Test
-    fun aStageFiveFlatPayloadMigratesIntoCalendars() {
-        val local = legacyEvent(
-            id = "local-1",
-            title = "Local",
-            date = "2026-10-27",
-            startMinutes = 540,
-            endMinutes = 600,
-            icsUid = "local@example.com",
-        )
-        val remote = legacyEvent(
-            id = "remote-1",
-            title = "Remote",
-            date = "2026-10-28",
-            startMinutes = 600,
-            endMinutes = 660,
-            icsUid = "remote@example.com",
-        ).copy(local = LocalRecordMeta(importSource = "sub:s1"))
-        val subscription = CalendarSubscription(id = "s1", name = "Feed", url = "https://example.com/cal.ics")
-        val flat = StageFiveAppState(
-            events = listOf(local, remote),
-            subscriptions = listOf(subscription),
-        )
-        val payload = AppJson.encodeToString(StageFiveAppState.serializer(), flat)
-            .replaceFirst("{", "{\"schemaVersion\":5,")
-
-        val decoded = decodeStateWithReport(payload)
-
-        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
-        assertEquals(CurrentSchemaVersion, decoded.state.schemaVersion)
-        assertEquals(2, decoded.state.calendars.size)
-        val localCalendar = decoded.state.localCalendar
-        assertNotNull(localCalendar)
-        assertEquals(listOf("Local"), localCalendar.events.map { it.title })
-        assertEquals(listOf("Remote"), decoded.state.calendar("s1").events.map { it.title })
-        assertEquals("Feed", decoded.state.calendar("s1").name)
-        assertEquals(subscription.url, decoded.state.calendar("s1").syncState?.url)
-    }
-
-    @Test
-    fun aDamagedRecordInAStageFivePayloadKeepsItsSubscriptionsAndZones() {
-        val local = legacyEvent(
-            id = "local-1",
-            title = "Local",
-            date = "2026-10-27",
-            startMinutes = 540,
-            endMinutes = 600,
-            icsUid = "local@example.com",
-        )
-        val remote = legacyEvent(
-            id = "remote-1",
-            title = "Remote",
-            date = "2026-10-28",
-            startMinutes = 600,
-            endMinutes = 660,
-            icsUid = "remote@example.com",
-        ).copy(local = LocalRecordMeta(importSource = "sub:s1"))
-        val subscription = CalendarSubscription(id = "s1", name = "Feed", url = "https://example.com/cal.ics")
-        val flat = StageFiveAppState(
-            events = listOf(local, remote),
-            subscriptions = listOf(subscription),
-            calendar = CalendarMetadata(
-                name = "My Crko",
-                timeZones = listOf(CalendarTimeZone("Kept/Zone", zoneText("Kept/Zone", "+0300"))),
-            ),
-        )
-        // One unreadable record breaks the strict read of the whole flat payload.
-        val payload = AppJson.encodeToString(StageFiveAppState.serializer(), flat)
-            .replaceFirst("\"events\":[", "\"events\":[{\"id\":\"bad\",\"start\":{\"type\":\"nope\"}},")
-            .replaceFirst("{", "{\"schemaVersion\":5,")
-
-        val decoded = decodeStateWithReport(payload)
-
-        assertEquals(1, decoded.damage.droppedRecords, decoded.damage.toString())
-        assertEquals(listOf("Local"), decoded.state.localCalendar?.events?.map { it.title })
-        assertEquals("My Crko", decoded.state.localCalendar?.name)
-        // The subscription's own calendar and records survive, so its updates and deletions stay scoped.
-        assertEquals(listOf("Remote"), decoded.state.calendar("s1").events.map { it.title })
-        assertNotNull(decoded.state.calendar("s1").syncState)
-        assertEquals("Kept/Zone", decoded.state.localCalendar?.timeZones?.single()?.tzid)
-        assertTrue(
-            icsTimeZoneDefinition("Kept/Zone").orEmpty().contains("TZID:Kept/Zone"),
-            icsTimeZoneDefinition("Kept/Zone").toString(),
-        )
-    }
-
-    @Test
-    fun aCurrentPayloadWhoseCalendarsCannotBeReadIsReportedAsUnreadable() {
-        val decoded = decodeStateWithReport("""{"schemaVersion":6,"calendars":{"local":[]}}""")
-
-        // Silently answering with an empty state left no damage to report, so the next edit overwrote
-        // the only copy of the user's data without even a corrupt backup.
-        assertTrue(decoded.damage.unreadable, decoded.damage.toString())
     }
 
     @Test

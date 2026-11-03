@@ -17,7 +17,6 @@ import com.crko.domain.occurrenceStartInstant
 import com.crko.domain.occursOn
 import com.crko.domain.withDeviceDateTime
 import com.crko.storage.StateStorage
-import com.crko.storage.decodeStateWithReport
 import com.crko.state.AppStateHolder
 import com.crko.ui.transfer.importSelection
 import com.crko.ui.transfer.toIcsImport
@@ -149,9 +148,11 @@ class TimeZoneStageThreeTest {
                 ),
             ),
         )
-        val reloaded = decodeStateWithReport(AppJson.encodeToString(AppState.serializer(), state))
-        assertTrue(reloaded.damage.isEmpty, reloaded.damage.toString())
-        val event = reloaded.state.events.single()
+        val reloaded = AppJson.decodeFromString(
+            AppState.serializer(),
+            AppJson.encodeToString(AppState.serializer(), state),
+        )
+        val event = reloaded.events.single()
 
         // 09:00 at +03:00 is 06:00 UTC, and the second weekly occurrence keeps that offset.
         assertEquals(6, event.localStart(utc).hour)
@@ -190,31 +191,6 @@ class TimeZoneStageThreeTest {
     }
 
     @Test
-    fun aStageTwoPayloadMovesItsZoneDefinitionToTheCalendarLevel() {
-        val definition = "BEGIN:VTIMEZONE\\r\\nTZID:Custom/Plus3\\r\\n" +
-            "BEGIN:STANDARD\\r\\nDTSTART:19700101T000000\\r\\n" +
-            "TZOFFSETFROM:+0300\\r\\nTZOFFSETTO:+0300\\r\\nEND:STANDARD\\r\\nEND:VTIMEZONE\\r\\n"
-        val payload = """{"schemaVersion":3,"events":[{""" +
-            """"id":"weekly","title":"Weekly",""" +
-            """"start":{"type":"zoned","dateTime":"2026-10-27T09:00:00","tzid":"Custom/Plus3","definition":"$definition"},""" +
-            """"timeZoneDefinition":"$definition",""" +
-            """"recurrence":{"rule":{"frequency":"Weekly","count":3}}}]}"""
-        val decoded = decodeStateWithReport(payload)
-        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
-        assertEquals(com.crko.domain.CurrentSchemaVersion, decoded.state.schemaVersion)
-        val event = decoded.state.events.single()
-        // The typed recurrence set survives: stage-3 migration must not go through LegacyEvent.
-        assertEquals(3, event.recurrence?.rule?.count)
-        assertEquals(6, event.localStart(utc).hour)
-        val zone = decoded.state.calendar.timeZones.single()
-        assertEquals("Custom/Plus3", zone.tzid)
-        assertTrue("TZOFFSETTO:+0300" in zone.definition)
-
-        val exported = exportCalendar(decoded.state.events, timeZones = decoded.state.calendar.timeZones)
-        assertEquals(1, Regex("BEGIN:VTIMEZONE").findAll(exported).count(), exported)
-    }
-
-    @Test
     fun calendarLevelPropertiesSurviveAnImportAndAReload() = runTest {
         val text = calendar(
             "METHOD:REQUEST\r\n" +
@@ -239,10 +215,12 @@ class TimeZoneStageThreeTest {
         assertEquals(240, holder.appState.calendar.refreshMinutes)
         assertEquals("REQUEST", holder.appState.calendar.method)
 
-        val reloaded = decodeStateWithReport(AppJson.encodeToString(AppState.serializer(), storage.state))
-        assertTrue(reloaded.damage.isEmpty, reloaded.damage.toString())
-        assertEquals(CalendarMetadata(name = "Team Events", refreshMinutes = 240, method = "REQUEST"), reloaded.state.calendar)
-        val exported = exportCalendar(reloaded.state.events, calendarName = reloaded.state.calendar.name)
+        val reloaded = AppJson.decodeFromString(
+            AppState.serializer(),
+            AppJson.encodeToString(AppState.serializer(), storage.state),
+        )
+        assertEquals(CalendarMetadata(name = "Team Events", refreshMinutes = 240, method = "REQUEST"), reloaded.calendar)
+        val exported = exportCalendar(reloaded.events, calendarName = reloaded.calendar.name)
         assertTrue("X-WR-CALNAME:Team Events" in exported, exported)
     }
 

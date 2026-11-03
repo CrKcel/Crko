@@ -23,7 +23,6 @@ import com.crko.domain.recurrenceSlotOn
 import com.crko.domain.relatedToEnd
 import com.crko.domain.triggerMinutes
 import com.crko.domain.wallDate
-import com.crko.migration.legacyEvent
 import com.crko.state.EditScope
 import com.crko.state.WriteResult
 import com.crko.state.event.endMinutesAfterStartChange
@@ -46,7 +45,7 @@ class EventServiceTest {
     @Test
     fun eventValidationRejectsBlankTitlesAndNegativeDurations() {
         val f = Fixture()
-        val base = legacyEvent(null, "Meeting", "2026-10-27", 540, 600)
+        val base = testEvent(null, "Meeting", "2026-10-27", 540, 600)
         assertEquals(WriteResult.EmptyTitle, f.holder.saveEvent(base.copy(title = "   ")))
         // A zero-length timed event is valid RFC 5545; only an end before the start is rejected.
         assertEquals(WriteResult.Success, f.holder.saveEvent(base.copy(end = null)))
@@ -60,7 +59,7 @@ class EventServiceTest {
     @Test
     fun savingAnExistingIdUpdatesInsteadOfDuplicating() {
         val f = Fixture()
-        val event = legacyEvent("e1", "Draft", "2026-10-27", 60, 120)
+        val event = testEvent("e1", "Draft", "2026-10-27", 60, 120)
         f.holder.saveEvent(event)
         f.holder.saveEvent(event.copy(title = "Final").withTimes(event.wallDay, 90, 150))
         val stored = f.holder.appState.events.single()
@@ -74,11 +73,11 @@ class EventServiceTest {
         val f = Fixture()
         assertEquals(
             WriteResult.Success,
-            f.holder.saveEvent(legacyEvent(null, "First", "2026-10-27", 540, 600)),
+            f.holder.saveEvent(testEvent(null, "First", "2026-10-27", 540, 600)),
         )
         assertEquals(
             WriteResult.Success,
-            f.holder.saveEvent(legacyEvent(null, "Second", "2026-10-27", 660, 720)),
+            f.holder.saveEvent(testEvent(null, "Second", "2026-10-27", 660, 720)),
         )
         val ids = f.storage.state.events.map { it.id }
         assertEquals(listOf("id-0", "id-1"), ids)
@@ -89,7 +88,7 @@ class EventServiceTest {
     @Test
     fun deletingAnUnsavedEventIsANoOp() {
         val f = Fixture()
-        f.holder.saveEvent(legacyEvent("e1", "Keep", "2026-10-27", 60, 120))
+        f.holder.saveEvent(testEvent("e1", "Keep", "2026-10-27", 60, 120))
         f.holder.deleteEvent(null)
         assertEquals(1, f.holder.appState.events.size)
         f.holder.deleteEvent("e1")
@@ -99,7 +98,7 @@ class EventServiceTest {
     @Test
     fun endTimeIsClampedBeforeMidnight() {
         val f = Fixture()
-        f.holder.saveEvent(legacyEvent("e1", "Late", "2026-10-27", 1400, 2000))
+        f.holder.saveEvent(testEvent("e1", "Late", "2026-10-27", 1400, 2000))
         // 24:00 is not representable as LocalTime; the editor would crash recomposing it.
         assertEquals(MaxEndMinutes, f.holder.appState.events.single().endMinutes)
     }
@@ -109,7 +108,7 @@ class EventServiceTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            legacyEvent("e1", "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
+            testEvent("e1", "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
         )
         assertEquals(1, f.holder.eventsOn(start).size)
         assertEquals(1, f.holder.eventsOn(start.plusDays(1)).size)
@@ -124,7 +123,7 @@ class EventServiceTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            legacyEvent("e1", "Review", start.toString(), 600, 660, repeat = RepeatRule(RepeatFrequency.Weekly)),
+            testEvent("e1", "Review", start.toString(), 600, 660, repeat = RepeatRule(RepeatFrequency.Weekly)),
         )
         assertTrue(f.holder.eventsOn(start.plusDays(1)).isEmpty())
         assertEquals(1, f.holder.eventsOn(start.plusDays(7)).size)
@@ -137,7 +136,7 @@ class EventServiceTest {
         val start = f.holder.today
         // Tuesday, repeated on Monday and Thursday.
         f.holder.saveEvent(
-            legacyEvent(
+            testEvent(
                 "e1",
                 "Gym",
                 start.toString(),
@@ -158,7 +157,7 @@ class EventServiceTest {
     fun weeklyRepeatWithoutSelectedDaysUsesTheStartWeekday() {
         val f = Fixture()
         val result = f.holder.saveEvent(
-            legacyEvent("e1", "Gym", "2026-10-27", 420, 480, repeat = RepeatRule(RepeatFrequency.Weekly)),
+            testEvent("e1", "Gym", "2026-10-27", 420, 480, repeat = RepeatRule(RepeatFrequency.Weekly)),
         )
         assertEquals(WriteResult.Success, result)
         assertEquals(1, f.holder.appState.events.size)
@@ -170,7 +169,7 @@ class EventServiceTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            legacyEvent("e1", "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
+            testEvent("e1", "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
         )
         f.holder.deleteEventsOn(start.plusDays(1))
         assertTrue(f.holder.eventsOn(start.plusDays(1)).isEmpty())
@@ -182,7 +181,7 @@ class EventServiceTest {
     fun clearingADayRemovesOneOffEvents() {
         val f = Fixture()
         val start = f.holder.today
-        f.holder.saveEvent(legacyEvent("e1", "Dentist", start.toString(), 540, 600))
+        f.holder.saveEvent(testEvent("e1", "Dentist", start.toString(), 540, 600))
         f.holder.deleteEventsOn(start)
         assertTrue(f.holder.appState.events.isEmpty())
     }
@@ -332,7 +331,7 @@ class EventServiceTest {
         val f = Fixture()
         val start = f.holder.today
         val result = f.holder.saveEvent(
-            legacyEvent(
+            testEvent(
                 id = "trip",
                 title = "Trip",
                 date = start.toString(),
@@ -357,7 +356,7 @@ class EventServiceTest {
         val f = Fixture()
         val start = f.holder.today
         val result = f.holder.saveEvent(
-            legacyEvent("late", "Late", start.toString(), 23 * 60, 0, endDate = start.plusDays(1).toString()),
+            testEvent("late", "Late", start.toString(), 23 * 60, 0, endDate = start.plusDays(1).toString()),
         )
         assertEquals(WriteResult.Success, result)
         val stored = f.holder.appState.events.single()
@@ -445,7 +444,7 @@ class EventServiceTest {
     fun movingOneOccurrenceMovesItsStartDate() {
         val f = Fixture()
         val start = f.holder.today
-        f.holder.saveEvent(legacyEvent("week", "Weekly", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Weekly)))
+        f.holder.saveEvent(testEvent("week", "Weekly", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Weekly)))
         val series = f.holder.appState.events.single()
         val occurrence = start.plusDays(7)
         val moved = start.plusDays(2)
@@ -461,7 +460,7 @@ class EventServiceTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            legacyEvent("week", "Weekly", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Weekly)),
+            testEvent("week", "Weekly", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Weekly)),
         )
         val series = f.holder.appState.events.single()
         val occurrence = start.plusDays(7)
@@ -483,7 +482,7 @@ class EventServiceTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            legacyEvent("daily", "Daily", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
+            testEvent("daily", "Daily", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
         )
         val series = f.holder.appState.events.single()
         f.holder.saveEvent(
@@ -511,7 +510,7 @@ class EventServiceTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            legacyEvent("daily", "Daily", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
+            testEvent("daily", "Daily", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
         )
         val series = f.holder.appState.events.single()
 
@@ -531,7 +530,7 @@ class EventServiceTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            legacyEvent(
+            testEvent(
                 "bounded",
                 "Bounded",
                 start.toString(),
@@ -599,7 +598,7 @@ class EventServiceTest {
         val start = f.holder.today
         f.holder.importEvents(
             listOf(
-                legacyEvent(
+                testEvent(
                     id = null,
                     title = "Zoned",
                     date = start.toString(),
@@ -634,7 +633,7 @@ class EventServiceTest {
         val f = Fixture()
         val start = f.holder.today
         f.holder.saveEvent(
-            legacyEvent(
+            testEvent(
                 "trip",
                 "Trip",
                 start.toString(),
@@ -736,7 +735,7 @@ class EventServiceTest {
     private fun Fixture.dailySeries(id: String = "series", count: Int? = null): Event {
         val start = holder.today
         holder.saveEvent(
-            legacyEvent(id, "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily, count = count)),
+            testEvent(id, "Standup", start.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily, count = count)),
         )
         return holder.appState.events.first { it.id == id }
     }

@@ -4,7 +4,6 @@ import com.crko.domain.AlarmRelated
 import com.crko.domain.AlarmTrigger
 import com.crko.domain.CalAddress
 import com.crko.domain.CalendarComponent
-import com.crko.domain.CurrentSchemaVersion
 import com.crko.domain.EventClass
 import com.crko.domain.IcsPartStat
 import com.crko.domain.IcsTimeValue
@@ -18,7 +17,6 @@ import com.crko.domain.exportCalendar
 import com.crko.domain.importCalendar
 import com.crko.domain.occursOn
 import com.crko.domain.triggerMinutes
-import com.crko.storage.decodeStateWithReport
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlin.test.Test
@@ -299,62 +297,6 @@ class StageFourTest {
         assertEquals(journal.eventClass, back.eventClass)
     }
 
-    @Test
-    fun schemaFourPayloadMigratesParticipantsAlarmsAttachmentsTodoAndJournal() {
-        val payload = """
-            {"schemaVersion":4,
-             "events":[{"id":"e","title":"Old","start":{"type":"floating","dateTime":"2026-10-27T09:00"},
-               "end":{"type":"floating","dateTime":"2026-10-27T10:00"},
-               "organizer":"mailto:org@x",
-               "organizerRaw":"ORGANIZER;CN=Org:mailto:org@x",
-               "attendees":["mailto:jane@x"],
-               "attendeeRaw":["ATTENDEE;CN=Jane;PARTSTAT=ACCEPTED;X-VENDOR=1:mailto:jane@x"],
-               "alarms":[{"triggerMinutes":15,"relatedToEnd":false,"description":"Old alarm"}],
-               "attachments":[{"raw":"ATTACH;FMTTYPE=text/plain;FILENAME=n.txt","uri":"https://example.com/n.txt","name":"n.txt","mimeType":"text/plain"}],
-               "importSource":"old.ics","sourceLine":3}],
-             "todos":[{"id":"t","title":"Old todo","done":true,"priority":"High",
-               "start":"2026-10-27","startTime":"2026-10-27T01:00:00Z",
-               "due":"2026-10-28","dueTime":"2026-10-28T02:00:00Z",
-               "completedAt":"2026-10-28","completedTime":"2026-10-28T02:30:00Z",
-               "relatedTo":["parent"],"status":"NeedsAction",
-               "alarms":[{"triggerMinutes":30,"relatedToEnd":true}],
-               "importSource":"old.ics","sourceLine":5}],
-             "journals":[{"id":"j","title":"Old journal","date":"2026-10-27",
-               "startTime":"2026-10-27T03:00:00Z","importSource":"old.ics","sourceLine":7}]}
-        """.trimIndent()
-        val decoded = decodeStateWithReport(payload)
-        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
-        assertEquals(CurrentSchemaVersion, decoded.state.schemaVersion)
-
-        val event = decoded.state.events.single()
-        assertEquals("Org", event.organizer?.cn)
-        assertEquals(IcsPartStat.Accepted, event.attendees.single().partStat)
-        assertEquals("1", event.attendees.single().parameters["X-VENDOR"])
-        assertEquals(
-            AlarmTrigger.Relative((-15).minutes, AlarmRelated.Start),
-            event.alarms.single().trigger,
-        )
-        assertEquals("https://example.com/n.txt", event.attachments.single().uri)
-        assertEquals("old.ics", event.importSource)
-        assertEquals(3, event.sourceLine)
-
-        val todo = decoded.state.todos.single()
-        assertEquals(TodoStatus.Completed, todo.status)
-        assertTrue(todo.done)
-        assertEquals(1, todo.priority)
-        assertEquals(IcsTimeValue.Utc(Instant.parse("2026-10-27T01:00:00Z")), todo.start)
-        assertEquals(IcsTimeValue.Utc(Instant.parse("2026-10-28T02:00:00Z")), todo.due)
-        assertEquals(Instant.parse("2026-10-28T02:30:00Z"), todo.completed)
-        assertEquals(listOf(RelatedTo("parent", "PARENT")), todo.relatedTo)
-        assertEquals(AlarmRelated.End, (todo.alarms.single().trigger as AlarmTrigger.Relative).related)
-        assertEquals("old.ics", todo.importSource)
-        assertEquals(5, todo.sourceLine)
-
-        val journal = decoded.state.journals.single()
-        assertEquals(IcsTimeValue.Utc(Instant.parse("2026-10-27T03:00:00Z")), journal.start)
-        assertEquals("old.ics", journal.importSource)
-        assertEquals(7, journal.sourceLine)
-    }
 
     @Test
     fun delegatedAddressListsStayOneParameterAndSurviveTheRoundTrip() {

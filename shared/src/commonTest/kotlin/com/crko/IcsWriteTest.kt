@@ -14,7 +14,6 @@ import com.crko.domain.exportIcs
 import com.crko.domain.importCalendar
 import com.crko.domain.importIcs
 import com.crko.domain.localStart
-import com.crko.migration.legacyEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -79,7 +78,7 @@ class IcsWriteTest : IcsTestBase() {
 
     @Test
     fun exportAllDayUsesDateValuesAndAnExclusiveEnd() {
-        val event = legacyEvent(
+        val event = testEvent(
             id = "a1",
             title = "Trip",
             date = "2026-10-27",

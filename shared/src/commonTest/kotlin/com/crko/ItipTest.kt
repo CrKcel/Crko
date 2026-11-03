@@ -2,7 +2,6 @@ package com.crko
 
 import com.crko.domain.CalAddress
 import com.crko.domain.Event
-import com.crko.migration.legacyEvent
 import com.crko.domain.IcsAttendee
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsTimeValue
@@ -151,7 +150,7 @@ class ItipTest {
 
     @Test
     fun replyRewritesTheAttendeeStatusAndKeepsOtherParameters() {
-        val stored = legacyEvent(
+        val stored = testEvent(
             id = "e1",
             title = "Review",
             date = "2026-03-01",
@@ -282,7 +281,7 @@ class ItipTest {
 
     @Test
     fun replyExportRoundTripsBackIntoAReply() {
-        val stored = legacyEvent(
+        val stored = testEvent(
             id = "e1",
             title = "Review",
             date = "2026-03-01",
@@ -306,7 +305,7 @@ class ItipTest {
 
     @Test
     fun cancelExportCarriesTheMethodAndStatus() {
-        val stored = legacyEvent(id = "e1", title = "Gone", date = "2026-03-01", startMinutes = 600, endMinutes = 660)
+        val stored = testEvent(id = "e1", title = "Gone", date = "2026-03-01", startMinutes = 600, endMinutes = 660)
         val text = exportItipCancel(listOf(stored))
         assertTrue("METHOD:CANCEL" in text)
         assertTrue("STATUS:CANCELLED" in text)
@@ -314,7 +313,7 @@ class ItipTest {
 
     @Test
     fun requestExportCarriesTheMethod() {
-        val stored = legacyEvent(id = "e1", title = "Invite", date = "2026-03-01", startMinutes = 600, endMinutes = 660)
+        val stored = testEvent(id = "e1", title = "Invite", date = "2026-03-01", startMinutes = 600, endMinutes = 660)
         val text = exportItipRequest(listOf(stored))
         assertTrue("METHOD:REQUEST" in text)
         assertTrue("SUMMARY:Invite" in text)
@@ -322,7 +321,7 @@ class ItipTest {
 
     @Test
     fun attendeeEntryFallbackUsesPlainAddresses() {
-        val event = legacyEvent(
+        val event = testEvent(
             id = "e1",
             title = "T",
             date = "2026-03-01",

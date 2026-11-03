@@ -86,8 +86,8 @@
 默认使用 SQLDelight / SQLite：Android 数据库位于应用私有 `databases/crko.db`，iOS 位于 `Application Support/Crko/crko.db`。设置仍保存在 `SharedPreferences`（Android）/ `NSUserDefaults`（iOS）。
 
 - 每条事件、待办、日志存为一行，RFC JSON payload 是事实来源；`calendar_id` / `ics_uid` / 时间与状态列只用于查询、差异写入和后台读取。
-- 首次启动把旧 `state.v1` 一次性迁移到新库：先备份到 `state.v1.pre-sqlite`，写库后读回校验，通过才切换；失败保留原 JSON 并继续使用 JSON 引擎。
-- 回退开关为 `persistence.engine=json`；启动时会先把数据库状态导出回 `state.v1` 再切换，导出失败则继续使用 SQLite。
+- 首次启动在 meta 表标记 `initialized` 并写入种子数据（debug 构建为示例日程），保证种子只应用一次。
+- 数据库打不开或读不出来时，本次进程退到内存存储继续运行，损坏的库文件保留在磁盘上供诊断。
 
 ## 构建
 
@@ -114,8 +114,7 @@ cd iosApp && xcodebuild -project iosApp.xcodeproj -scheme iosApp \
 shared/src/
 ├── commonMain/kotlin/com/crko/
 │   ├── domain/     纯 Kotlin：模型、重复规则（RecurrenceMatching / RecurrenceIndex / TodoRecurrence）、ICS 编解码
-│   ├── migration/  旧版持久化 DTO 与迁移转换（只被 storage 与迁移测试依赖）
-│   ├── storage/    持久化门面、SQLDelight 读写/迁移、平台声明（expect）与文本解码（CalendarTextReader）
+│   ├── storage/    持久化门面、SQLDelight 读写、平台声明（expect）与文本解码（CalendarTextReader）
 │   ├── sync/       订阅抓取与 CalDAV 协议实现
 │   ├── state/      AppStateHolder 门面 + event/todo/journal/import/settings/persistence 服务
 │   ├── i18n/       中英文文案
@@ -130,10 +129,9 @@ shared/src/
 依赖方向按层单向：
 
 - `domain`：不依赖任何其他包。
-- `migration` → `domain`
-- `storage` → `domain`、`migration`
+- `storage` → `domain`
 - `sync` → `domain`、`storage`
-- `state` → `domain`、`migration`、`storage`、`sync`、`i18n`
+- `state` → `domain`、`storage`、`sync`、`i18n`
 - `ui` → `domain`、`i18n`、`state`（不直接依赖 `storage`、`sync`）
 - `com.crko.dev` 只允许组合根 `App.kt` 与测试引用。
 - `state` 对 `i18n` 只用于用户可见文案。
@@ -154,7 +152,7 @@ shared/src/
 - **时区**：`VTIMEZONE` 属于 `Calendar`，事件只保存 `TZID`；未解析的未知时区由所属日历的定义兜底。
 - **界面投影**：设备时区只通过 `day` / `endDay` / `localStart` / `localEnd` / `occursOn` / `timeRangeOn` 等展示投影参与界面，不写回持久化模型。
 - **本地归属**：`importSource` / `sourceLine` 等放在 `LocalRecordMeta`，不与 RFC 属性混在一起；订阅记录以所属 `Calendar` 为作用域，不再用 `importSource` 前缀充当日历身份。
-- **迁移**：旧版持久化 JSON 由 `migration` 包的 `LegacyModels` / `LegacyEventCompat` 与 `storage.StateCodec` 迁移；`domain` 不包含迁移 DTO，新版本只写当前结构（`schemaVersion = 6`）。迁移后的默认存储是 SQLDelight/SQLite（`storage.db.CrkoDatabase`），跨平台表结构在 `shared/src/commonMain/sqldelight/com/crko/storage/db/Crko.sq`。
+- **持久化**：只写当前结构（`schemaVersion = 6`），存储是 SQLDelight/SQLite（`storage.db.CrkoDatabase`），跨平台表结构在 `shared/src/commonMain/sqldelight/com/crko/storage/db/Crko.sq`。旧版本 JSON 持久化的兼容迁移代码已移除。
 
 ## 校验与防回归
 
@@ -164,8 +162,8 @@ shared/src/
 ./gradlew :shared:verifyDomainModel :shared:verifyArchitecture :shared:verifyFileSizes
 ```
 
-- `verifyDomainModel`：检查旧 `Event` / `Todo` 字段名是否以属性声明形式重新出现在 `domain` 或 `state` 的任意非迁移文件中（不只 `Models.kt`，也含 `Event.date` 与 `RepeatRule.weekdays` / `rDates`）、合成 UID 标记（`#override-` / `#future-` / `#prior-`）或 `sub:` 身份前缀是否回到 `migration` 包之外、ICS 与 iTIP 导入导出路径（`Ics*.kt` / `Itip.kt`）是否重新读取设备时区。
-- `verifyArchitecture`：按包路径检查跨层 import（`domain` 不得依赖 `storage/sync/state/ui/i18n/dev/migration`，`storage` 不得依赖 `sync/state/ui/i18n/dev`，`ui` 不得依赖 `storage/sync/dev` 等）。
+- `verifyDomainModel`：检查旧 `Event` / `Todo` 字段名是否以属性声明形式重新出现在 `domain` 或 `state` 的任意非迁移文件中（不只 `Models.kt`，也含 `Event.date` 与 `RepeatRule.weekdays` / `rDates`）、合成 UID 标记（`#override-` / `#future-` / `#prior-`）或 `sub:` 身份前缀是否回到数据层、ICS 与 iTIP 导入导出路径（`Ics*.kt` / `Itip.kt`）是否重新读取设备时区。
+- `verifyArchitecture`：按包路径检查跨层 import（`domain` 不得依赖 `storage/sync/state/ui/i18n/dev`，`storage` 不得依赖 `sync/state/ui/i18n/dev`，`ui` 不得依赖 `storage/sync/dev` 等）。
 - `verifyFileSizes`：`commonMain` 单个 Kotlin 文件不超过 800 行。
 
 两个架构/尺寸守卫的 allowlist 均已清空，新增违规只能改代码、不能加豁免。

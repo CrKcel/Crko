@@ -1,6 +1,5 @@
 package com.crko
 
-import com.crko.migration.legacyEvent
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
@@ -15,7 +14,7 @@ abstract class IcsTestBase {
     protected val shanghai = TimeZone.of("Asia/Shanghai")
     protected val now: Instant = LocalDateTime(2026, 10, 27, 9, 0).toInstant(utc)
 
-    protected val baseEvent = legacyEvent(
+    protected val baseEvent = testEvent(
         id = "e1",
         title = "Team sync",
         date = "2026-10-27",

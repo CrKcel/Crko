@@ -417,17 +417,6 @@ data class Event(
 
 }
 
-/** Old payloads stored an organizer as a bare value and, separately, its original line. */
-internal fun legacyCalAddress(raw: String?, value: String?): CalAddress? =
-    raw?.takeIf { it.isNotBlank() }?.let { CalAddress.parse(it, "ORGANIZER") }
-        ?: value?.takeIf { it.isNotBlank() }?.let(::CalAddress)
-
-/** Old payloads stored attendees as bare values and, separately, their original lines. */
-internal fun legacyCalAddresses(raw: List<String>, values: List<String>): List<CalAddress> =
-    raw.mapNotNull { CalAddress.parse(it, "ATTENDEE") }.ifEmpty {
-        values.filter { it.isNotBlank() }.map(::CalAddress)
-    }
-
 /** RFC 5545: a timed event without `DTEND`/`DURATION` has zero length rather than one hour. */
 val Event.isZeroDuration: Boolean
     get() = end == null

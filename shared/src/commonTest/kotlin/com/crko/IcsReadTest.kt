@@ -20,7 +20,6 @@ import com.crko.domain.occurrenceDurationOn
 import com.crko.domain.occurrenceRangesOn
 import com.crko.domain.occursOn
 import com.crko.domain.triggerMinutes
-import com.crko.migration.legacyEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -49,7 +48,7 @@ class IcsReadTest : IcsTestBase() {
         )
         val event = importIcs(text, utc, "Untitled").single()
         assertEquals(
-            legacyEvent(
+            testEvent(
                 id = null,
                 title = "Standup",
                 date = "2026-10-27",

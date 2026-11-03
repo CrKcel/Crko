@@ -9,7 +9,6 @@ import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
 import com.crko.domain.TodoStatus
 import com.crko.domain.gatedCancellations
-import com.crko.migration.legacyEvent
 import com.crko.domain.mergeEvents
 import com.crko.domain.mergeJournals
 import com.crko.domain.mergeTodos
@@ -28,7 +27,7 @@ class CalendarMergeTest {
         dtStamp: String? = null,
         lastModified: String? = null,
         importSource: String? = null,
-    ) = legacyEvent(
+    ) = testEvent(
         id = id,
         title = title,
         date = "2026-10-27",

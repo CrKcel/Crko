@@ -10,7 +10,6 @@ import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
 import com.crko.domain.toIcsPriority
-import com.crko.migration.legacyEvent
 import com.crko.state.search.SearchFilters
 import com.crko.state.search.SearchRecord
 import com.crko.state.search.SearchType
@@ -55,7 +54,7 @@ class SearchTest {
         url: String = "",
         icsUid: String? = null,
         repeat: RepeatRule? = null,
-    ): Event = legacyEvent(
+    ): Event = testEvent(
         id = id,
         title = title,
         date = day,

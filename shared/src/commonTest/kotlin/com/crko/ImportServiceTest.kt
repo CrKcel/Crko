@@ -14,7 +14,6 @@ import com.crko.domain.decodedBytes
 import com.crko.domain.exportIcs
 import com.crko.domain.importCalendar
 import com.crko.i18n.EnStrings
-import com.crko.migration.legacyEvent
 import com.crko.state.EditScope
 import com.crko.state.ImportOutcome
 import com.crko.ui.common.importSummaryText
@@ -33,7 +32,7 @@ class ImportServiceTest {
     @Test
     fun importingEventsAssignsIdsAndSkipsKnownUids() {
         val f = Fixture()
-        val imported = legacyEvent(null, "Imported", "2026-10-27", 540, 600, icsUid = "ics-1")
+        val imported = testEvent(null, "Imported", "2026-10-27", 540, 600, icsUid = "ics-1")
         assertEquals(1, f.holder.importEvents(listOf(imported)))
         assertEquals(0, f.holder.importEvents(listOf(imported)))
         val stored = f.holder.appState.events.single()
@@ -44,8 +43,8 @@ class ImportServiceTest {
     @Test
     fun reimportingAnExportOfNativeEventsDoesNotDuplicateThem() {
         val f = Fixture()
-        f.holder.saveEvent(legacyEvent("native-1", "Native", "2026-10-27", 540, 600))
-        val exported = legacyEvent(null, "Native", "2026-10-27", 540, 600, icsUid = "native-1@crko")
+        f.holder.saveEvent(testEvent("native-1", "Native", "2026-10-27", 540, 600))
+        val exported = testEvent(null, "Native", "2026-10-27", 540, 600, icsUid = "native-1@crko")
         assertEquals(0, f.holder.importEvents(listOf(exported)))
         assertEquals(1, f.holder.appState.events.size)
     }
@@ -54,7 +53,7 @@ class ImportServiceTest {
     fun importingAFileWritesEventsAndTodosTogether() {
         val f = Fixture()
         val import = IcsImport(
-            events = listOf(legacyEvent(null, "Imported", "2026-10-27", 540, 600, icsUid = "file-1")),
+            events = listOf(testEvent(null, "Imported", "2026-10-27", 540, 600, icsUid = "file-1")),
             todos = listOf(Todo(id = "", title = "File todo", icsUid = "file-2")),
         )
         val writesBefore = f.storage.writes
@@ -72,7 +71,7 @@ class ImportServiceTest {
     @Test
     fun reimportingTheSameFileStillCollapsesOwnExportsAndDuplicates() {
         val f = Fixture()
-        val first = legacyEvent(null, "Meeting", "2026-10-27", 540, 600, icsUid = "uid-a")
+        val first = testEvent(null, "Meeting", "2026-10-27", 540, 600, icsUid = "uid-a")
         assertEquals(1, f.holder.importEvents(listOf(first, first.copy())))
         assertEquals(1, f.holder.appState.events.size)
         // An event created here is exported as "<id>@crko"; re-importing must not duplicate it.
@@ -105,7 +104,7 @@ class ImportServiceTest {
     @Test
     fun reimportingANewerCopyUpdatesTheStoredRecord() {
         val f = Fixture()
-        val first = legacyEvent(
+        val first = testEvent(
             null,
             "Old",
             "2026-10-27",
@@ -132,8 +131,8 @@ class ImportServiceTest {
     @Test
     fun reimportingACancelledCopyRemovesTheLocalSeries() {
         val f = Fixture()
-        val series = legacyEvent(null, "Cancelled", "2026-10-27", 540, 600, icsUid = "cancel-uid")
-        val exception = legacyEvent(
+        val series = testEvent(null, "Cancelled", "2026-10-27", 540, 600, icsUid = "cancel-uid")
+        val exception = testEvent(
             null,
             "Moved",
             "2026-10-28",
@@ -151,15 +150,15 @@ class ImportServiceTest {
         val f = Fixture()
         val journal = Journal(id = "", title = "Note", icsUid = "j-1")
         assertEquals(ImportOutcome(journals = 1), f.holder.importCalendar(IcsImport(journals = listOf(journal))))
-        assertEquals(1, f.holder.importEvents(listOf(legacyEvent(null, "Gone", "2026-10-27", 540, 600, icsUid = "gone"))))
+        assertEquals(1, f.holder.importEvents(listOf(testEvent(null, "Gone", "2026-10-27", 540, 600, icsUid = "gone"))))
         assertEquals(ImportOutcome(removed = 1), f.holder.importCalendar(IcsImport(cancelledUids = setOf("gone"))))
     }
 
     @Test
     fun reimportingTheSameSourceRemovesRecordsTheFileNoLongerLists() {
         val f = Fixture()
-        val kept = legacyEvent(null, "Kept", "2026-10-27", 540, 600, icsUid = "kept-1")
-        val gone = legacyEvent(null, "Gone", "2026-10-28", 540, 600, icsUid = "gone-1")
+        val kept = testEvent(null, "Kept", "2026-10-27", 540, 600, icsUid = "kept-1")
+        val gone = testEvent(null, "Gone", "2026-10-28", 540, 600, icsUid = "gone-1")
         assertEquals(ImportOutcome(events = 2), f.holder.importCalendar(IcsImport(events = listOf(kept, gone)), "plan.ics"))
         // The file still carries one of the two records, so the other one was removed upstream.
         assertEquals(
@@ -172,9 +171,9 @@ class ImportServiceTest {
     @Test
     fun recordsFromOtherSourcesSurviveAReimport() {
         val f = Fixture()
-        f.holder.importEvents(listOf(legacyEvent(null, "Mine", "2026-10-27", 540, 600, icsUid = "mine-1")))
+        f.holder.importEvents(listOf(testEvent(null, "Mine", "2026-10-27", 540, 600, icsUid = "mine-1")))
         f.holder.importCalendar(
-            IcsImport(events = listOf(legacyEvent(null, "Other", "2026-10-28", 540, 600, icsUid = "other-1"))),
+            IcsImport(events = listOf(testEvent(null, "Other", "2026-10-28", 540, 600, icsUid = "other-1"))),
             "other.ics",
         )
         // An empty file of a source says nothing about records the source does not own.
@@ -185,10 +184,10 @@ class ImportServiceTest {
     @Test
     fun locallyCreatedRecordsSurviveSourceReconciliation() {
         val f = Fixture()
-        assertEquals(1, f.holder.importEvents(listOf(legacyEvent(null, "Mine", "2026-10-27", 540, 600))))
-        val first = legacyEvent(null, "Imported", "2026-10-28", 540, 600, icsUid = "imp-1")
+        assertEquals(1, f.holder.importEvents(listOf(testEvent(null, "Mine", "2026-10-27", 540, 600))))
+        val first = testEvent(null, "Imported", "2026-10-28", 540, 600, icsUid = "imp-1")
         f.holder.importCalendar(IcsImport(events = listOf(first)), "plan.ics")
-        val second = legacyEvent(null, "Imported", "2026-10-29", 540, 600, icsUid = "imp-2")
+        val second = testEvent(null, "Imported", "2026-10-29", 540, 600, icsUid = "imp-2")
         assertEquals(
             ImportOutcome(events = 1, removed = 1),
             f.holder.importCalendar(IcsImport(events = listOf(second)), "plan.ics"),
@@ -199,8 +198,8 @@ class ImportServiceTest {
     @Test
     fun uncheckingAPreviewRowDoesNotRemoveTheRecordTheFileStillLists() {
         val f = Fixture()
-        val first = legacyEvent(null, "First", "2026-10-27", 540, 600, icsUid = "e-1")
-        val second = legacyEvent(null, "Second", "2026-10-28", 540, 600, icsUid = "e-2")
+        val first = testEvent(null, "First", "2026-10-27", 540, 600, icsUid = "e-1")
+        val second = testEvent(null, "Second", "2026-10-28", 540, 600, icsUid = "e-2")
         assertEquals(
             ImportOutcome(events = 2),
             f.holder.importCalendar(IcsImport(events = listOf(first, second)), "plan.ics"),
@@ -246,8 +245,8 @@ class ImportServiceTest {
     @Test
     fun decliningACancellationDoesNotRemoveTheSeriesThroughTheVanishedPass() {
         val f = Fixture()
-        val cancelled = legacyEvent(null, "Cancelled", "2026-10-27", 540, 600, icsUid = "c-1")
-        val live = legacyEvent(null, "Live", "2026-10-28", 540, 600, icsUid = "c-2")
+        val cancelled = testEvent(null, "Cancelled", "2026-10-27", 540, 600, icsUid = "c-1")
+        val live = testEvent(null, "Live", "2026-10-28", 540, 600, icsUid = "c-2")
         f.holder.importCalendar(IcsImport(events = listOf(cancelled, live)), "plan.ics")
         // The new file cancels one series and keeps the other; the user declines the removal row,
         // so the declined series must survive the reconciliation of the same import as well.
@@ -264,7 +263,7 @@ class ImportServiceTest {
     @Test
     fun aRenamedSourceTakesOverProvenanceEvenWhenNothingElseChanges() {
         val f = Fixture()
-        val original = legacyEvent(
+        val original = testEvent(
             null,
             "Same",
             "2026-10-27",
@@ -298,7 +297,7 @@ class ImportServiceTest {
             ),
             binary = true,
         )
-        val event = legacyEvent(null, "With file", "2026-10-27", 540, 600, icsUid = "att-1", attachments = listOf(attachment))
+        val event = testEvent(null, "With file", "2026-10-27", 540, 600, icsUid = "att-1", attachments = listOf(attachment))
         f.holder.importCalendar(IcsImport(events = listOf(event)), "plan.ics")
         val stored = f.holder.appState.events.single().attachments.single()
         assertEquals("", stored.data)
@@ -332,7 +331,7 @@ class ImportServiceTest {
     @Test
     fun reimportingAnOwnExportExceptionDoesNotReplaceItsMaster() {
         val f = Fixture()
-        val master = legacyEvent(
+        val master = testEvent(
             null,
             "Base",
             "2026-10-27",
@@ -340,7 +339,7 @@ class ImportServiceTest {
             600,
             icsUid = "native-1@crko",
         )
-        val exception = legacyEvent(
+        val exception = testEvent(
             null,
             "Moved",
             "2026-10-28",

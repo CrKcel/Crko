@@ -18,8 +18,6 @@ private class SharedPreferencesStore(private val name: String) : KeyValueStore {
     }
 }
 
-actual fun appStore(): KeyValueStore = SharedPreferencesStore("crko.app")
-
 actual fun settingsStore(): KeyValueStore = SharedPreferencesStore("crko.settings")
 
 actual fun newId(): String = UUID.randomUUID().toString()

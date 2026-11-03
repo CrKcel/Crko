@@ -10,9 +10,6 @@ interface KeyValueStore {
     fun putString(key: String, value: String)
 }
 
-/** Raw storage used by the app. */
-expect fun appStore(): KeyValueStore
-
 /** Settings storage, kept separate so a corrupt state payload never loses preferences. */
 expect fun settingsStore(): KeyValueStore
 

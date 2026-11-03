@@ -92,8 +92,7 @@ kotlin {
 }
 
 /**
- * Source-level guard for the RFC 5545 domain model. The persisted-payload DTOs in the
- * `com.crko.migration` package are allowed to mention the old shape; nothing else is. Legacy field
+ * Source-level guard for the RFC 5545 domain model. Legacy field
  * names that double as legitimate locals (`endMinutes = when { … }`) are matched in
  * property-declaration form (`val|var name:` , including `val Event.name:` compat getters).
  */
@@ -107,7 +106,6 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
         val root = commonMain.asFile
         val violations = mutableListOf<String>()
         fun File.lines(): List<String> = readText().lines()
-        fun File.isMigrationCode(): Boolean = relativeTo(root).path.startsWith("migration/")
         fun report(file: File, line: Int, message: String) {
             violations += "${file.relativeTo(root).path}:${line + 1}: $message"
         }
@@ -155,7 +153,7 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
                         if (comment) return@forEachIndexed
                         legacyFieldNames.forEach { field ->
                             if (Regex("""\b(val|var)\s+(?:[\w.]+\.)?$field\s*:""").containsMatchIn(line)) {
-                                report(file, index, "legacy field '$field' is back outside migration code")
+                                report(file, index, "legacy field '$field' is back in the data layer")
                             }
                         }
                     }
@@ -164,17 +162,17 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
 
         val syntheticMarkers = listOf("#override-", "#future-", "#prior-")
         root.walkTopDown()
-            .filter { it.isFile && it.extension == "kt" && !it.isMigrationCode() }
+            .filter { it.isFile && it.extension == "kt" }
             .forEach { file ->
                 file.lines().forEachIndexed { index, line ->
                     val code = line.trim()
                     val comment = code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")
                     if (!comment) {
                         syntheticMarkers.firstOrNull { it in line }?.let { marker ->
-                            report(file, index, "synthetic UID marker '$marker' outside migration code")
+                            report(file, index, "synthetic UID marker '$marker' is back in the data layer")
                         }
                         if (line.contains("\"sub:\"") || line.contains("subscriptionSource")) {
-                            report(file, index, "importSource must not act as calendar identity outside migration code")
+                            report(file, index, "importSource must not act as calendar identity in the data layer")
                         }
                     }
                 }
@@ -217,8 +215,7 @@ val verifyArchitecture = tasks.register("verifyArchitecture") {
 
     doLast {
         val forbiddenImports = mapOf(
-            "domain" to listOf("storage", "sync", "state", "ui", "i18n", "dev", "migration"),
-            "migration" to listOf("storage", "sync", "state", "ui", "i18n"),
+            "domain" to listOf("storage", "sync", "state", "ui", "i18n", "dev"),
             "storage" to listOf("sync", "state", "ui", "i18n", "dev"),
             "sync" to listOf("state", "ui", "i18n", "dev"),
             "i18n" to listOf("state", "ui", "dev"),

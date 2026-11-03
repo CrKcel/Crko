@@ -12,7 +12,6 @@ import com.crko.domain.importCalendar
 import com.crko.domain.importIcs
 import com.crko.domain.occurrenceRangesOn
 import com.crko.domain.occursOn
-import com.crko.migration.legacyEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -323,7 +322,7 @@ class IcsSeriesTest : IcsTestBase() {
 
     @Test
     fun allDayExceptionUsesADateRecurrenceId() {
-        val series = legacyEvent(
+        val series = testEvent(
             id = "all-day-series",
             title = "Holiday",
             date = "2026-10-27",

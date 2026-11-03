@@ -21,8 +21,6 @@ private class UserDefaultsStore(private val suite: String?) : KeyValueStore {
     }
 }
 
-actual fun appStore(): KeyValueStore = UserDefaultsStore(null)
-
 actual fun settingsStore(): KeyValueStore = UserDefaultsStore("crko.settings")
 
 actual fun newId(): String = NSUUID().UUIDString()

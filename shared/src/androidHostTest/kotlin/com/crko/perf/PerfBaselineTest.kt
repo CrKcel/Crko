@@ -21,7 +21,6 @@ import com.crko.i18n.EnStrings
 import com.crko.state.AppStateHolder
 import com.crko.state.persistence.StateRepository
 import com.crko.state.planReminders
-import com.crko.storage.FileStateStorage
 import com.crko.storage.KeyValueStore
 import com.crko.storage.LoadDamage
 import com.crko.storage.SqliteStateStorage
@@ -79,28 +78,50 @@ class PerfBaselineTest {
     private fun measureDataset(eventCount: Int): List<Row> {
         val directory = Files.createTempDirectory("crko-perf-$eventCount")
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val driver = JdbcSqliteDriver("jdbc:sqlite:${directory.resolve("crko.db")}", Properties(), CrkoDatabase.Schema)
         return try {
             val state = generateState(eventCount)
-            val store = DirectoryKeyValueStore(directory)
-            val storage = FileStateStorage({ store }, { store })
-            // Materialize the payload once so load samples measure a warm, valid file.
+            val storage = SqliteStateStorage(CrkoDatabase(driver), { DirectoryKeyValueStore(directory) })
+            // Materialize the database once so load samples measure a warm, valid file.
             storage.saveState(state)
-            val payloadBytes = Files.size(directory.resolve("state.v1"))
+            driver.execute(null, "PRAGMA wal_checkpoint(TRUNCATE)", 0)
+            val databaseBytes = Files.size(directory.resolve("crko.db"))
+
+            // The edit states are built outside the timed block so the numbers measure the storage
+            // transaction, not fixture copying.
+            val target = state.calendars.first { it.events.isNotEmpty() }
+            val event = target.events.first()
+            val edits = List(Warmups + Samples) { index ->
+                state.copy(
+                    calendars = state.calendars.map { calendar ->
+                        if (calendar.id != target.id) {
+                            calendar
+                        } else {
+                            calendar.copy(
+                                events = calendar.events.map { existing ->
+                                    if (existing.id != event.id) existing else existing.copy(title = "Edited $index")
+                                },
+                            )
+                        }
+                    },
+                )
+            }
 
             val rows = mutableListOf<Row>()
             rows += measure(
-                "FileStateStorage.saveState",
+                "SqliteStateStorage.loadState",
                 events = eventCount,
-                note = "payload=${bytes(payloadBytes)}",
-            ) {
-                storage.saveState(state)
-            }
-            rows += measure(
-                "FileStateStorage.loadState",
-                events = eventCount,
-                note = "payload=${bytes(payloadBytes)}",
+                note = "database=${bytes(databaseBytes)}",
             ) {
                 loadedEvents += storage.loadState().calendars.sumOf { it.events.size }
+            }
+            var editIndex = 0
+            rows += measure(
+                "SqliteStateStorage.saveState (1 edit)",
+                events = eventCount,
+                note = "database=${bytes(databaseBytes)}",
+            ) {
+                storage.saveState(edits[editIndex++ % edits.size])
             }
 
             val counting = CountingStateStorage(storage)
@@ -114,7 +135,7 @@ class PerfBaselineTest {
                 events = eventCount,
             ) {
                 runBlocking {
-                    repository.persist(state)
+                    repository.persist(edits[editIndex++ % edits.size])
                     repository.awaitIdle()
                 }
             }
@@ -172,79 +193,12 @@ class PerfBaselineTest {
             ) {
                 todoSink += holder.activeTodos().size
             }
-            rows += measureSqlite(state, eventCount, directory)
             rows
         } finally {
+            driver.close()
             scope.cancel()
             directory.toFile().deleteRecursively()
         }
-    }
-
-    /**
-     * F2.3 comparison: the same deterministic state through SQLDelight. The edit states are built
-     * outside the timed block so the numbers measure the storage transaction, not fixture copying.
-     */
-    private fun measureSqlite(state: AppState, eventCount: Int, parent: Path): List<Row> {
-        val directory = Files.createDirectory(parent.resolve("sqlite"))
-        val path = directory.resolve("crko.db")
-        val driver = JdbcSqliteDriver("jdbc:sqlite:$path", Properties(), CrkoDatabase.Schema)
-        val storage = SqliteStateStorage(CrkoDatabase(driver), { DirectoryKeyValueStore(directory) })
-        val edits = List(Warmups + Samples) { index ->
-            val target = state.calendars.first { it.events.isNotEmpty() }
-            val event = target.events.first()
-            state.copy(
-                calendars = state.calendars.map { calendar ->
-                    if (calendar.id != target.id) {
-                        calendar
-                    } else {
-                        calendar.copy(
-                            events = calendar.events.map { existing ->
-                                if (existing.id != event.id) existing else existing.copy(title = "Edited $index")
-                            },
-                        )
-                    }
-                },
-            )
-        }
-        val rows = mutableListOf<Row>()
-        try {
-            storage.saveState(state)
-            driver.execute(null, "PRAGMA wal_checkpoint(TRUNCATE)", 0)
-            val size = Files.size(path)
-            rows += measure(
-                "SqliteStateStorage.loadState",
-                events = eventCount,
-                note = "database=${bytes(size)}",
-            ) {
-                loadedEvents += storage.loadState().calendars.sumOf { it.events.size }
-            }
-            var editIndex = 0
-            rows += measure(
-                "SqliteStateStorage.saveState (1 edit)",
-                events = eventCount,
-                note = "database=${bytes(size)}",
-            ) {
-                storage.saveState(edits[editIndex++ % edits.size])
-            }
-            val repository = StateRepository(
-                scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-                storage = storage,
-                ioDispatcher = Dispatchers.Default,
-            )
-            rows += measure(
-                "StateRepository.persist SQLite (1 edit + awaitIdle)",
-                events = eventCount,
-                note = "database=${bytes(size)}",
-            ) {
-                runBlocking {
-                    repository.persist(edits[editIndex++ % edits.size])
-                    repository.awaitIdle()
-                }
-            }
-        } finally {
-            driver.close()
-        }
-        return rows
     }
 
     private fun measureBurst(

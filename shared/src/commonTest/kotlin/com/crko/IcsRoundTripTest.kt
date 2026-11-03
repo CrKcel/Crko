@@ -18,7 +18,6 @@ import com.crko.domain.importIcs
 import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.occursOn
 import com.crko.domain.triggerMinutes
-import com.crko.migration.legacyEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -96,7 +95,7 @@ class IcsRoundTripTest : IcsTestBase() {
 
     @Test
     fun midnightEndRoundTripsAsTheNextDay() {
-        val event = legacyEvent(
+        val event = testEvent(
             id = "m1",
             title = "Late",
             date = "2026-10-27",

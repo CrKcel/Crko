@@ -5,7 +5,6 @@ import com.crko.domain.Calendar
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.LocalCalendarId
 import com.crko.domain.Todo
-import com.crko.migration.legacyEvent
 import com.crko.state.search.MaxSearchResults
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -25,7 +24,7 @@ class SearchPerformanceTest {
     fun fullScanOfTwentyThousandEventsAndFiveThousandTodosStaysWithinBudget() {
         val base = LocalDate(2025, 1, 1).toEpochDays().toInt()
         val events = (0 until 20_000).map { index ->
-            legacyEvent(
+            testEvent(
                 id = "event-$index",
                 title = if (index % 100 == 0) "Weekly 会议 $index" else "Event $index",
                 date = LocalDate.fromEpochDays(base + index % 1_000).toString(),

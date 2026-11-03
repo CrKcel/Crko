@@ -14,6 +14,7 @@ import com.crko.domain.EventStatus
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.Journal
 import com.crko.domain.JournalStatus
+import com.crko.domain.PersistedSettings
 import com.crko.domain.Recurrence
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
@@ -27,11 +28,11 @@ import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.toInstant
+import java.io.File
 import java.util.Properties
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Instant
 
@@ -42,22 +43,6 @@ private class MemoryStore(initial: Map<String, String> = emptyMap()) : KeyValueS
 
     override fun putString(key: String, value: String) {
         values[key] = value
-    }
-}
-
-private class MemoryBackup : PersistenceBackup {
-    var raw: String? = null
-    var quarantined = false
-
-    override fun readPreSqlite(): String? = raw
-
-    override fun writePreSqlite(raw: String) {
-        this.raw = raw
-    }
-
-    override fun quarantineDatabase(): String? {
-        quarantined = true
-        return null
     }
 }
 
@@ -344,82 +329,39 @@ class SqlitePersistenceTest {
     }
 
     @Test
-    fun theMigratorCopiesLegacyJsonIntoTheDatabaseAndSwitchesTheEngine() {
-        val raw = AppJson.encodeToString(
-            AppState.serializer(),
-            AppState(
+    fun theFactorySeedsTheDatabaseOnFirstLaunchOnlyOnce() {
+        val directory = kotlin.io.path.createTempDirectory("crko-seed-test").toFile()
+        try {
+            val path = "${directory.absolutePath}/crko.db"
+            var seeds = 0
+            val seed = AppState(
                 calendars = listOf(
                     Calendar.local().copy(
-                        events = listOf(
-                            Event(
-                                id = "legacy",
-                                title = "Legacy",
-                                start = IcsTimeValue.Floating(LocalDateTime(2026, 10, 27, 9, 0)),
-                            ),
-                        ),
+                        events = listOf(Event(id = "seed", title = "Seed", start = IcsTimeValue.Date(LocalDate(2026, 10, 27)))),
                     ),
                 ),
-                busyPeriods = listOf(BusyInterval(BusyType.Busy, 10, 20)),
-            ),
-        )
-        val (_, database) = inMemoryDatabase()
-        val store = MemoryStore(mapOf(STATE_KEY to raw))
-        val backup = MemoryBackup()
-        val migrator = JsonToSqliteMigrator(
-            database, store, backup, seedProvider = null, idProvider = { "generated" }, nowMillis = { 7L },
-        )
-        assertTrue(migrator.migrateIfNeeded())
-        assertEquals(raw, backup.raw)
-        assertEquals("sqlite", store.values[PERSISTENCE_ENGINE_KEY])
-        assertTrue(store.values.containsKey(DB_READY_KEY))
-        assertEquals(raw, store.values[STATE_KEY])
+            )
+            val first = createAppStateStorage(
+                settingsStore = { MemoryStore() },
+                seedProvider = { seeds++; seed },
+                driverFactory = { JdbcSqliteDriver("jdbc:sqlite:$path", Properties(), CrkoDatabase.Schema) },
+                idProvider = { "generated" },
+            )
+            assertEquals(listOf("Seed"), first.loadState().events.map { it.title })
+            assertEquals(1, seeds)
 
-        val storage = SqliteStateStorage(database, { MemoryStore() }, nowMillis = { 8L })
-        val restored = storage.loadState()
-        assertEquals("Legacy", restored.events.single().title)
-        assertEquals(listOf(BusyInterval(BusyType.Busy, 10, 20)), restored.busyPeriods)
-    }
-
-    @Test
-    fun aRepeatedMigrationIsIdempotentAndAnUnreadablePayloadAborts() {
-        val raw = AppJson.encodeToString(AppState.serializer(), AppState())
-        val (_, database) = inMemoryDatabase()
-        val store = MemoryStore(mapOf(STATE_KEY to raw))
-        val backup = MemoryBackup()
-        val migrator = JsonToSqliteMigrator(database, store, backup, seedProvider = null, idProvider = { "id" })
-        assertTrue(migrator.migrateIfNeeded())
-        val recordsAfterFirst = database.crkoQueries.selectRecords().executeAsList().size
-        assertTrue(migrator.migrateIfNeeded())
-        assertEquals(recordsAfterFirst, database.crkoQueries.selectRecords().executeAsList().size)
-
-        val brokenRaw = "{not json"
-        val broken = MemoryStore(mapOf(STATE_KEY to brokenRaw))
-        val brokenDatabase = inMemoryDatabase().second
-        val brokenBackup = MemoryBackup()
-        val failed = JsonToSqliteMigrator(brokenDatabase, broken, brokenBackup, null, { "id" })
-        assertFalse(failed.migrateIfNeeded())
-        assertEquals(brokenRaw, broken.values[STATE_KEY])
-        assertEquals(brokenRaw, brokenBackup.raw)
-        assertNull(broken.values[PERSISTENCE_ENGINE_KEY])
-        assertEquals(0, brokenDatabase.crkoQueries.selectCalendars().executeAsList().size)
-    }
-
-    @Test
-    fun aFirstLaunchUsesTheSeedProviderOnce() {
-        val (_, database) = inMemoryDatabase()
-        val store = MemoryStore()
-        val seed = AppState(
-            calendars = listOf(
-                Calendar.local().copy(
-                    events = listOf(Event(id = "seed", title = "Seed", start = IcsTimeValue.Date(LocalDate(2026, 10, 27)))),
-                ),
-            ),
-        )
-        val migrator = JsonToSqliteMigrator(database, store, MemoryBackup(), { seed }, { "generated" })
-        assertTrue(migrator.migrateIfNeeded())
-        assertTrue(migrator.migrateIfNeeded())
-        assertEquals(listOf("seed"), SqliteStateStorage(database, { MemoryStore() }).loadState().events.map { it.id })
-        assertEquals(1, database.crkoQueries.selectRecords().executeAsList().size)
+            // A later launch against the same database keeps the stored records and does not reseed.
+            val second = createAppStateStorage(
+                settingsStore = { MemoryStore() },
+                seedProvider = { seeds++; AppState() },
+                driverFactory = { JdbcSqliteDriver("jdbc:sqlite:$path", Properties(), CrkoDatabase.Schema) },
+                idProvider = { "generated" },
+            )
+            assertEquals(listOf("Seed"), second.loadState().events.map { it.title })
+            assertEquals(1, seeds)
+        } finally {
+            directory.deleteRecursively()
+        }
     }
 
     @Test
@@ -492,30 +434,6 @@ class SqlitePersistenceTest {
     }
 
     @Test
-    fun legacySchemaSamplesOneThroughSixMigrateThroughTheSameDecoder() {
-        val payloads = listOf(
-            """{"events":[{"id":"e1","title":"Stage one","date":"2026-10-27","startMinutes":540,"endMinutes":600}],"todos":[]}""",
-            """{"schemaVersion":2,"events":[{"id":"e2","title":"Stage two","date":"2026-10-27","startMinutes":540,"endMinutes":600}],"todos":[]}""",
-            """{"schemaVersion":3,"events":[],"todos":[],"journals":[],"subscriptions":[],"busyPeriods":[],"calendar":{}}""",
-            """{"schemaVersion":4,"events":[],"todos":[],"journals":[],"subscriptions":[],"busyPeriods":[],"calendar":{}}""",
-            """{"schemaVersion":5,"events":[],"todos":[],"journals":[],"subscriptions":[],"busyPeriods":[],"calendar":{}}""",
-            """{"schemaVersion":6,"calendars":[{"id":"local","name":"Crko","events":[{"id":"e6","title":"Stage six","start":{"type":"date","date":"2026-10-27"}}]}]}""",
-        )
-        payloads.forEachIndexed { index, raw ->
-            val (_, database) = inMemoryDatabase()
-            val store = MemoryStore(mapOf(STATE_KEY to raw))
-            val backup = MemoryBackup()
-            val migrator = JsonToSqliteMigrator(database, store, backup, null, { "id" }, nowMillis = { index.toLong() })
-            assertTrue(migrator.migrateIfNeeded(), "payload ${index + 1}")
-            assertEquals(raw, backup.raw, "payload ${index + 1}")
-            assertEquals("sqlite", store.values[PERSISTENCE_ENGINE_KEY], "payload ${index + 1}")
-            val restored = SqliteStateStorage(database, { MemoryStore() }, nowMillis = { 1L }).loadState()
-            // Stage 1/2/6 carries an event; the flat stage 3–5 samples are empty calendars.
-            assertEquals(index == 2 || index == 3 || index == 4, restored.events.isEmpty(), "payload ${index + 1}")
-        }
-    }
-
-    @Test
     fun theFactoryProbeDoesNotSwallowLoadDamage() {
         val (driver, database) = inMemoryDatabase()
         database.crkoQueries.insertCalendar(
@@ -539,17 +457,11 @@ class SqlitePersistenceTest {
             position = 0,
             updated_ms = 1,
         )
-        val store = MemoryStore(
-            mapOf(
-                PERSISTENCE_ENGINE_KEY to "sqlite",
-                DB_READY_KEY to "1",
-            ),
-        )
+        // Mark the database initialized so the factory's first-launch seed cannot wipe the row.
+        database.crkoQueries.putMeta(FirstInitKey, "1")
         val storage = createAppStateStorage(
-            stateStore = { store },
             settingsStore = { MemoryStore() },
             driverFactory = { driver },
-            backup = MemoryBackup(),
             idProvider = { "id" },
         )
         // The factory has to read once to decide whether the database is usable; the repository's
@@ -561,97 +473,47 @@ class SqlitePersistenceTest {
     }
 
     @Test
-    fun aFactoryWithoutADriverLeavesTheJsonEngineInCharge() {
-        val raw = """{"events":[{"id":"old","title":"Old","date":"2026-10-27","startMinutes":540,"endMinutes":600}]}"""
-        val store = MemoryStore(mapOf(STATE_KEY to raw))
+    fun aFactoryWithoutADriverRunsOnMemoryForThisSession() {
         val settings = MemoryStore()
         val storage = createAppStateStorage(
-            stateStore = { store },
             settingsStore = { settings },
             driverFactory = { null },
-            backup = MemoryBackup(),
             idProvider = { "id" },
         )
-        assertTrue(storage is FileStateStorage)
-        assertEquals("Old", storage.loadState().events.single().title)
-        assertEquals(raw, store.values[STATE_KEY])
-        // No driver means no attempted switch; the JSON engine stays in charge without poisoning
-        // the flag for a later process that does have a context.
-        assertNull(store.values[PERSISTENCE_ENGINE_KEY])
-    }
-
-    @Test
-    fun aFailedMigrationFallsBackToJsonAndKeepsTheOriginalPayload() {
-        val brokenRaw = "{not json"
-        val store = MemoryStore(mapOf(STATE_KEY to brokenRaw))
-        val backup = MemoryBackup()
-        val (driver, _) = inMemoryDatabase()
-        val storage = createAppStateStorage(
-            stateStore = { store },
-            settingsStore = { MemoryStore() },
-            driverFactory = { driver },
-            backup = backup,
-            idProvider = { "id" },
-        )
-        assertTrue(storage is FileStateStorage)
-        assertEquals(brokenRaw, store.values[STATE_KEY])
-        assertEquals("json", store.values[PERSISTENCE_ENGINE_KEY])
-        assertEquals(brokenRaw, backup.raw)
-        assertNull(store.values[DB_READY_KEY])
-    }
-
-    @Test
-    fun theFactorySelectsSqliteByDefaultAndExportsBackToJsonOnRollback() {
-        val directory = kotlin.io.path.createTempDirectory("crko-sqlite-test").toFile()
-        val path = "${directory.absolutePath}/crko.db"
-        try {
-            val raw = AppJson.encodeToString(
-                AppState.serializer(),
-                AppState(
-                    calendars = listOf(
-                        Calendar.local().copy(
-                            events = listOf(
-                                Event(
-                                    id = "migrated",
-                                    title = "Migrated",
-                                    start = IcsTimeValue.Date(LocalDate(2026, 10, 27)),
-                                ),
-                            ),
-                        ),
+        assertTrue(storage is MemoryStateStorage)
+        // The process keeps working: writes stay in memory and settings still reach their store.
+        assertTrue(storage.loadState().events.isEmpty())
+        assertTrue(storage.loadDamage().unreadable)
+        storage.saveState(
+            AppState(
+                calendars = listOf(
+                    Calendar.local().copy(
+                        events = listOf(Event(id = "a", title = "Memory", start = IcsTimeValue.Date(LocalDate(2026, 10, 27)))),
                     ),
                 ),
-            )
-            val store = MemoryStore(mapOf(STATE_KEY to raw))
-            val backup = MemoryBackup()
-            val driver = JdbcSqliteDriver("jdbc:sqlite:$path", Properties(), CrkoDatabase.Schema)
-            val sqlite = createAppStateStorage(
-                stateStore = { store },
-                settingsStore = { MemoryStore() },
-                driverFactory = { driver },
-                backup = backup,
-                idProvider = { "id" },
-            )
-            assertEquals("Migrated", sqlite.loadState().events.single().title)
-            assertEquals("sqlite", store.values[PERSISTENCE_ENGINE_KEY])
+            ),
+        )
+        assertEquals("Memory", storage.loadState().events.single().title)
+        storage.saveSettings(PersistedSettings(language = "zh"))
+        assertEquals("zh", storage.loadSettings().language)
+        assertTrue(settings.values.containsKey(SETTINGS_KEY))
+    }
 
-            // Ask for the JSON engine on the next launch: the factory must export the SQLite state
-            // into state.v1 before letting JSON write again.
-            store.putString(PERSISTENCE_ENGINE_KEY, "json")
-            store.putString(STATE_KEY, raw)
-            val exported = createAppStateStorage(
-                stateStore = { store },
+    @Test
+    fun aFactoryWhoseDatabaseCannotBeReadRunsOnMemoryAndKeepsTheFile() {
+        val directory = kotlin.io.path.createTempDirectory("crko-broken-test").toFile()
+        val path = "${directory.absolutePath}/crko.db"
+        try {
+            // A file that is not a database: opening the schema must fail, and the file stays on
+            // disk for diagnosis instead of being overwritten.
+            File(path).writeText("this is not a sqlite database")
+            val storage = createAppStateStorage(
                 settingsStore = { MemoryStore() },
-                driverFactory = {
-                    JdbcSqliteDriver("jdbc:sqlite:$path", Properties(), CrkoDatabase.Schema)
-                },
-                backup = backup,
+                driverFactory = { JdbcSqliteDriver("jdbc:sqlite:$path", Properties(), CrkoDatabase.Schema) },
                 idProvider = { "id" },
             )
-            assertTrue(exported is FileStateStorage)
-            assertEquals("Migrated", exported.loadState().events.single().title)
-            val written = decodeStateWithReport(store.values.getValue(STATE_KEY)).state
-            assertEquals("Migrated", written.events.single().title)
-            assertTrue(store.values.containsKey(ROLLBACK_EXPORTED_KEY))
+            assertTrue(storage is MemoryStateStorage)
+            assertTrue(File(path).readText().startsWith("this is not a sqlite database"))
         } finally {
             directory.deleteRecursively()
         }

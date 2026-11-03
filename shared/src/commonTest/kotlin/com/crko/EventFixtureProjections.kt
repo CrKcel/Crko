@@ -4,15 +4,14 @@ import com.crko.domain.Event
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.displayEndDay
 import com.crko.domain.displayStartDate
-import com.crko.migration.legacySourceText
 import com.crko.domain.localEnd
 import com.crko.domain.localStart
 import com.crko.domain.tzid
 import kotlinx.datetime.TimeZone
 
 /*
- * Projections of the pre-migration event fields. They stay in the test source set so migration and
- * fixture assertions can describe the old shape without putting those fields back on the model.
+ * Day-and-minute projections of an event. They stay in the test source set so fixture assertions can
+ * describe the compact shape `testEvent` builds from, without putting those fields on the model.
  */
 
 internal val Event.allDay: Boolean get() = start is IcsTimeValue.Date
@@ -40,6 +39,6 @@ internal val Event.endSeconds: Int get() = if (allDay) 0 else localEnd()?.second
 
 internal val Event.timeZoneId: String? get() = start.tzid
 
-internal val Event.sourceStart: String? get() = legacySourceText(start)
+internal val Event.sourceStart: String? get() = icsSourceText(start)
 
-internal val Event.sourceEnd: String? get() = legacySourceText(end)
+internal val Event.sourceEnd: String? get() = icsSourceText(end)

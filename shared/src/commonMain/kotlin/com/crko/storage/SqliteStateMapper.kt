@@ -465,9 +465,9 @@ private fun List<Calendar_timezone>.toCalendarTimeZones(): List<CalendarTimeZone
     sortedBy { it.position }.map { CalendarTimeZone(it.tzid, it.definition) }
 
 internal const val PayloadVersionKey = "payloadVersion"
-internal const val MigrationSourceKey = "migration.source"
-internal const val MigrationRecordsKey = "migration.records"
-internal const val MigrationTimeKey = "migration.time"
+
+/** Written once on the first launch that seeds the database; guards repeat seeding. */
+internal const val FirstInitKey = "initialized"
 
 private data class Positioned<T>(val position: Int, val value: T)
 private data class DamagedRow(val sourceTable: String, val sourceKey: String, val payload: String)

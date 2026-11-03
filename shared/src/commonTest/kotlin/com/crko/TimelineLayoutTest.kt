@@ -1,6 +1,5 @@
 package com.crko
 
-import com.crko.migration.legacyEvent
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.ui.schedule.layoutEvents
@@ -10,14 +9,14 @@ import kotlin.test.assertEquals
 
 private val layoutDay = LocalDate(2026, 10, 27)
 
-private fun event(id: String, start: Int, end: Int) = legacyEvent(id, id, "2026-10-27", start, end)
+private fun event(id: String, start: Int, end: Int) = testEvent(id, id, "2026-10-27", start, end)
 
 class TimelineLayoutTest {
 
     @Test
     fun expandedStartsPlaceSeparateBlocks() {
         // A BYHOUR rule turns one event into two blocks on the same day.
-        val rounds = legacyEvent(
+        val rounds = testEvent(
             id = "rounds",
             title = "Rounds",
             date = "2026-10-27",

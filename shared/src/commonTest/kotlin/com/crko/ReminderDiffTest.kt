@@ -9,7 +9,6 @@ import com.crko.domain.RepeatRule
 import com.crko.domain.plusDays
 import com.crko.i18n.AppLanguage
 import com.crko.i18n.EnStrings
-import com.crko.migration.legacyEvent
 import com.crko.state.AppStateHolder
 import com.crko.state.DarkModeSetting
 import com.crko.state.EditScope
@@ -164,7 +163,7 @@ class ReminderDiffTest {
         // A long daily series starting well after the fixture instant: every trigger stays in the
         // future across the rollover, and the horizon picks up exactly one new occurrence per day.
         holder.saveEvent(
-            legacyEvent(
+            testEvent(
                 "e1",
                 "Daily",
                 holder.today.plusDays(10).toString(),
@@ -191,7 +190,7 @@ class ReminderDiffTest {
     fun aRecurringExceptionMovesOnlyThatOccurrence() = runTest {
         val scheduler = RecordingReminderScheduler()
         val holder = newHolder(scheduler = scheduler)
-        val series = legacyEvent(
+        val series = testEvent(
             "e1",
             "Standup",
             holder.today.plusDays(2).toString(),
@@ -274,7 +273,7 @@ class ReminderDiffTest {
 
     @Test
     fun aZoneChangeReadsAsChangedTriggers() {
-        val event = legacyEvent(
+        val event = testEvent(
             "e1",
             "Meeting",
             "2026-10-29",
@@ -313,7 +312,7 @@ class ReminderDiffTest {
 
     /** One-off fixture at [date] with a single reminder fifteen minutes before the start. */
     private fun timedEvent(id: String, title: String, date: String, startMinutes: Int) =
-        legacyEvent(
+        testEvent(
             id,
             title,
             date,

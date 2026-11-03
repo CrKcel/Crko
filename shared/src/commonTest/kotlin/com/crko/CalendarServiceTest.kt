@@ -3,10 +3,7 @@ package com.crko
 import com.crko.domain.IcsImport
 import com.crko.domain.TodoPriority
 import com.crko.domain.effectiveUid
-import com.crko.migration.legacyEvent
 import com.crko.state.calendar.CalendarDeleteResult
-import com.crko.storage.decodeSettings
-import com.crko.storage.decodeStateWithReport
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -51,10 +48,10 @@ class CalendarServiceTest {
         val localId = f.holder.localCalendars.single().id
         val work = assertNotNull(f.holder.createLocalCalendar("Work", null))
         f.holder.saveEvent(
-            legacyEvent(null, "Work event", f.holder.today.toString(), 540, 600),
+            testEvent(null, "Work event", f.holder.today.toString(), 540, 600),
             calendarId = work.id,
         )
-        f.holder.saveEvent(legacyEvent(null, "Home event", f.holder.today.toString(), 600, 660))
+        f.holder.saveEvent(testEvent(null, "Home event", f.holder.today.toString(), 600, 660))
         f.holder.addTodo("Work todo", TodoPriority.Normal, null, calendarId = work.id)
         f.holder.addTodo("Home todo", TodoPriority.Normal, null)
         f.holder.addJournal("Work journal", "note", f.holder.today, work.id)
@@ -77,12 +74,12 @@ class CalendarServiceTest {
         val localId = f.holder.localCalendars.single().id
         val work = assertNotNull(f.holder.createLocalCalendar("Work", null))
 
-        f.holder.saveEvent(legacyEvent(null, "First", f.holder.today.toString(), 540, 600))
+        f.holder.saveEvent(testEvent(null, "First", f.holder.today.toString(), 540, 600))
         f.holder.addTodo("First todo", TodoPriority.Normal, null)
         f.holder.addJournal("First journal", "", f.holder.today)
         assertTrue(f.holder.setDefaultCalendar(work.id))
 
-        f.holder.saveEvent(legacyEvent(null, "Second", f.holder.today.toString(), 660, 720))
+        f.holder.saveEvent(testEvent(null, "Second", f.holder.today.toString(), 660, 720))
         f.holder.addTodo("Second todo", TodoPriority.Normal, null)
         f.holder.addJournal("Second journal", "", f.holder.today)
 
@@ -113,7 +110,7 @@ class CalendarServiceTest {
         val f = Fixture()
         val work = assertNotNull(f.holder.createLocalCalendar("Work", null))
         f.holder.saveEvent(
-            legacyEvent(null, "Hidden event", f.holder.today.toString(), 540, 600),
+            testEvent(null, "Hidden event", f.holder.today.toString(), 540, 600),
             calendarId = work.id,
         )
         f.holder.addTodo("Hidden todo", TodoPriority.Normal, null, calendarId = work.id)
@@ -141,7 +138,7 @@ class CalendarServiceTest {
         val work = assertNotNull(f.holder.createLocalCalendar("Work", null))
         val import = IcsImport(
             events = listOf(
-                legacyEvent(null, "Imported", f.holder.today.toString(), 540, 600, icsUid = "imported-uid"),
+                testEvent(null, "Imported", f.holder.today.toString(), 540, 600, icsUid = "imported-uid"),
             ),
         )
 
@@ -169,26 +166,14 @@ class CalendarServiceTest {
     }
 
     @Test
-    fun aPayloadWithoutDisplayFieldsLoadsVisibleAndUncoloured() {
-        val decoded = decodeStateWithReport(
-            """{"schemaVersion":6,"calendars":[{"id":"local","name":"Crko","events":[],"todos":[],"journals":[]}]}""",
-        )
-
-        val calendar = assertNotNull(decoded.state.localCalendar)
-        assertTrue(calendar.visible)
-        assertNull(calendar.colorArgb)
-        assertNull(decodeSettings("""{"language":"zh"}""").defaultCalendarId)
-    }
-
-    @Test
     fun oneCalendarExportsWithoutTheOthers() = runTest {
         val f = Fixture()
         val work = assertNotNull(f.holder.createLocalCalendar("Work", null))
         f.holder.saveEvent(
-            legacyEvent(null, "Work event", f.holder.today.toString(), 540, 600),
+            testEvent(null, "Work event", f.holder.today.toString(), 540, 600),
             calendarId = work.id,
         )
-        f.holder.saveEvent(legacyEvent(null, "Home event", f.holder.today.toString(), 660, 720))
+        f.holder.saveEvent(testEvent(null, "Home event", f.holder.today.toString(), 660, 720))
 
         val single = f.holder.exportCalendarIcs(work.id)
         assertTrue(single.contains("Work event"), single)

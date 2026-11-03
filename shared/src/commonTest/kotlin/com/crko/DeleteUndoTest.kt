@@ -16,7 +16,6 @@ import com.crko.domain.plusDays
 import com.crko.i18n.EnStrings
 import com.crko.i18n.Strings
 import com.crko.i18n.ZhStrings
-import com.crko.migration.legacyEvent
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
 import com.crko.state.EditScope
@@ -44,7 +43,7 @@ class DeleteUndoTest {
 
     private fun Fixture.series(id: String = "series"): Event {
         holder.saveEvent(
-            legacyEvent(id, "Standup", holder.today.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
+            testEvent(id, "Standup", holder.today.toString(), 540, 555, repeat = RepeatRule(RepeatFrequency.Daily)),
         )
         return holder.appState.events.first { it.id == id }
     }
@@ -79,9 +78,9 @@ class DeleteUndoTest {
     @Test
     fun aDeletedEventComesBackInPlaceWithItsIdentity() {
         val f = Fixture()
-        val first = legacyEvent("e1", "First", f.holder.today.toString(), 480, 540)
-        val second = legacyEvent("e2", "Second", f.holder.today.toString(), 600, 660, icsUid = "uid-2")
-        val third = legacyEvent("e3", "Third", f.holder.today.toString(), 720, 780)
+        val first = testEvent("e1", "First", f.holder.today.toString(), 480, 540)
+        val second = testEvent("e2", "Second", f.holder.today.toString(), 600, 660, icsUid = "uid-2")
+        val third = testEvent("e3", "Third", f.holder.today.toString(), 720, 780)
         listOf(first, second, third).forEach { f.holder.saveEvent(it) }
         val before = f.eventsOf(f.localId())
 
@@ -176,7 +175,7 @@ class DeleteUndoTest {
     @Test
     fun onlyTheMostRecentDeleteCanBeUndone() {
         val f = Fixture()
-        f.holder.saveEvent(legacyEvent("e1", "First", f.holder.today.toString(), 480, 540))
+        f.holder.saveEvent(testEvent("e1", "First", f.holder.today.toString(), 480, 540))
         f.holder.addJournal("Second", "", f.holder.today)
         f.holder.deleteEvent("e1")
         f.holder.deleteJournal(f.holder.appState.journals.single().id)
@@ -195,14 +194,14 @@ class DeleteUndoTest {
         val f = Fixture()
         val work = assertNotNull(f.holder.createLocalCalendar("Work", null))
         f.holder.saveEvent(
-            legacyEvent("w1", "Work first", f.holder.today.toString(), 480, 540),
+            testEvent("w1", "Work first", f.holder.today.toString(), 480, 540),
             calendarId = work.id,
         )
         f.holder.saveEvent(
-            legacyEvent("w2", "Work second", f.holder.today.toString(), 600, 660),
+            testEvent("w2", "Work second", f.holder.today.toString(), 600, 660),
             calendarId = work.id,
         )
-        f.holder.saveEvent(legacyEvent("h1", "Home", f.holder.today.toString(), 720, 780))
+        f.holder.saveEvent(testEvent("h1", "Home", f.holder.today.toString(), 720, 780))
         f.holder.deleteEvent("w2")
 
         assertEquals(UndoResult.Success, f.holder.undoLastDelete())
@@ -214,9 +213,9 @@ class DeleteUndoTest {
     @Test
     fun anIdThatExistsAgainIsNotOverwritten() {
         val f = Fixture()
-        f.holder.saveEvent(legacyEvent("e1", "Original", f.holder.today.toString(), 480, 540))
+        f.holder.saveEvent(testEvent("e1", "Original", f.holder.today.toString(), 480, 540))
         f.holder.deleteEvent("e1")
-        f.holder.saveEvent(legacyEvent("e1", "New record", f.holder.today.toString(), 600, 660))
+        f.holder.saveEvent(testEvent("e1", "New record", f.holder.today.toString(), 600, 660))
 
         assertEquals(UndoResult.Unavailable, f.holder.undoLastDelete())
         // The live record keeps its content; nothing was resurrected next to it.
@@ -254,7 +253,7 @@ class DeleteUndoTest {
         // Two days out with a reminder, so the delete/restore pair moves real keys whatever the
         // host zone does with the fixture's fixed instant.
         holder.saveEvent(
-            legacyEvent(
+            testEvent(
                 "e1",
                 "Meeting",
                 holder.today.plusDays(2).toString(),
@@ -281,7 +280,7 @@ class DeleteUndoTest {
     fun theUndoSnapshotIsNotPersisted() {
         val storage = MemoryStorage()
         val first = Fixture(storage)
-        first.holder.saveEvent(legacyEvent("e1", "Meeting", first.holder.today.toString(), 540, 600))
+        first.holder.saveEvent(testEvent("e1", "Meeting", first.holder.today.toString(), 540, 600))
         first.holder.deleteEvent("e1")
         assertTrue(first.holder.appState.events.isEmpty())
 

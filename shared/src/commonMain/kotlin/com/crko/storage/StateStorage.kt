@@ -2,17 +2,13 @@ package com.crko.storage
 
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
-import com.crko.domain.CurrentSchemaVersion
 import com.crko.domain.PersistedSettings
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
 
-private const val CORRUPT_STATE_KEY = "state.v1.corrupt"
+internal const val SETTINGS_KEY = "settings.v1"
 
-/** What went wrong while reading a stored payload, if anything. */
+/** What went wrong while reading the stored state, if anything. */
 data class LoadDamage(
-    /** The payload could not be read at all, so the app started from an empty calendar. */
+    /** The state could not be read at all, so the app started from an empty calendar. */
     val unreadable: Boolean = false,
     /** Records that could not be read and are therefore missing from the restored state. */
     val droppedRecords: Int = 0,
@@ -35,65 +31,30 @@ interface StateStorage {
     fun loadDamage(): LoadDamage = LoadDamage.None
 }
 
-/** The declared schema version of a stored payload, or null when it is unversioned/unreadable. */
-internal fun payloadSchemaVersion(raw: String): Int? {
-    val root = runCatching { AppJson.parseToJsonElement(raw) }.getOrNull() as? JsonObject ?: return null
-    return (root["schemaVersion"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
-}
+internal fun decodeSettings(raw: String): PersistedSettings =
+    runCatching { AppJson.decodeFromString(PersistedSettings.serializer(), raw) }.getOrElse { PersistedSettings() }
 
 /**
- * The key-value backed storage. It takes the stores lazily so the damaged-payload handling can be
- * driven from a test without a platform `SharedPreferences`/`NSUserDefaults`.
+ * The in-process fallback for a launch whose database could not be opened or read: the app runs on
+ * memory for this session instead of crashing, and the database file on disk stays untouched for
+ * diagnosis. Nothing survives the process.
  */
-class FileStateStorage(
-    private val stateStore: () -> KeyValueStore,
+internal class MemoryStateStorage(
     private val settingsStore: () -> KeyValueStore,
-    /**
-     * Supplies the content persisted on first launch. The composition root passes the debug sample
-     * state so this package stays independent of `com.crko.dev`; release builds pass null.
-     */
-    private val seedProvider: (() -> AppState?)? = null,
 ) : StateStorage {
+    private var state: AppState = AppState()
     private var lastDamage: LoadDamage = LoadDamage.None
 
     override fun loadState(): AppState {
-        val raw = stateStore().getString(STATE_KEY)
-        if (raw == null) {
-            val seed = seedProvider?.invoke() ?: return AppState()
-            // First launch: seed content, then persist it so edits stick.
-            saveState(seed)
-            return seed
-        }
-        // A payload written before stage 1 has no `schemaVersion`; keep the original once so a
-        // migration that drops an unrecoverable field still has a copy to recover from.
-        if (!raw.contains("\"schemaVersion\"") && stateStore().getString(LEGACY_STATE_BACKUP_KEY) == null) {
-            stateStore().putString(LEGACY_STATE_BACKUP_KEY, raw)
-        }
-        // Versioned older payloads are migrated on read too; keep the first one for the same reason.
-        // Only the first copy is kept: later ones would just describe a state that is already
-        // migrated.
-        val version = payloadSchemaVersion(raw)
-        if (version != null && version < CurrentSchemaVersion &&
-            stateStore().getString(MIGRATION_STATE_BACKUP_KEY) == null
-        ) {
-            stateStore().putString(MIGRATION_STATE_BACKUP_KEY, raw)
-        }
-        val decoded = decodeStateWithReport(raw)
-        lastDamage = decoded.damage
-        if (!decoded.damage.isEmpty && stateStore().getString(CORRUPT_STATE_KEY) == null) {
-            // A failed read used to fall back to an empty state that the next edit wrote straight
-            // over the original, losing everything without a trace. Keep the damaged payload so
-            // there is still something to recover those records from. Only the first copy is kept:
-            // later ones already describe the shrunken state.
-            stateStore().putString(CORRUPT_STATE_KEY, raw)
-        }
-        return decoded.state
+        lastDamage = LoadDamage(unreadable = true)
+        return state
     }
 
     override fun loadDamage(): LoadDamage = lastDamage
 
     override fun saveState(state: AppState) {
-        stateStore().putString(STATE_KEY, AppJson.encodeToString(AppState.serializer(), state))
+        this.state = state
+        lastDamage = LoadDamage.None
     }
 
     override fun loadSettings(): PersistedSettings {
@@ -120,7 +81,6 @@ object AppStorage : StateStorage {
 
     private val delegate by lazy {
         createAppStateStorage(
-            stateStore = ::appStore,
             settingsStore = ::settingsStore,
             seedProvider = seedProvider,
         )
