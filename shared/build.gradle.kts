@@ -208,7 +208,6 @@ val verifyArchitecture = tasks.register("verifyArchitecture") {
         val knownViolations = setOf(
             "domain/Models.kt|storage",
             "domain/Ics.kt|storage",
-            "domain/SubscriptionSync.kt|storage",
             "storage/Platform.kt|dev",
             "ui/schedule/EventEditor.kt|storage",
             "ui/theme/Theme.kt|storage",

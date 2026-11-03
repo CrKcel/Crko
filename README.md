@@ -34,6 +34,7 @@ cd iosApp && xcodebuild -project iosApp.xcodeproj -scheme iosApp \
 shared/src/commonMain/kotlin/com/crko/
   domain/     数据模型与日期计算（纯 Kotlin，可在 commonTest 中测试）
   storage/    持久化接口与平台声明（expect）
+  sync/       订阅抓取与 CalDAV 协议实现
   state/      AppStateHolder：日程、待办、设置的状态与写入校验
   i18n/       中英文文案
   ui/         主题、组件、日程/待办/更多三个页面

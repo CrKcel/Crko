@@ -40,7 +40,6 @@ import com.crko.domain.TodoStatus
 import com.crko.domain.applyingReply
 import com.crko.domain.daysTo
 import com.crko.domain.effectiveUid
-import com.crko.domain.fetchSubscription
 import com.crko.domain.importCalendarLines
 import com.crko.domain.instantOrNull
 import com.crko.domain.itipDecision
@@ -86,6 +85,7 @@ import com.crko.i18n.languageFromTag
 import com.crko.i18n.languageTag
 import com.crko.i18n.resolveLanguage
 import com.crko.i18n.stringsFor
+import com.crko.sync.fetchSubscription
 import com.crko.storage.AppAttachmentStore
 import com.crko.storage.AppStorage
 import com.crko.storage.StateStorage

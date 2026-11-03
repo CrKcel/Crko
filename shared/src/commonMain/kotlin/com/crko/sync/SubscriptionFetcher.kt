@@ -1,82 +1,21 @@
-package com.crko.domain
+package com.crko.sync
 
+import com.crko.domain.CalendarSubscription
+import com.crko.domain.MaxSubscriptionBytes
+import com.crko.domain.SubscriptionFailure
+import com.crko.domain.SubscriptionFetch
+import com.crko.domain.decodeCalendarBytes
+import com.crko.domain.resolveSubscriptionUrl
 import com.crko.storage.HttpRequest
 import com.crko.storage.HttpResponse
 import com.crko.storage.SubscriptionHttp
+import kotlinx.coroutines.CancellationException
 
 /**
- * Fetching and incremental merging of subscribed calendars. A `webcal` feed is a plain `GET` with
- * entity-tag validation; a CalDAV collection is queried with WebDAV `REPORT`s and a
- * `sync-token`, so a repeated sync only downloads what actually changed.
+ * Fetching of subscribed calendars. A `webcal` feed is a plain `GET` with entity-tag validation;
+ * a CalDAV collection is queried with WebDAV `REPORT`s and a `sync-token`, so a repeated sync only
+ * downloads what actually changed.
  */
-
-/** Why a subscription fetch failed; each case has its own user-facing message. */
-enum class SubscriptionFailure {
-    /** The server could not be reached at all. */
-    Unreachable,
-
-    /** The server demanded credentials the subscription does not have. */
-    Unauthorized,
-
-    /** The server answered with an unexpected HTTP status. */
-    HttpError,
-
-    /** The response is not a calendar and not a CalDAV collection. */
-    NotCalendar,
-
-    /** The response exceeded the size limit. */
-    TooLarge,
-}
-
-/** What one subscription fetch produced. */
-sealed interface SubscriptionFetch {
-    /**
-     * The full upstream content; every record the source still carries, so records that vanished
-     * from it can be removed locally.
-     */
-    data class Full(
-        val text: String,
-        val etag: String? = null,
-        val syncToken: String? = null,
-    ) : SubscriptionFetch
-
-    /**
-     * An incremental CalDAV report: only the records that changed since the last sync. [deletions]
-     * says the source also reported removals this content cannot name, so a full refetch follows.
-     */
-    data class Changes(
-        val text: String,
-        val syncToken: String? = null,
-        val deletions: Boolean = false,
-    ) : SubscriptionFetch
-
-    /** The source answered 304: nothing changed since the stored entity tag. */
-    data object Unchanged : SubscriptionFetch
-
-    data class Failed(val failure: SubscriptionFailure, val status: Int? = null) : SubscriptionFetch
-}
-
-/** Upper bound for one response; a calendar beyond it would freeze the device for seconds. */
-internal const val MaxSubscriptionBytes = 8L * 1024 * 1024
-
-/**
- * Absolute https address of [raw]. `webcal://` and `webcals://` are the user-facing spellings of an
- * HTTP(S) calendar URL, so they are rewritten; an explicit `http://` is kept as typed. Anything
- * without a known scheme is not a URL the app can fetch.
- */
-fun resolveSubscriptionUrl(raw: String): String? {
-    val text = raw.trim()
-    if (text.isEmpty()) return null
-    val schemeEnd = text.indexOf("://")
-    if (schemeEnd <= 0) return null
-    val rest = text.substring(schemeEnd + 3)
-    return when (text.substring(0, schemeEnd).lowercase()) {
-        "webcal", "webcals" -> "https://$rest"
-        "http" -> "http://$rest"
-        "https" -> "https://$rest"
-        else -> null
-    }
-}
 
 /**
  * Fetches [subscription]'s upstream calendar. CalDAV collections — detected from a stored token, an
@@ -104,7 +43,7 @@ suspend fun fetchSubscription(
             ),
         )
     } catch (error: Exception) {
-        if (error is kotlinx.coroutines.CancellationException) throw error
+        if (error is CancellationException) throw error
         return SubscriptionFetch.Failed(SubscriptionFailure.Unreachable)
     }
     return when {
@@ -216,7 +155,7 @@ private suspend fun report(http: SubscriptionHttp, url: String, body: String): H
         ),
     )
 } catch (error: Exception) {
-    if (error is kotlinx.coroutines.CancellationException) throw error
+    if (error is CancellationException) throw error
     null
 }
 
@@ -241,7 +180,7 @@ internal fun calendarQueryReport(): String = """
         <d:getetag/>
         <c:calendar-data/>
       </d:prop>
-      <c:filter>
+      <d:filter>
         <c:comp-filter name="VCALENDAR">
           <c:comp-filter name="VEVENT"/>
         </c:comp-filter>

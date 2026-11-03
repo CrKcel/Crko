@@ -2,6 +2,74 @@ package com.crko.domain
 
 import kotlinx.serialization.Serializable
 
+/** Why a subscription fetch failed; each case has its own user-facing message. */
+enum class SubscriptionFailure {
+    /** The server could not be reached at all. */
+    Unreachable,
+
+    /** The server demanded credentials the subscription does not have. */
+    Unauthorized,
+
+    /** The server answered with an unexpected HTTP status. */
+    HttpError,
+
+    /** The response is not a calendar and not a CalDAV collection. */
+    NotCalendar,
+
+    /** The response exceeded the size limit. */
+    TooLarge,
+}
+
+/** What one subscription fetch produced. */
+sealed interface SubscriptionFetch {
+    /**
+     * The full upstream content; every record the source still carries, so records that vanished
+     * from it can be removed locally.
+     */
+    data class Full(
+        val text: String,
+        val etag: String? = null,
+        val syncToken: String? = null,
+    ) : SubscriptionFetch
+
+    /**
+     * An incremental CalDAV report: only the records that changed since the last sync. [deletions]
+     * says the source also reported removals this content cannot name, so a full refetch follows.
+     */
+    data class Changes(
+        val text: String,
+        val syncToken: String? = null,
+        val deletions: Boolean = false,
+    ) : SubscriptionFetch
+
+    /** The source answered 304: nothing changed since the stored entity tag. */
+    data object Unchanged : SubscriptionFetch
+
+    data class Failed(val failure: SubscriptionFailure, val status: Int? = null) : SubscriptionFetch
+}
+
+/** Upper bound for one response; a calendar beyond it would freeze the device for seconds. */
+internal const val MaxSubscriptionBytes = 8L * 1024 * 1024
+
+/**
+ * Absolute https address of [raw]. `webcal://` and `webcals://` are the user-facing spellings of an
+ * HTTP(S) calendar URL, so they are rewritten; an explicit `http://` is kept as typed. Anything
+ * without a known scheme is not a URL the app can fetch.
+ */
+fun resolveSubscriptionUrl(raw: String): String? {
+    val text = raw.trim()
+    if (text.isEmpty()) return null
+    val schemeEnd = text.indexOf("://")
+    if (schemeEnd <= 0) return null
+    val rest = text.substring(schemeEnd + 3)
+    return when (text.substring(0, schemeEnd).lowercase()) {
+        "webcal", "webcals" -> "https://$rest"
+        "http" -> "http://$rest"
+        "https" -> "https://$rest"
+        else -> null
+    }
+}
+
 /**
  * UI-facing view of a subscribed [Calendar]: the address plus its sync bookkeeping. Persisted data
  * keeps the same values inside [Calendar.syncState], so this type survives for the subscription
