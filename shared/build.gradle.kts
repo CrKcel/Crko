@@ -162,14 +162,18 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
                 }
             }
 
-        listOf("domain/Ics.kt", "domain/Itip.kt").forEach { relative ->
-            val file = root.resolve(relative)
-            file.lines().forEachIndexed { index, line ->
-                if ("TimeZone.currentSystemDefault()" in line) {
-                    report(file, index, "device zone must not be used on the import/export path")
+        // The ICS reader/writer was split into several `Ics*.kt` files (C1); keep every share of the
+        // import/export path under the same rule instead of naming one file.
+        root.resolve("domain").walkTopDown()
+            .filter { it.isFile && it.extension == "kt" && (it.name.startsWith("Ics") || it.name == "Itip.kt") }
+            .sortedBy { it.path }
+            .forEach { file ->
+                file.lines().forEachIndexed { index, line ->
+                    if ("TimeZone.currentSystemDefault()" in line) {
+                        report(file, index, "device zone must not be used on the import/export path")
+                    }
                 }
             }
-        }
 
         if (violations.isNotEmpty()) {
             error("Domain model regression guard failed:\n" + violations.joinToString("\n"))
@@ -247,7 +251,6 @@ val verifyFileSizes = tasks.register("verifyFileSizes") {
     doLast {
         val maxLines = 800
         val knownOversize = setOf(
-            "domain/Ics.kt",
             "ui/schedule/EventEditor.kt",
             "ui/schedule/MonthCalendar.kt",
             "domain/Recurrence.kt",
