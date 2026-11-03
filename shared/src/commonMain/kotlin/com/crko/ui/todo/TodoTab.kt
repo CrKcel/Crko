@@ -66,6 +66,7 @@ fun TodoTab(
     state: AppStateHolder,
     strings: Strings,
     contentPadding: PaddingValues,
+    onOpenSearch: () -> Unit,
 ) {
     val today = state.today
     val active = state.activeTodoForest()
@@ -108,6 +109,15 @@ fun TodoTab(
                 fontSize = 12.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = onOpenSearch) {
+                Icon(
+                    imageVector = AppIcons.Search,
+                    contentDescription = strings.search,
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
         }
 
         LazyColumn(

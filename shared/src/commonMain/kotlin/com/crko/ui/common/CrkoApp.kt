@@ -30,6 +30,7 @@ import com.crko.ui.more.MoreTab
 import com.crko.ui.more.SettingsSheet
 import com.crko.ui.schedule.EventEditorDialog
 import com.crko.ui.schedule.ScheduleTab
+import com.crko.ui.search.SearchHost
 import com.crko.ui.todo.TodoEditorDialog
 import com.crko.ui.todo.TodoTab
 import com.crko.ui.transfer.ImportPreview
@@ -55,6 +56,7 @@ fun CrkoApp(state: AppStateHolder) {
     var eventEditor by remember { mutableStateOf<EventEditorTarget?>(null) }
     var showTodoEditor by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
     var importPreview by remember { mutableStateOf<ImportPreview?>(null) }
 
     val now = rememberClock(state)
@@ -106,6 +108,7 @@ fun CrkoApp(state: AppStateHolder) {
                         state = state,
                         strings = strings,
                         contentPadding = tabPadding,
+                        onOpenSearch = { showSearch = true },
                     )
                 }
                 TabPage(visible = tab == 1) {
@@ -120,6 +123,7 @@ fun CrkoApp(state: AppStateHolder) {
                             val occurrence = if (event.repeat != null) event.occurrenceStartOn(date) else null
                             eventEditor = EventEditorTarget(event, occurrence)
                         },
+                        onOpenSearch = { showSearch = true },
                     )
                 }
                 TabPage(visible = tab == 2) {
@@ -208,6 +212,16 @@ fun CrkoApp(state: AppStateHolder) {
         state = state,
         strings = strings,
         onDismiss = { showSettings = false },
+    )
+
+    // Search over both list pages; a tapped todo or journal opens its editor inside the host, an
+    // event goes through the same editor target the schedule page uses.
+    SearchHost(
+        open = showSearch,
+        state = state,
+        strings = strings,
+        onDismiss = { showSearch = false },
+        onOpenEvent = { event -> eventEditor = EventEditorTarget(event, null) },
     )
 
     importPreview?.let { preview ->

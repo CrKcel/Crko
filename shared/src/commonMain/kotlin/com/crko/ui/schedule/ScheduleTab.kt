@@ -70,6 +70,7 @@ fun ScheduleTab(
     strings: Strings,
     contentPadding: PaddingValues,
     onOpenEvent: (Event, LocalDate) -> Unit,
+    onOpenSearch: () -> Unit,
 ) {
     val today = state.today
     var selectedName by rememberSaveable { mutableStateOf(today.toString()) }
@@ -241,6 +242,16 @@ fun ScheduleTab(
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                 )
+                Box {
+                    IconButton(onClick = onOpenSearch) {
+                        Icon(
+                            imageVector = AppIcons.Search,
+                            contentDescription = strings.search,
+                            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
                 Box {
                     IconButton(onClick = { showViewMenu = true }) {
                         Icon(

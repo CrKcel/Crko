@@ -40,6 +40,14 @@ object AppIcons {
         )
     }
 
+    val Search: ImageVector by lazy {
+        icon(
+            "Search",
+            "M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19zm-6 0" +
+                "A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z",
+        )
+    }
+
     val Timeline: ImageVector by lazy {
         icon("Timeline", "M5 3h2v18H5zM9 6h11v3H9zM9 11h7v3H9zM9 16h9v3H9z")
     }

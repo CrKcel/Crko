@@ -45,6 +45,9 @@ import com.crko.state.event.EventDeletion
 import com.crko.state.event.EventService
 import com.crko.state.journal.JournalService
 import com.crko.state.persistence.StateRepository
+import com.crko.state.search.SearchFilters
+import com.crko.state.search.SearchHit
+import com.crko.state.search.SearchService
 import com.crko.state.settings.SettingsController
 import com.crko.state.stats.StatsService
 import com.crko.state.subscription.SubscriptionSyncService
@@ -257,6 +260,8 @@ class AppStateHolder(
     )
 
     private val statsService = StatsService(access = stateAccess, today = { today })
+
+    private val searchService = SearchService(access = stateAccess)
 
     private val messageChannel = Channel<AppMessage>(Channel.BUFFERED)
     val messages = messageChannel.receiveAsFlow()
@@ -503,6 +508,18 @@ class AppStateHolder(
     fun updateJournal(journal: Journal): WriteResult = journalService.updateJournal(journal)
 
     fun deleteJournal(id: String) = reportDelete(journalService.deleteJournal(id))
+
+    // ----- search (delegated to SearchService) -----
+
+    /**
+     * Global search over the visible calendars. The full scan happens here, in the state layer, so
+     * a screen only renders what comes back. A blank [query] returns nothing.
+     */
+    fun search(query: String?, filters: SearchFilters = SearchFilters()): List<SearchHit> =
+        searchService.search(query, filters)
+
+    /** Categories the search filter can offer, derived from the visible records. */
+    fun searchCategories(limit: Int = 20): List<String> = searchService.categories(limit)
 
     // ----- undo -----
 

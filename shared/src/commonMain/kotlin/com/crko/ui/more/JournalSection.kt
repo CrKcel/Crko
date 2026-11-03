@@ -214,7 +214,7 @@ private fun JournalRow(title: String, subtitle: String?, onClick: () -> Unit, ac
 }
 
 @Composable
-private fun JournalEditorDialog(
+internal fun JournalEditorDialog(
     show: Boolean,
     strings: Strings,
     today: LocalDate,
