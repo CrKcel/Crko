@@ -248,7 +248,6 @@ val verifyFileSizes = tasks.register("verifyFileSizes") {
         val maxLines = 800
         val knownOversize = setOf(
             "domain/Ics.kt",
-            "state/AppStateHolder.kt",
             "ui/schedule/EventEditor.kt",
             "ui/schedule/MonthCalendar.kt",
             "domain/Recurrence.kt",

@@ -514,6 +514,21 @@ class StateHolderTest {
     }
 
     @Test
+    fun savingThisAndFutureAtTheAnchorEditsTheWholeSeries() {
+        val f = Fixture()
+        val series = f.dailySeries()
+        f.holder.saveEvent(
+            series.copy(title = "Renamed").withTimes(f.holder.today, 600, 615),
+            occurrenceDate = f.holder.today,
+            scope = EditScope.ThisAndFuture,
+        )
+        val stored = f.holder.appState.events.single()
+        assertEquals(series.id, stored.id)
+        assertEquals("Renamed", stored.title)
+        assertTrue(stored.occursOn(f.holder.today.plusDays(10)))
+    }
+
+    @Test
     fun savingThisAndFuturePartitionsRDatesAcrossTheSplit() {
         val f = Fixture()
         val split = f.holder.today.plusDays(2)
