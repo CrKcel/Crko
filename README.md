@@ -33,6 +33,7 @@ cd iosApp && xcodebuild -project iosApp.xcodeproj -scheme iosApp \
 ```
 shared/src/commonMain/kotlin/com/crko/
   domain/     数据模型与日期计算（纯 Kotlin，可在 commonTest 中测试）
+  migration/  旧版持久化 DTO 与迁移转换（只被 storage 与迁移测试依赖）
   storage/    持久化接口与平台声明（expect）
   sync/       订阅抓取与 CalDAV 协议实现
   state/      AppStateHolder：日程、待办、设置的状态与写入校验
@@ -50,7 +51,7 @@ shared/src/commonMain/kotlin/com/crko/
 - `VTIMEZONE` 属于 `Calendar`，事件只保存 `TZID`；未解析的未知时区由所属日历的定义兜底。
 - 设备时区只通过 `day` / `endDay` / `localStart` / `localEnd` / `occursOn` / `timeRangeOn` 等展示投影参与界面，不写回持久化模型。
 - `importSource` / `sourceLine` 等本地归属放在 `LocalRecordMeta`，不与 RFC 属性混在一起；订阅记录以所属 `Calendar` 为作用域，不再用 `importSource` 前缀充当日历身份。
-- 旧版持久化 JSON 由 `LegacyModels` 与 `Platform.decodeStateWithReport` 迁移；新版本只写当前结构（`schemaVersion = 6`）。
+- 旧版持久化 JSON 由 `migration` 包的 `LegacyModels` / `LegacyEventCompat` 与 `storage.StateCodec` 迁移；`domain` 不包含迁移 DTO，新版本只写当前结构（`schemaVersion = 6`）。
 
 防回归：
 
@@ -58,7 +59,7 @@ shared/src/commonMain/kotlin/com/crko/
 ./gradlew :shared:verifyDomainModel :shared:verifyArchitecture :shared:verifyFileSizes
 ```
 
-检查：旧 `Event` / `Todo` 字段名是否以属性声明形式重新出现在 `domain` 或 `state` 的任意非迁移文件中（不只 `Models.kt`，也含 `Event.date` 与 `RepeatRule.weekdays` / `rDates`）、合成 UID 标记（`#override-` / `#future-` / `#prior-`）或 `sub:` 身份前缀是否回到 `Legacy*` 迁移代码之外、ICS 与 iTIP 导入导出路径（`Ics.kt` / `Itip.kt`）是否重新读取设备时区。
+检查：旧 `Event` / `Todo` 字段名是否以属性声明形式重新出现在 `domain` 或 `state` 的任意非迁移文件中（不只 `Models.kt`，也含 `Event.date` 与 `RepeatRule.weekdays` / `rDates`）、合成 UID 标记（`#override-` / `#future-` / `#prior-`）或 `sub:` 身份前缀是否回到 `migration` 包之外、ICS 与 iTIP 导入导出路径（`Ics*.kt` / `Itip.kt`）是否重新读取设备时区。
 
 `verifyArchitecture` 按包路径检查跨层 import（`domain` 不得依赖 `storage/sync/state/ui/i18n/dev/migration`，`storage` 不得依赖 `sync/state/ui/i18n/dev`，`ui` 不得依赖 `storage/sync/dev` 等）；`verifyFileSizes` 要求 `commonMain` 单个 Kotlin 文件不超过 800 行。三个任务都已挂到 `:shared:check`，CI 在单元测试前显式执行。
 

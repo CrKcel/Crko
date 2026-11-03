@@ -4,7 +4,7 @@ import com.crko.domain.Alarm
 import com.crko.domain.AlarmRelated
 import com.crko.domain.AlarmTrigger
 import com.crko.domain.Event
-import com.crko.domain.legacyEvent
+import com.crko.migration.legacyEvent
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule

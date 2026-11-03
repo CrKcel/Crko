@@ -1,6 +1,6 @@
 package com.crko
 
-import com.crko.domain.legacyEvent
+import com.crko.migration.legacyEvent
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.ui.schedule.layoutEvents

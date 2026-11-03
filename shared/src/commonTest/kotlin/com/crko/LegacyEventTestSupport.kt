@@ -4,7 +4,7 @@ import com.crko.domain.Event
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.displayEndDay
 import com.crko.domain.displayStartDate
-import com.crko.domain.legacySourceText
+import com.crko.migration.legacySourceText
 import com.crko.domain.localEnd
 import com.crko.domain.localStart
 import com.crko.domain.tzid

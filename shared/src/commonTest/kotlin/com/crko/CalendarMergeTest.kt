@@ -5,7 +5,7 @@ import com.crko.domain.IcsImport
 import com.crko.domain.Journal
 import com.crko.domain.Todo
 import com.crko.domain.gatedCancellations
-import com.crko.domain.legacyEvent
+import com.crko.migration.legacyEvent
 import com.crko.domain.mergeEvents
 import com.crko.domain.mergeJournals
 import com.crko.domain.mergeTodos

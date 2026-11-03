@@ -75,9 +75,9 @@ dependencies {
 }
 
 /**
- * Source-level guard for the RFC 5545 domain model. The parser's private `Raw*` types and the
- * persisted-payload DTOs in `Legacy*.kt` are allowed to mention the old shape; nothing else is.
- * Legacy field names that double as legitimate locals (`endMinutes = when { … }`) are matched in
+ * Source-level guard for the RFC 5545 domain model. The persisted-payload DTOs in the
+ * `com.crko.migration` package are allowed to mention the old shape; nothing else is. Legacy field
+ * names that double as legitimate locals (`endMinutes = when { … }`) are matched in
  * property-declaration form (`val|var name:` , including `val Event.name:` compat getters).
  */
 val verifyDomainModel = tasks.register("verifyDomainModel") {
@@ -90,6 +90,7 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
         val root = commonMain.asFile
         val violations = mutableListOf<String>()
         fun File.lines(): List<String> = readText().lines()
+        fun File.isMigrationCode(): Boolean = relativeTo(root).path.startsWith("migration/")
         fun report(file: File, line: Int, message: String) {
             violations += "${file.relativeTo(root).path}:${line + 1}: $message"
         }
@@ -129,7 +130,7 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
         val legacyFieldNames = legacyEventFields + listOf("startTime", "dueTime", "completedTime")
         listOf(root.resolve("domain"), root.resolve("state")).forEach { dir ->
             dir.walkTopDown()
-                .filter { it.isFile && it.extension == "kt" && !it.name.startsWith("Legacy") }
+                .filter { it.isFile && it.extension == "kt" }
                 .forEach { file ->
                     file.lines().forEachIndexed { index, line ->
                         val code = line.trim()
@@ -146,7 +147,7 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
 
         val syntheticMarkers = listOf("#override-", "#future-", "#prior-")
         root.walkTopDown()
-            .filter { it.isFile && it.extension == "kt" && !it.name.startsWith("Legacy") }
+            .filter { it.isFile && it.extension == "kt" && !it.isMigrationCode() }
             .forEach { file ->
                 file.lines().forEachIndexed { index, line ->
                     val code = line.trim()

@@ -7,7 +7,7 @@ import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.Attachment
 import com.crko.domain.Event
-import com.crko.domain.legacyEvent
+import com.crko.migration.legacyEvent
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.IcsWarning

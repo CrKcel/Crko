@@ -1,7 +1,7 @@
 package com.crko
 
 import com.crko.domain.Event
-import com.crko.domain.legacyEvent
+import com.crko.migration.legacyEvent
 import com.crko.domain.EndOfDayMinutes
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule

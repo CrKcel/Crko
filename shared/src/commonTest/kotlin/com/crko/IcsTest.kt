@@ -4,7 +4,7 @@ import com.crko.domain.Attachment
 import com.crko.domain.CalAddress
 import com.crko.domain.CalendarTimeZone
 import com.crko.domain.Event
-import com.crko.domain.legacyEvent
+import com.crko.migration.legacyEvent
 import com.crko.domain.EventStatus
 import com.crko.domain.EventTransparency
 import com.crko.domain.IcsWarning

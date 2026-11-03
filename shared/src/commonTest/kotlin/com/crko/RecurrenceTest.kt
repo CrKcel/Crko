@@ -4,7 +4,7 @@ import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.EndOfDayMinutes
 import com.crko.domain.Event
-import com.crko.domain.legacyEvent
+import com.crko.migration.legacyEvent
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.OrdinalWeekday
 import com.crko.domain.OccurrenceTime

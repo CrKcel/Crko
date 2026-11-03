@@ -11,11 +11,11 @@ import com.crko.domain.IcsTimeValue
 import com.crko.domain.LocalCalendarId
 import com.crko.domain.LocalRecordMeta
 import com.crko.domain.PersistedSettings
-import com.crko.domain.StageFiveAppState
+import com.crko.migration.StageFiveAppState
 import com.crko.domain.icsTimeZoneConflicts
 import com.crko.domain.icsTimeZoneDefinition
 import com.crko.domain.instantOrNull
-import com.crko.domain.legacyEvent
+import com.crko.migration.legacyEvent
 import com.crko.domain.registerIcsTimeZones
 import com.crko.domain.replaceIcsTimeZones
 import kotlinx.coroutines.Dispatchers

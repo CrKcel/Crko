@@ -2,7 +2,7 @@ package com.crko
 
 import com.crko.domain.CalAddress
 import com.crko.domain.Event
-import com.crko.domain.legacyEvent
+import com.crko.migration.legacyEvent
 import com.crko.domain.IcsAttendee
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsTimeValue
