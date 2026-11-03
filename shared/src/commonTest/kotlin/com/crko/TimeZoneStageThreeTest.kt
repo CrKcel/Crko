@@ -21,6 +21,7 @@ import com.crko.storage.decodeStateWithReport
 import com.crko.state.AppStateHolder
 import com.crko.ui.transfer.importSelection
 import com.crko.ui.transfer.toIcsImport
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
@@ -223,7 +224,13 @@ class TimeZoneStageThreeTest {
                 "DTSTART:20260301T100000Z\r\nDTEND:20260301T110000Z\r\nSUMMARY:Sync\r\nEND:VEVENT\r\n",
         )
         val storage = MetadataStorage()
-        val holder = AppStateHolder(scope = this, initialSystemLocale = "en-US", storage = storage)
+        val holder = AppStateHolder(
+            scope = this,
+            initialSystemLocale = "en-US",
+            storage = storage,
+            // The reload below reads the fake storage; keep the write on the test scheduler.
+            persistenceDispatcher = UnconfinedTestDispatcher(testScheduler),
+        )
         // The preview path rebuilds the import from the kept rows; calendar metadata must survive it.
         val selection = importSelection(importCalendar(text, utc, "Untitled"))
         holder.importCalendar(selection.toIcsImport(listOf(true)), source = "team.ics")

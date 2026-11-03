@@ -13,7 +13,7 @@ import com.crko.i18n.resolveLanguage
 import com.crko.i18n.stringsFor
 import com.crko.state.DarkModeSetting
 import com.crko.state.PaletteSetting
-import com.crko.storage.StateStorage
+import com.crko.state.persistence.StateRepository
 
 /**
  * User preferences: language, theme, palette, timeline defaults and their persistence.
@@ -24,10 +24,10 @@ import com.crko.storage.StateStorage
  */
 @Stable
 internal class SettingsController(
-    private val storage: StateStorage,
+    private val repository: StateRepository,
     initialSystemLocale: String,
 ) {
-    var settings: PersistedSettings by mutableStateOf(storage.loadSettings())
+    var settings: PersistedSettings by mutableStateOf(repository.loadSettings())
         private set
 
     var systemLocale: String by mutableStateOf(initialSystemLocale)
@@ -54,7 +54,7 @@ internal class SettingsController(
     private fun updateSettings(transform: (PersistedSettings) -> PersistedSettings) {
         val next = transform(settings)
         settings = next
-        storage.saveSettings(next)
+        repository.saveSettings(next)
     }
 
     fun setLanguage(language: AppLanguage) = updateSettings { it.copy(language = languageTag(language)) }

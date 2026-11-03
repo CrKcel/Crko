@@ -59,6 +59,7 @@ import com.crko.ui.transfer.toIcsImport
 import com.crko.ui.more.journalWithEdits
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.LocalTime
@@ -108,6 +109,9 @@ private class Fixture(
         clock = FakeClock(1_793_101_200_000),
         idProvider = { "id-${ids++}" },
         storage = storage,
+        // Persistence is off-thread in production; the fixture keeps writes on the test scheduler
+        // and runs them eagerly, so storage assertions still see the committed state.
+        persistenceDispatcher = UnconfinedTestDispatcher(scope.testScheduler),
     )
 }
 

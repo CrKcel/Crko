@@ -21,9 +21,7 @@ import com.crko.domain.TodoNode
 import com.crko.domain.TodoPriority
 import com.crko.domain.occurringOn
 import com.crko.domain.icsTimeZoneConflicts
-import com.crko.domain.replaceIcsTimeZones
 import com.crko.domain.toCalendar
-import com.crko.domain.withLocalCalendar
 import com.crko.domain.resolveSubscriptionUrl
 import com.crko.domain.today
 import com.crko.i18n.AppLanguage
@@ -38,6 +36,7 @@ import com.crko.state.`import`.AttachmentMaterializer
 import com.crko.state.`import`.ImportService
 import com.crko.state.event.EventService
 import com.crko.state.journal.JournalService
+import com.crko.state.persistence.StateRepository
 import com.crko.state.settings.SettingsController
 import com.crko.state.stats.StatsService
 import com.crko.state.subscription.SubscriptionSyncService
@@ -45,6 +44,7 @@ import com.crko.state.todo.TodoService
 import kotlinx.datetime.LocalDate
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -115,6 +115,11 @@ class AppStateHolder(
     private val idProvider: () -> String = ::newId,
     private val storage: StateStorage = AppStorage,
     /**
+     * Dispatcher that serializes disk writes. Injectable so tests can keep the writes on their
+     * scheduler; the default keeps JSON encoding off the caller (UI) thread.
+     */
+    private val persistenceDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    /**
      * Platform notification bridge, wired by the app composition root ([com.crko.App]). Null by
      * default so tests never touch platform notification centers.
      */
@@ -135,13 +140,20 @@ class AppStateHolder(
      */
     private val attachmentRepository: AttachmentRepository = AttachmentRepository(),
 ) {
-    var appState: AppState by mutableStateOf(storage.loadState().withLocalCalendar())
-        private set
+    private val repository = StateRepository(
+        scope = scope,
+        storage = storage,
+        ioDispatcher = persistenceDispatcher,
+        onStateChanged = { scheduleReminders() },
+    )
+
+    /** Restored state, kept in Compose state by the repository and written back off the UI thread. */
+    val appState: AppState get() = repository.state
 
     var today: LocalDate by mutableStateOf(today(clock))
         private set
 
-    private val settingsController = SettingsController(storage, initialSystemLocale)
+    private val settingsController = SettingsController(repository, initialSystemLocale)
 
     /** User preferences; loading, defaults and persistence live in the controller. */
     val settings: PersistedSettings get() = settingsController.settings
@@ -224,13 +236,9 @@ class AppStateHolder(
     private val reminderMutex = Mutex()
 
     init {
-        // Unknown zones are stored once at the calendar level; registering them per calendar here
-        // makes the restored events resolve their wall clock and absolute instant on the first frame,
-        // and keeps two calendars naming the same TZID apart.
-        replaceIcsTimeZones(appState.calendars)
         // A payload that could only be read partially used to look like an empty calendar with no
         // explanation; the damaged copy is kept by the storage, so say what happened.
-        val damage = storage.loadDamage()
+        val damage = repository.loadDamage
         if (!damage.isEmpty) notify(AppMessage.StorageRecovered(damage.droppedRecords))
         scheduleReminders()
     }
@@ -390,14 +398,7 @@ class AppStateHolder(
         scope.launch { messageChannel.send(message) }
     }
 
-    private fun persist(next: AppState) {
-        // The lookup cache is a derived index of the stored calendars: rebuilding it per write drops
-        // the definitions of a deleted calendar and of an import preview that was never applied.
-        replaceIcsTimeZones(next.calendars)
-        appState = next
-        storage.saveState(next)
-        scheduleReminders()
-    }
+    private fun persist(next: AppState) = repository.persist(next)
 
     /**
      * Keeps the platform notifications in line with the state: every persisted change (save,
