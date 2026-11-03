@@ -18,18 +18,15 @@ import com.crko.domain.IcsPartStat
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.Journal
 import com.crko.domain.PersistedSettings
-import com.crko.domain.RelatedTo
 import com.crko.domain.RepeatRule
 import com.crko.domain.boundedBefore
 import com.crko.domain.SubscriptionFailure
 import com.crko.domain.Todo
 import com.crko.domain.TodoNode
 import com.crko.domain.TodoPriority
-import com.crko.domain.TodoStatus
 import com.crko.domain.daysTo
 import com.crko.domain.instantOrNull
 import com.crko.domain.movedByWallDays
-import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.occurrenceStartOn
 import com.crko.domain.occursOn
 import com.crko.domain.occurringOn
@@ -40,9 +37,6 @@ import com.crko.domain.icsTimeZoneConflicts
 import com.crko.domain.replaceIcsTimeZones
 import com.crko.domain.shiftedByWallDays
 import com.crko.domain.toCalendar
-import com.crko.domain.toIcsPriority
-import com.crko.domain.todoForest
-import com.crko.domain.todoPriorityRank
 import com.crko.domain.wallDate
 import com.crko.domain.withExclusion
 import com.crko.domain.withLocalCalendar
@@ -54,10 +48,6 @@ import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import com.crko.i18n.AppLanguage
 import com.crko.i18n.Strings
-import com.crko.i18n.languageFromTag
-import com.crko.i18n.languageTag
-import com.crko.i18n.resolveLanguage
-import com.crko.i18n.stringsFor
 import com.crko.storage.AttachmentRepository
 import com.crko.storage.AppStorage
 import com.crko.storage.StateStorage
@@ -66,7 +56,11 @@ import com.crko.storage.newId
 import com.crko.storage.systemLocaleTag
 import com.crko.state.`import`.AttachmentMaterializer
 import com.crko.state.`import`.ImportService
+import com.crko.state.journal.JournalService
+import com.crko.state.settings.SettingsController
+import com.crko.state.stats.StatsService
 import com.crko.state.subscription.SubscriptionSyncService
+import com.crko.state.todo.TodoService
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.LocalTime
@@ -166,6 +160,28 @@ class AppStateHolder(
     var appState: AppState by mutableStateOf(storage.loadState().withLocalCalendar())
         private set
 
+    var today: LocalDate by mutableStateOf(today(clock))
+        private set
+
+    private val settingsController = SettingsController(storage, initialSystemLocale)
+
+    /** User preferences; loading, defaults and persistence live in the controller. */
+    val settings: PersistedSettings get() = settingsController.settings
+
+    var systemLocale: String
+        get() = settingsController.systemLocale
+        set(value) {
+            settingsController.systemLocale = value
+        }
+
+    val languageSetting: AppLanguage get() = settingsController.languageSetting
+    val resolvedLanguage: AppLanguage get() = settingsController.resolvedLanguage
+    val strings: Strings get() = settingsController.strings
+    private val currentStrings: Strings get() = settingsController.strings
+
+    val darkModeSetting: DarkModeSetting get() = settingsController.darkModeSetting
+    val paletteSetting: PaletteSetting get() = settingsController.paletteSetting
+
     private val attachmentMaterializer = AttachmentMaterializer(attachmentRepository)
 
     private val stateAccess = object : StateAccess {
@@ -193,23 +209,20 @@ class AppStateHolder(
         strings = { currentStrings },
     )
 
-    var settings: PersistedSettings by mutableStateOf(storage.loadSettings())
-        private set
+    private val todoService = TodoService(
+        access = stateAccess,
+        clock = clock,
+        idProvider = idProvider,
+        today = { today },
+    )
 
-    var systemLocale: String by mutableStateOf(initialSystemLocale)
+    private val journalService = JournalService(
+        access = stateAccess,
+        clock = clock,
+        idProvider = idProvider,
+    )
 
-    val languageSetting: AppLanguage get() = languageFromTag(settings.language)
-    val resolvedLanguage: AppLanguage get() = resolveLanguage(languageSetting, systemLocale)
-    private val currentStrings: Strings get() = stringsFor(resolvedLanguage)
-    val strings: Strings get() = currentStrings
-
-    val darkModeSetting: DarkModeSetting
-        get() = runCatching { DarkModeSetting.valueOf(settings.darkMode) }.getOrDefault(DarkModeSetting.System)
-    val paletteSetting: PaletteSetting
-        get() = runCatching { PaletteSetting.valueOf(settings.palette) }.getOrDefault(PaletteSetting.Monet)
-
-    var today: LocalDate by mutableStateOf(today(clock))
-        private set
+    private val statsService = StatsService(access = stateAccess, today = { today })
 
     private val messageChannel = Channel<AppMessage>(Channel.BUFFERED)
     val messages = messageChannel.receiveAsFlow()
@@ -230,9 +243,6 @@ class AppStateHolder(
         // makes the restored events resolve their wall clock and absolute instant on the first frame,
         // and keeps two calendars naming the same TZID apart.
         replaceIcsTimeZones(appState.calendars)
-        if (settings.agendaScrollHour < 0) {
-            updateSettings { it.copy(agendaScrollHour = 8) }
-        }
         // A payload that could only be read partially used to look like an empty calendar with no
         // explanation; the damaged copy is kept by the storage, so say what happened.
         val damage = storage.loadDamage()
@@ -262,25 +272,19 @@ class AppStateHolder(
         return copy(calendars = updated)
     }
 
-    // ----- settings -----
+    // ----- settings (delegated to SettingsController) -----
 
-    private fun updateSettings(transform: (PersistedSettings) -> PersistedSettings) {
-        val next = transform(settings)
-        settings = next
-        storage.saveSettings(next)
-    }
+    fun setLanguage(language: AppLanguage) = settingsController.setLanguage(language)
 
-    fun setLanguage(language: AppLanguage) = updateSettings { it.copy(language = languageTag(language)) }
+    fun setDarkMode(mode: DarkModeSetting) = settingsController.setDarkMode(mode)
 
-    fun setDarkMode(mode: DarkModeSetting) = updateSettings { it.copy(darkMode = mode.name) }
+    fun setPalette(palette: PaletteSetting) = settingsController.setPalette(palette)
 
-    fun setPalette(palette: PaletteSetting) = updateSettings { it.copy(palette = palette.name) }
+    fun setKeyColor(argb: Long) = settingsController.setKeyColor(argb)
 
-    fun setKeyColor(argb: Long) = updateSettings { it.copy(keyColor = argb) }
+    fun setDefaultHour(hour: Int) = settingsController.setDefaultHour(hour)
 
-    fun setDefaultHour(hour: Int) = updateSettings { it.copy(agendaScrollHour = hour.coerceIn(0, 23)) }
-
-    fun setAgendaView(view: String) = updateSettings { it.copy(agendaView = view) }
+    fun setAgendaView(view: String) = settingsController.setAgendaView(view)
 
     // ----- events -----
 
@@ -640,168 +644,40 @@ class AppStateHolder(
         persist(appState.copy(calendars = calendars))
     }
 
-    // ----- todos -----
+    // ----- todos (delegated to TodoService) -----
 
-    fun activeTodos(): List<Todo> {
-        // A series is shown under its next occurrence, so it sorts by that date instead of the
-        // stale stored due; computed once per todo rather than per comparison.
-        val today = today
-        val shownDue = appState.todos.associate { todo ->
-            todo.id to if (todo.repeat != null) {
-                todo.nextOccurrenceDate(today)?.toString()
-            } else {
-                todo.dueDay?.toString()
-            }
-        }
-        return appState.todos
-            .filterNot { it.done }
-            .sortedWith(
-                compareBy<Todo> { shownDue[it.id] == null }
-                    .thenBy { shownDue[it.id] ?: "" }
-                    .thenBy { todoPriorityRank(it.priority) }
-                    .thenByDescending { it.createdAt },
-            )
-    }
+    /** Active todos, ordered by projected due date, then priority, then creation time. */
+    fun activeTodos(): List<Todo> = todoService.activeTodos()
 
-    fun completedTodos(): List<Todo> = appState.todos
-        .filter { it.done }
-        .sortedByDescending { it.createdAt }
+    fun completedTodos(): List<Todo> = todoService.completedTodos()
 
     /**
      * The `RELATED-TO` sub-task forest whose roots are the active todos. Subtrees stay whole under
      * each root — a finished subtask keeps its place, struck through, next to its pending siblings.
      */
-    fun activeTodoForest(): List<TodoNode> = todoForest(active = true)
+    fun activeTodoForest(): List<TodoNode> = todoService.activeTodoForest()
 
     /** The same forest rooted at the completed top-level todos. */
-    fun completedTodoForest(): List<TodoNode> = todoForest(active = false)
+    fun completedTodoForest(): List<TodoNode> = todoService.completedTodoForest()
 
-    /** Roots sorted the way the flat lists sort them; children keep their creation order. */
-    private fun todoForest(active: Boolean): List<TodoNode> {
-        // A series is shown under its next occurrence, so it sorts by that date instead of the
-        // stale stored due; computed once per todo rather than per comparison.
-        val today = today
-        val shownDue = appState.todos.associate { todo ->
-            todo.id to if (todo.repeat != null) {
-                todo.nextOccurrenceDate(today)?.toString()
-            } else {
-                todo.dueDay?.toString()
-            }
-        }
-        return appState.todos
-            .todoForest()
-            .filter { if (active) !it.todo.done else it.todo.done }
-            .sortedWith(
-                if (active) {
-                    compareBy<TodoNode> { shownDue[it.todo.id] == null }
-                        .thenBy { shownDue[it.todo.id] ?: "" }
-                        .thenBy { todoPriorityRank(it.todo.priority) }
-                        .thenByDescending { it.todo.createdAt }
-                } else {
-                    compareByDescending { it.todo.createdAt }
-                },
-            )
-    }
+    fun addTodo(title: String, priority: TodoPriority, due: LocalDate?, parentUid: String? = null): WriteResult =
+        todoService.addTodo(title, priority, due, parentUid)
 
-    fun addTodo(title: String, priority: TodoPriority, due: LocalDate?, parentUid: String? = null): WriteResult {
-        if (title.isBlank()) return WriteResult.EmptyTitle
-        val now = clock.now()
-        val todo = Todo(
-            id = idProvider(),
-            title = title.trim(),
-            priority = priority.toIcsPriority(),
-            due = due?.let(IcsTimeValue::Date),
-            createdAt = now.toEpochMilliseconds(),
-            lastModified = now.toString(),
-            dtStamp = now.toString(),
-            relatedTo = parentUid?.let { listOf(RelatedTo.parent(it)) } ?: emptyList(),
-        )
-        persist(appState.replacingCalendar(localCalendarIndex) { it.copy(todos = it.todos + todo) })
-        return WriteResult.Success
-    }
+    fun setTodoDone(id: String, done: Boolean) = todoService.setTodoDone(id, done)
 
-    fun setTodoDone(id: String, done: Boolean) {
-        val index = calendarIndexContaining { calendar -> calendar.todos.any { it.id == id } } ?: return
-        val now = clock.now()
-        persist(
-            appState.replacingCalendar(index) { calendar ->
-                calendar.copy(
-                    todos = calendar.todos.map { todo ->
-                        if (todo.id == id) {
-                            todo.copy(
-                                completed = if (done) now else null,
-                                status = if (done) TodoStatus.Completed else TodoStatus.NeedsAction,
-                                percentComplete = if (done) 100 else 0,
-                                lastModified = now.toString(),
-                                dtStamp = now.toString(),
-                                sequence = todo.sequence + 1,
-                            )
-                        } else {
-                            todo
-                        }
-                    },
-                )
-            },
-        )
-    }
+    fun deleteTodo(id: String) = todoService.deleteTodo(id)
 
-    fun deleteTodo(id: String) {
-        val index = calendarIndexContaining { calendar -> calendar.todos.any { it.id == id } } ?: return
-        persist(appState.replacingCalendar(index) { calendar ->
-            calendar.copy(todos = calendar.todos.filterNot { it.id == id })
-        })
-    }
-
-    // ----- journals -----
+    // ----- journals (delegated to JournalService) -----
 
     /** Journals sorted newest first; undated ones keep their import order at the end. */
-    fun journalsSorted(): List<Journal> = appState.journals
-        .sortedWith(
-            compareByDescending<Journal> { it.date != null }
-                .thenByDescending { it.date ?: "" },
-        )
+    fun journalsSorted(): List<Journal> = journalService.journalsSorted()
 
-    fun addJournal(title: String, note: String, date: LocalDate?): WriteResult {
-        if (title.isBlank() && note.isBlank()) return WriteResult.EmptyTitle
-        val now = clock.now()
-        val journal = Journal(
-            id = idProvider(),
-            title = title.trim(),
-            note = note,
-            start = date?.let(IcsTimeValue::Date),
-            lastModified = now.toString(),
-            dtStamp = now.toString(),
-        )
-        persist(appState.replacingCalendar(localCalendarIndex) { it.copy(journals = it.journals + journal) })
-        return WriteResult.Success
-    }
+    fun addJournal(title: String, note: String, date: LocalDate?): WriteResult =
+        journalService.addJournal(title, note, date)
 
-    fun updateJournal(journal: Journal): WriteResult {
-        val index = calendarIndexContaining { calendar -> calendar.journals.any { it.id == journal.id } }
-            ?: return WriteResult.Success
-        val now = clock.now()
-        persist(
-            appState.replacingCalendar(index) { calendar ->
-                calendar.copy(
-                    journals = calendar.journals.map {
-                        if (it.id == journal.id) {
-                            journal.copy(lastModified = now.toString(), dtStamp = now.toString(), sequence = journal.sequence + 1)
-                        } else {
-                            it
-                        }
-                    },
-                )
-            },
-        )
-        return WriteResult.Success
-    }
+    fun updateJournal(journal: Journal): WriteResult = journalService.updateJournal(journal)
 
-    fun deleteJournal(id: String) {
-        val index = calendarIndexContaining { calendar -> calendar.journals.any { it.id == id } } ?: return
-        persist(appState.replacingCalendar(index) { calendar ->
-            calendar.copy(journals = calendar.journals.filterNot { it.id == id })
-        })
-    }
+    fun deleteJournal(id: String) = journalService.deleteJournal(id)
 
     // ----- subscriptions -----
 
@@ -844,9 +720,9 @@ class AppStateHolder(
     /** Whether [id] currently has a sync running. */
     fun isSyncing(id: String): Boolean = subscriptionSync.isSyncing(id)
 
-    // ----- statistics -----
+    // ----- statistics (delegated to StatsService) -----
 
-    fun completedToday(): Int = appState.todos.count { it.done && it.completedAt == today.toString() }
+    fun completedToday(): Int = statsService.completedToday()
 
     fun notify(message: AppMessage) {
         scope.launch { messageChannel.send(message) }
