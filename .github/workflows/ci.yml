@@ -39,6 +39,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5
 
+      - name: Verify domain model and architecture guards
+        run: ./gradlew :shared:verifyDomainModel :shared:verifyArchitecture :shared:verifyFileSizes --stacktrace
+
       - name: Run unit tests
         run: ./gradlew :shared:testAndroidHostTest --stacktrace
 

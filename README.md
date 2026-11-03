@@ -54,10 +54,12 @@ shared/src/commonMain/kotlin/com/crko/
 防回归：
 
 ```bash
-./gradlew :shared:verifyDomainModel
+./gradlew :shared:verifyDomainModel :shared:verifyArchitecture :shared:verifyFileSizes
 ```
 
-检查：旧 `Event` / `Todo` 字段名是否以属性声明形式重新出现在 `domain` 或 `state` 的任意非迁移文件中（不只 `Models.kt`，也含 `Event.date` 与 `RepeatRule.weekdays` / `rDates`）、合成 UID 标记（`#override-` / `#future-` / `#prior-`）或 `sub:` 身份前缀是否回到 `Legacy*` 迁移代码之外、ICS 与 iTIP 导入导出路径（`Ics.kt` / `Itip.kt`）是否重新读取设备时区。`verifyDomainModel` 已挂到 `:shared:check`。
+检查：旧 `Event` / `Todo` 字段名是否以属性声明形式重新出现在 `domain` 或 `state` 的任意非迁移文件中（不只 `Models.kt`，也含 `Event.date` 与 `RepeatRule.weekdays` / `rDates`）、合成 UID 标记（`#override-` / `#future-` / `#prior-`）或 `sub:` 身份前缀是否回到 `Legacy*` 迁移代码之外、ICS 与 iTIP 导入导出路径（`Ics.kt` / `Itip.kt`）是否重新读取设备时区。
+
+`verifyArchitecture` 按包路径检查跨层 import（`domain` 不得依赖 `storage/sync/state/ui/i18n/dev/migration`，`storage` 不得依赖 `sync/state/ui/i18n/dev`，`ui` 不得依赖 `storage/sync/dev` 等）；`verifyFileSizes` 要求 `commonMain` 单个 Kotlin 文件不超过 800 行。三个任务都已挂到 `:shared:check`，CI 在单元测试前显式执行。
 
 约定：
 

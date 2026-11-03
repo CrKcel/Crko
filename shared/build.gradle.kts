@@ -177,6 +177,108 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
     }
 }
 
+/**
+ * Package-level dependency guard. Each package may only import the packages listed as allowed in
+ * `docs/TODO`; the guard scans every Kotlin file under the shared source sets, so platform-specific
+ * code cannot slip across the same boundaries. `knownViolations` mirrors the cleanup list in
+ * `docs/TODO` section 13 and must shrink to empty as A2/A3/A4 land.
+ */
+val verifyArchitecture = tasks.register("verifyArchitecture") {
+    group = "verification"
+    description = "Rejects imports that cross the allowed package boundaries."
+    val sourceRoots = listOf(
+        layout.projectDirectory.dir("src/commonMain/kotlin/com/crko"),
+        layout.projectDirectory.dir("src/androidMain/kotlin/com/crko"),
+        layout.projectDirectory.dir("src/iosMain/kotlin/com/crko"),
+    )
+    inputs.files(sourceRoots.map { it.asFile })
+
+    doLast {
+        val forbiddenImports = mapOf(
+            "domain" to listOf("storage", "sync", "state", "ui", "i18n", "dev", "migration"),
+            "migration" to listOf("storage", "sync", "state", "ui", "i18n"),
+            "storage" to listOf("sync", "state", "ui", "i18n", "dev"),
+            "sync" to listOf("state", "ui", "i18n", "dev"),
+            "i18n" to listOf("state", "ui", "dev"),
+            "state" to listOf("ui", "dev"),
+            "ui" to listOf("storage", "sync", "dev"),
+        )
+        // Keep the allowlist keyed by file and forbidden package, so a new boundary crossing in an
+        // already-known file still fails the guard.
+        val knownViolations = setOf(
+            "domain/Models.kt|storage",
+            "domain/Ics.kt|storage",
+            "domain/SubscriptionSync.kt|storage",
+            "storage/Platform.kt|dev",
+            "ui/schedule/EventEditor.kt|storage",
+            "ui/theme/Theme.kt|storage",
+        )
+        val violations = mutableListOf<String>()
+        sourceRoots.forEach rootLoop@ { root ->
+            val rootFile = root.asFile
+            if (!rootFile.exists()) return@rootLoop
+            rootFile.walkTopDown()
+                .filter { it.isFile && it.extension == "kt" }
+                .sortedBy { it.path }
+                .forEach fileLoop@ { file ->
+                    val relative = file.relativeTo(rootFile).path
+                    val packageName = relative.substringBefore('/')
+                    val denied = forbiddenImports[packageName] ?: return@fileLoop
+                    file.readLines().forEachIndexed { index, line ->
+                        val trimmed = line.trim()
+                        if (!trimmed.startsWith("import ")) return@forEachIndexed
+                        val imported = trimmed.removePrefix("import ").substringBefore(" as ").trim()
+                        val hit = denied.firstOrNull { imported.startsWith("com.crko.$it.") }
+                            ?: return@forEachIndexed
+                        if ("$relative|$hit" in knownViolations) return@forEachIndexed
+                        violations += "$relative:${index + 1}: $packageName must not import $imported"
+                    }
+                }
+        }
+        if (violations.isNotEmpty()) {
+            error("Architecture guard failed:\n" + violations.joinToString("\n"))
+        }
+    }
+}
+
+/**
+ * File-size guard for `commonMain`. Existing oversized files are allowlisted until their split
+ * tasks (B1–B5, C1–C4, D1–D2) land; new files are held to the 800-line budget immediately.
+ */
+val verifyFileSizes = tasks.register("verifyFileSizes") {
+    group = "verification"
+    description = "Keeps commonMain Kotlin files under the 800-line budget."
+    val commonMain = layout.projectDirectory.dir("src/commonMain/kotlin/com/crko")
+    inputs.dir(commonMain.asFile)
+
+    doLast {
+        val maxLines = 800
+        val knownOversize = setOf(
+            "domain/Ics.kt",
+            "state/AppStateHolder.kt",
+            "ui/schedule/EventEditor.kt",
+            "ui/schedule/MonthCalendar.kt",
+            "domain/Recurrence.kt",
+            "domain/Models.kt",
+        )
+        val violations = mutableListOf<String>()
+        commonMain.asFile.walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .sortedBy { it.path }
+            .forEach fileLoop@ { file ->
+                val relative = file.relativeTo(commonMain.asFile).path
+                if (relative in knownOversize) return@fileLoop
+                val lines = file.readLines().size
+                if (lines > maxLines) {
+                    violations += "$relative: $lines lines exceeds the $maxLines-line budget"
+                }
+            }
+        if (violations.isNotEmpty()) {
+            error("File-size guard failed:\n" + violations.joinToString("\n"))
+        }
+    }
+}
+
 tasks.matching { it.name == "check" }.configureEach {
-    dependsOn(verifyDomainModel)
+    dependsOn(verifyDomainModel, verifyArchitecture, verifyFileSizes)
 }
