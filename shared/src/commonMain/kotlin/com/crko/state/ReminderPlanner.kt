@@ -30,6 +30,18 @@ import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
+/**
+ * Language-independent identity of one reminder: trigger instant, raw record title and the raw
+ * alarm description (or the canonical ingredients of the derived body). Localized wording is
+ * deliberately excluded, so a language switch does not read as a reminder change; the platform
+ * only sees the new wording on the next change that actually touches the record.
+ */
+data class ReminderFingerprint(
+    val triggerAtMillis: Long,
+    val title: String,
+    val body: String,
+)
+
 /** One reminder handed to the platform scheduler: it fires once at [triggerAtMillis]. */
 data class ScheduledReminder(
     /** Stable identifier; rescheduling replaces requests with the same key. */
@@ -37,6 +49,8 @@ data class ScheduledReminder(
     val triggerAtMillis: Long,
     val title: String,
     val body: String,
+    /** What [diffReminders] compares to decide whether this reminder changed at all. */
+    val fingerprint: ReminderFingerprint,
 )
 
 /** Occurrence dates further than this behind today no longer feed `RELATED=END` triggers. */
@@ -85,6 +99,45 @@ fun planReminders(
         .take(limit)
 }
 
+/**
+ * Reminders of one event, without the cross-record filter, sort and cap. `AppStateHolder` plans
+ * record by record so an edit re-walks only the record that changed; [planReminders] keeps the
+ * whole-library pass for callers that have no fragment cache.
+ */
+internal fun planEventReminders(
+    event: Event,
+    today: LocalDate,
+    zone: TimeZone,
+    nowMillis: Long,
+    strings: Strings,
+): List<ScheduledReminder> {
+    val reminders = mutableListOf<ScheduledReminder>()
+    collectEventReminders(
+        event,
+        today,
+        today.plusDays(ReminderHorizonDays),
+        ReminderHorizonDays,
+        zone,
+        nowMillis,
+        strings,
+        reminders,
+    )
+    return reminders
+}
+
+/** Same per-record entry point for todos; see [planEventReminders]. */
+internal fun planTodoReminders(
+    todo: Todo,
+    today: LocalDate,
+    zone: TimeZone,
+    nowMillis: Long,
+    strings: Strings,
+): List<ScheduledReminder> {
+    val reminders = mutableListOf<ScheduledReminder>()
+    collectTodoReminders(todo, today, today.plusDays(ReminderHorizonDays), zone, nowMillis, strings, reminders)
+    return reminders
+}
+
 private fun collectEventReminders(
     event: Event,
     today: LocalDate,
@@ -122,6 +175,15 @@ private fun collectEventReminders(
                     strings = strings,
                 )
             },
+            // The absolute trigger resolves outside the occurrence loop, so its derived body shows
+            // the event's own moment; those are the language-free ingredients it is built from.
+            fingerprint = ReminderFingerprint(
+                triggerAtMillis = at,
+                title = event.title,
+                body = alarm.description.ifBlank {
+                    "abs|${event.start is IcsTimeValue.Date}|${event.day}|${event.localStart(zone).let { it.hour * 60 + it.minute }}"
+                },
+            ),
         )
     }
     if (relative.isEmpty()) return
@@ -203,6 +265,15 @@ private fun emitWithRepeat(
                     alarmMoment(event.start is IcsTimeValue.Date, occurrence, startMinutes, strings)
                 }"
             },
+            // The derived body renders the trigger offset and the occurrence moment; both are
+            // listed here in canonical form so only real trigger changes move the fingerprint.
+            fingerprint = ReminderFingerprint(
+                triggerAtMillis = at,
+                title = event.title,
+                body = alarm.description.ifBlank {
+                    "rel|${trigger.duration}|${trigger.related}|${event.start is IcsTimeValue.Date}|$occurrence|$startMinutes"
+                },
+            ),
         )
     }
 }
@@ -303,6 +374,13 @@ private fun emitTodoReminder(
                     strings.alarmLabel((-it.duration).inWholeMinutes.toInt(), it.related == AlarmRelated.End)
                 }.orEmpty()
             },
+            // A todo key already carries the occurrence, so the offset and its relation are what
+            // the derived body would render; the absolute branch has no `relative` at all.
+            fingerprint = ReminderFingerprint(
+                triggerAtMillis = at,
+                title = todo.title,
+                body = alarm.description.ifBlank { "rel|${relative?.duration}|${relative?.related}" },
+            ),
         )
     }
 }

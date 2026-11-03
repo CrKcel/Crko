@@ -8,6 +8,8 @@ import com.crko.domain.daysTo
 import com.crko.domain.movedByWallDays
 import com.crko.domain.wallDateTime
 import com.crko.state.AppStateHolder
+import com.crko.state.ReminderScheduler
+import com.crko.state.ScheduledReminder
 import com.crko.storage.StateStorage
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
@@ -42,6 +44,48 @@ internal class MemoryStorage(
     override fun saveSettings(settings: PersistedSettings) {
         this.settings = settings
     }
+}
+
+/**
+ * Records every scheduling pass so tests can assert exactly which keys the platform would have
+ * seen. A pass with no keys never reaches it, because the holder skips empty deltas.
+ */
+internal class RecordingReminderScheduler : ReminderScheduler {
+    sealed interface Pass {
+        /** Every key the pass touched: cancelled plus (re)registered. */
+        val keys: Set<String>
+
+        /** What the pass asked the platform to (re)register, in plan order. */
+        val registered: List<String>
+
+        data class Execute(
+            val cancelled: Set<String>,
+            override val registered: List<String>,
+        ) : Pass {
+            override val keys: Set<String> get() = cancelled + registered
+        }
+
+        data class ReplaceAll(override val registered: List<String>) : Pass {
+            override val keys: Set<String> get() = registered.toSet()
+        }
+    }
+
+    val passes = mutableListOf<Pass>()
+
+    /** When false, the platform reports "not applied" so the holder keeps its bookkeeping open. */
+    var granted = true
+
+    override suspend fun execute(cancelKeys: Set<String>, register: List<ScheduledReminder>): Boolean {
+        passes += Pass.Execute(cancelKeys, register.map { it.key })
+        return granted
+    }
+
+    override suspend fun replaceAll(plan: List<ScheduledReminder>): Boolean {
+        passes += Pass.ReplaceAll(plan.map { it.key })
+        return granted
+    }
+
+    override suspend fun ensurePermission(): Boolean = granted
 }
 
 internal class Fixture(

@@ -1,6 +1,7 @@
 package com.crko
 
-import com.crko.domain.AppState
+import com.crko.domain.Alarm
+import com.crko.domain.AlarmTrigger
 import com.crko.domain.Event
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsTimeValue
@@ -19,7 +20,6 @@ import com.crko.migration.legacyEvent
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
 import com.crko.state.EditScope
-import com.crko.state.ReminderScheduler
 import com.crko.state.UndoResult
 import com.crko.state.WriteResult
 import com.crko.ui.common.actionText
@@ -30,9 +30,11 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
 
 /**
  * F1.4: the most recent delete can be restored. The snapshot keeps the removed records, the calendar
@@ -239,7 +241,7 @@ class DeleteUndoTest {
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
     fun undoReschedulesReminders() = runTest {
-        val scheduler = CountingUndoScheduler()
+        val scheduler = RecordingReminderScheduler()
         val holder = AppStateHolder(
             scope = this,
             initialSystemLocale = "en-US",
@@ -249,15 +251,29 @@ class DeleteUndoTest {
             persistenceDispatcher = UnconfinedTestDispatcher(testScheduler),
             reminders = scheduler,
         )
-        holder.saveEvent(legacyEvent("e1", "Meeting", holder.today.toString(), 540, 600))
+        // Two days out with a reminder, so the delete/restore pair moves real keys whatever the
+        // host zone does with the fixture's fixed instant.
+        holder.saveEvent(
+            legacyEvent(
+                "e1",
+                "Meeting",
+                holder.today.plusDays(2).toString(),
+                540,
+                600,
+                alarms = listOf(Alarm(trigger = AlarmTrigger.Relative((-15).minutes))),
+            ),
+        )
         holder.deleteEvent("e1")
         advanceUntilIdle()
-        val afterDelete = scheduler.calls
+        val afterDelete = scheduler.passes.size
 
         assertEquals(UndoResult.Success, holder.undoLastDelete())
         advanceUntilIdle()
 
-        assertTrue(scheduler.calls > afterDelete)
+        assertTrue(scheduler.passes.size > afterDelete)
+        val restored = scheduler.passes.last()
+        assertIs<RecordingReminderScheduler.Pass.Execute>(restored)
+        assertTrue(restored.registered.all { it.startsWith("e:e1:") })
         assertEquals(1, holder.appState.events.size)
     }
 
@@ -296,14 +312,4 @@ class DeleteUndoTest {
         assertTrue(f.holder.appState.todos.isEmpty())
         assertTrue(f.holder.appState.journals.isEmpty())
     }
-}
-
-private class CountingUndoScheduler : ReminderScheduler {
-    var calls = 0
-
-    override suspend fun reschedule(state: AppState, strings: Strings) {
-        calls++
-    }
-
-    override suspend fun ensurePermission(): Boolean = true
 }

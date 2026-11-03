@@ -17,8 +17,6 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.edit
 import com.crko.ActivityHolder
 import com.crko.AndroidAppContext
-import com.crko.domain.AppState
-import com.crko.i18n.Strings
 import com.crko.i18n.languageFromTag
 import com.crko.i18n.resolveLanguage
 import com.crko.i18n.stringsFor
@@ -37,40 +35,48 @@ const val EXTRA_REMINDER_BODY = "crko.extra.BODY"
 
 /**
  * Alarm-manager backed scheduler. Already-registered alarms are tracked by key in a private prefs
- * file so a reschedule can cancel them; the notification itself is posted by [ReminderReceiver]
- * with the title and body that were computed at schedule time.
+ * file so a pass can cancel exactly the keys that changed; the notification itself is posted by
+ * [ReminderReceiver] with the title and body that were computed at schedule time.
  */
 object AndroidReminders {
+    /**
+     * Cancels [cancelKeys] and registers [register]; an alarm registered under the same key is
+     * replaced in place, so a changed reminder needs no separate cancel.
+     */
+    fun apply(context: Context, cancelKeys: Set<String>, register: List<ScheduledReminder>): Boolean {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return false
+        val prefs = context.getSharedPreferences(REMINDER_PREFS, Context.MODE_PRIVATE)
+        // getStringSet returns an internal set; it must be copied before anything mutates it.
+        val tracked = prefs.getStringSet(KEY_SCHEDULED, emptySet()).orEmpty().toMutableSet()
+        cancelKeys.forEach { key ->
+            if (tracked.remove(key)) alarmManager.cancel(firePendingIntent(context, key, null, null))
+        }
+        register.forEach { reminder ->
+            registerAlarm(context, alarmManager, reminder)
+            tracked += reminder.key
+        }
+        prefs.edit { putStringSet(KEY_SCHEDULED, tracked) }
+        return true
+    }
+
     /** Replaces every registered alarm with [reminders]. */
-    fun reschedule(context: Context, reminders: List<ScheduledReminder>) {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+    fun reschedule(context: Context, reminders: List<ScheduledReminder>): Boolean {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return false
         val prefs = context.getSharedPreferences(REMINDER_PREFS, Context.MODE_PRIVATE)
         prefs.getStringSet(KEY_SCHEDULED, emptySet()).orEmpty().forEach { key ->
             alarmManager.cancel(firePendingIntent(context, key, null, null))
         }
         if (reminders.isEmpty()) {
             prefs.edit { remove(KEY_SCHEDULED) }
-            return
+            return true
         }
-        // Exact alarms need a user grant on API 31+; the inexact fallback still fires, just with
-        // the system's own batching latitude.
-        val exactAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
         val registered = mutableSetOf<String>()
         reminders.forEach { reminder ->
-            val pending = firePendingIntent(context, reminder.key, reminder.title, reminder.body)
-            try {
-                if (exactAllowed) {
-                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAtMillis, pending)
-                } else {
-                    alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAtMillis, pending)
-                }
-            } catch (_: SecurityException) {
-                // The grant can be revoked between the check and the call; inexact still fires.
-                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAtMillis, pending)
-            }
+            registerAlarm(context, alarmManager, reminder)
             registered += reminder.key
         }
         prefs.edit { putStringSet(KEY_SCHEDULED, registered) }
+        return true
     }
 
     /**
@@ -91,6 +97,23 @@ object AndroidReminders {
                 TimeZone.currentSystemDefault(),
             )
             reschedule(context, reminders)
+        }
+    }
+
+    private fun registerAlarm(context: Context, alarmManager: AlarmManager, reminder: ScheduledReminder) {
+        val pending = firePendingIntent(context, reminder.key, reminder.title, reminder.body)
+        // Exact alarms need a user grant on API 31+; the inexact fallback still fires, just with
+        // the system's own batching latitude.
+        val exactAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
+        try {
+            if (exactAllowed) {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAtMillis, pending)
+            } else {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAtMillis, pending)
+            }
+        } catch (_: SecurityException) {
+            // The grant can be revoked between the check and the call; inexact still fires.
+            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAtMillis, pending)
         }
     }
 
@@ -165,19 +188,19 @@ private fun ensureChannel(context: Context, manager: NotificationManagerCompat) 
 }
 
 internal object AndroidReminderScheduler : ReminderScheduler {
-    override suspend fun reschedule(state: AppState, strings: Strings) {
-        val context = AndroidAppContext.getOrNull() ?: return
-        // Planning walks every occurrence day of every event; the caller's scope is the UI main
-        // dispatcher, so the whole pass runs off it to keep saving and startup jank-free.
-        withContext(Dispatchers.Default) {
-            val reminders = planReminders(
-                state.events,
-                state.todos,
-                strings,
-                Clock.System.now(),
-                TimeZone.currentSystemDefault(),
-            )
-            AndroidReminders.reschedule(context, reminders)
+    override suspend fun execute(cancelKeys: Set<String>, register: List<ScheduledReminder>): Boolean {
+        val context = AndroidAppContext.getOrNull() ?: return false
+        // Registration is one binder call per key; keep it off the caller's (UI) dispatcher. The
+        // plan itself was computed by the state layer on its persistence dispatcher.
+        return withContext(Dispatchers.Default) {
+            AndroidReminders.apply(context, cancelKeys, register)
+        }
+    }
+
+    override suspend fun replaceAll(plan: List<ScheduledReminder>): Boolean {
+        val context = AndroidAppContext.getOrNull() ?: return false
+        return withContext(Dispatchers.Default) {
+            AndroidReminders.reschedule(context, plan)
         }
     }
 

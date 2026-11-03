@@ -1,11 +1,6 @@
 package com.crko.state
 
-import com.crko.domain.AppState
-import com.crko.i18n.Strings
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import kotlinx.datetime.TimeZone
 import platform.darwin.NSObject
 import platform.UserNotifications.UNAuthorizationOptionAlert
 import platform.UserNotifications.UNAuthorizationOptionSound
@@ -29,8 +24,9 @@ import kotlin.time.Clock
 
 /**
  * UNUserNotificationCenter backed scheduler. Every reminder becomes one non-repeating time-interval
- * request; a reschedule drops all pending requests first, which keeps iOS's 64-request budget in
- * line with the planner's own cap.
+ * request identified by its reminder key, so a differential pass cancels and re-adds only the
+ * requests whose key changed; only [replaceAll] — process start, boot restore, recovery — drops
+ * all pending requests first, which keeps iOS's 64-request budget in line with the planner's cap.
  */
 internal object IosReminderScheduler : ReminderScheduler {
     /** Kept alive for the notification center's weak `delegate` reference. */
@@ -45,26 +41,37 @@ internal object IosReminderScheduler : ReminderScheduler {
         if (center.delegate == null) center.delegate = foregroundPresenter
     }
 
-    override suspend fun reschedule(state: AppState, strings: Strings) {
+    /** The center when notifications are allowed; null makes the pass report "not applied". */
+    private suspend fun authorizedCenter(): UNUserNotificationCenter? {
         val center = UNUserNotificationCenter.currentNotificationCenter()
         installForegroundPresentation(center)
-        val settings = awaitSettings(center) ?: return
-        if (settings.authorizationStatus != UNAuthorizationStatusAuthorized &&
-            settings.authorizationStatus != UNAuthorizationStatusProvisional
+        val settings = awaitSettings(center) ?: return null
+        return if (settings.authorizationStatus == UNAuthorizationStatusAuthorized ||
+            settings.authorizationStatus == UNAuthorizationStatusProvisional
         ) {
-            return
+            center
+        } else {
+            null
         }
-        // Planning walks every occurrence day of every event; keep it off the caller's main thread.
-        val reminders = withContext(Dispatchers.Default) {
-            planReminders(
-                state.events,
-                state.todos,
-                strings,
-                Clock.System.now(),
-                TimeZone.currentSystemDefault(),
-            )
+    }
+
+    override suspend fun execute(cancelKeys: Set<String>, register: List<ScheduledReminder>): Boolean {
+        val center = authorizedCenter() ?: return false
+        if (cancelKeys.isNotEmpty()) {
+            center.removePendingNotificationRequestsWithIdentifiers(cancelKeys.toList())
         }
+        addAll(center, register)
+        return true
+    }
+
+    override suspend fun replaceAll(plan: List<ScheduledReminder>): Boolean {
+        val center = authorizedCenter() ?: return false
         center.removeAllPendingNotificationRequests()
+        addAll(center, plan)
+        return true
+    }
+
+    private fun addAll(center: UNUserNotificationCenter, reminders: List<ScheduledReminder>) {
         val nowMillis = Clock.System.now().toEpochMilliseconds()
         reminders.forEach { reminder ->
             val interval = (reminder.triggerAtMillis - nowMillis) / 1000.0
@@ -76,7 +83,7 @@ internal object IosReminderScheduler : ReminderScheduler {
             content.setSound(UNNotificationSound.defaultSound())
             val trigger = UNTimeIntervalNotificationTrigger.triggerWithTimeInterval(interval, repeats = false)
             val request = UNNotificationRequest.requestWithIdentifier(reminder.key, content, trigger)
-            center.addNotificationRequest(request) { /* a failed request is re-planned on the next reschedule */ }
+            center.addNotificationRequest(request) { /* a failed request is re-planned on the next full pass */ }
         }
     }
 

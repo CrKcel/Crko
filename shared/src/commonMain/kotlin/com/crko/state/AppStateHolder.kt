@@ -278,18 +278,44 @@ class AppStateHolder(
     private var reminderJob: Job? = null
     private val reminderMutex = Mutex()
 
+    /** Fingerprints of the plan the scheduler last confirmed; the diff source of the next pass. */
+    private var appliedReminders: Map<String, ReminderFingerprint> = emptyMap()
+
+    /**
+     * Reminders of one record, kept so a pass re-walks only records whose content changed. The
+     * environment the plan is projected through (device zone, today) is part of the cache key:
+     * a rollover or a zone change invalidates every fragment at once.
+     */
+    private data class ReminderFragment(val source: Any, val reminders: List<ScheduledReminder>)
+
+    private var reminderFragments: Map<String, ReminderFragment> = emptyMap()
+    private var fragmentZoneId: String? = null
+    private var fragmentToday: LocalDate? = null
+
+    /** Device zone at the last [refreshToday]; a change re-projects the reminder plan. */
+    private var deviceZoneId: String = TimeZone.currentSystemDefault().id
+
     init {
         // A payload that could only be read partially used to look like an empty calendar with no
         // explanation; the damaged copy is kept by the storage, so say what happened.
         val damage = repository.loadDamage
         if (!damage.isEmpty) notify(AppMessage.StorageRecovered(damage.droppedRecords))
-        scheduleReminders()
+        // The first pass of a process replaces the platform schedule: alarms and requests may have
+        // outlived the process with content no in-memory diff can vouch for.
+        scheduleReminders(forceFull = true)
     }
 
     fun refreshToday() {
         // Event times are stored in their own RFC time value, so a device zone change only changes
-        // the display projection; the persisted records no longer need a rewrite.
-        today = today(clock)
+        // the display projection; the persisted records no longer need a rewrite. The reminder
+        // plan, however, is projected through the device zone, so a day or zone change re-plans it.
+        val zone = TimeZone.currentSystemDefault()
+        val next = today(clock, zone)
+        val zoneChanged = zone.id != deviceZoneId
+        deviceZoneId = zone.id
+        if (next == today && !zoneChanged) return
+        today = next
+        scheduleReminders()
     }
 
     // ----- settings (delegated to SettingsController) -----
@@ -603,29 +629,81 @@ class AppStateHolder(
     private fun persist(next: AppState) = repository.persist(next)
 
     /**
-     * Keeps the platform notifications in line with the state: every persisted change (save,
-     * delete, import, day rollover rebases) replaces the scheduled set. One job at a time — and
-     * the mutex keeps that promise even though cancelling a job does not stop a reschedule that
-     * is already running, so an older pass can never land after a newer one.
+     * Keeps the platform notifications in line with the state. The plan is computed record by
+     * record, reusing the fragments of records whose content and planning environment did not
+     * change, and only the delta against the last applied plan reaches the platform: a journal
+     * edit, a theme switch or a language switch computes a plan whose fingerprints are unchanged
+     * and never calls the scheduler, while editing one record touches only that record's keys.
+     * One job at a time — and the mutex keeps that promise even though cancelling a job does not
+     * stop a pass that is already running, so an older pass can never land after a newer one.
      */
-    private fun scheduleReminders() {
+    private fun scheduleReminders(forceFull: Boolean = false) {
         val scheduler = reminders ?: return
         reminderJob?.cancel()
         reminderJob = scope.launch {
             reminderMutex.withLock {
-                runCatching { scheduler.reschedule(appState, currentStrings) }
+                runCatching {
+                    val plan = withContext(persistenceDispatcher) { reminderPlan() }
+                    val applied = if (forceFull) {
+                        scheduler.replaceAll(plan)
+                    } else {
+                        val diff = diffReminders(appliedReminders, plan)
+                        // An empty delta leaves the platform alone; the bookkeeping is the same.
+                        diff.isEmpty || scheduler.execute(diff.cancelKeys, diff.register)
+                    }
+                    if (applied) appliedReminders = plan.associate { it.key to it.fingerprint }
+                }
             }
         }
     }
 
     /**
+     * The current plan: per-record fragments re-filtered against [Clock.now], merged, earliest
+     * first and capped. Fragments of unchanged records are reused verbatim, so a library with many
+     * records re-walks only the record an edit touched.
+     */
+    private fun reminderPlan(): List<ScheduledReminder> {
+        val zone = TimeZone.currentSystemDefault()
+        val nowMillis = clock.now().toEpochMilliseconds()
+        val today = today(clock, zone)
+        val strings = currentStrings
+        val reusable = if (zone.id == fragmentZoneId && today == fragmentToday) reminderFragments else emptyMap()
+        val next = HashMap<String, ReminderFragment>()
+        val plan = mutableListOf<ScheduledReminder>()
+
+        fun fragment(key: String, record: Any, fresh: () -> List<ScheduledReminder>) {
+            val cached = reusable[key]
+            val reminders = if (cached != null && cached.source == record) cached.reminders else fresh()
+            next[key] = ReminderFragment(record, reminders)
+            // A cached trigger can have fired since its fragment was built; the fresh ones already
+            // skip the past, so the merge filters both against the current instant.
+            reminders.forEach { if (it.triggerAtMillis > nowMillis) plan += it }
+        }
+
+        appState.events.forEach { event ->
+            val id = event.id ?: return@forEach
+            fragment("e:$id", event) { planEventReminders(event, today, zone, nowMillis, strings) }
+        }
+        appState.todos.forEach { todo ->
+            fragment("t:${todo.id}", todo) { planTodoReminders(todo, today, zone, nowMillis, strings) }
+        }
+        reminderFragments = next
+        fragmentZoneId = zone.id
+        fragmentToday = today
+        return plan.sortedBy { it.triggerAtMillis }.take(MaxScheduledReminders)
+    }
+
+    /**
      * Asks for notification permission the first time the user gives an event a reminder. Scheduling
-     * itself stays silent about permissions so startup never shows a prompt.
+     * itself stays silent about permissions so startup never shows a prompt; once the answer is in,
+     * the plan is pushed again because the pass that ran without permission registered nothing.
      */
     private fun ensureReminderPermission() {
         val scheduler = reminders ?: return
         scope.launch {
-            runCatching { scheduler.ensurePermission() }
+            runCatching {
+                if (scheduler.ensurePermission()) scheduleReminders()
+            }
         }
     }
 

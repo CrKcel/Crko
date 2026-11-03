@@ -1,6 +1,9 @@
 package com.crko
 
+import com.crko.domain.Alarm
+import com.crko.domain.AlarmTrigger
 import com.crko.domain.AppState
+import com.crko.domain.Calendar
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.RepeatFrequency
@@ -12,10 +15,8 @@ import com.crko.domain.effectiveUid
 import com.crko.domain.importCalendar
 import com.crko.domain.plusDays
 import com.crko.domain.wallTime
-import com.crko.i18n.Strings
 import com.crko.state.AppStateHolder
 import com.crko.state.ImportOutcome
-import com.crko.state.ReminderScheduler
 import com.crko.state.WriteResult
 import com.crko.state.todo.TodoDraft
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -29,6 +30,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Instant
 
 class TodoServiceTest {
 
@@ -288,8 +291,45 @@ class TodoServiceTest {
 
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun editingATodoReschedulesReminders() = runTest {
-        val scheduler = CountingReminderScheduler()
+    fun clearingATodoTimeCancelsExactlyItsReminder() = runTest {
+        val scheduler = RecordingReminderScheduler()
+        // Seeded directly: the draft API cannot attach alarms, and the scheduling path needs one.
+        val timed = Todo(
+            id = "timed",
+            title = "Task",
+            start = IcsTimeValue.Utc(Instant.parse("2026-10-28T12:00:00Z")),
+            alarms = listOf(Alarm(trigger = AlarmTrigger.Relative((-30).minutes))),
+        )
+        val holder = AppStateHolder(
+            scope = this,
+            initialSystemLocale = "en-US",
+            clock = FakeClock(1_793_101_200_000),
+            idProvider = { "id-1" },
+            storage = MemoryStorage(
+                state = AppState(calendars = listOf(Calendar.local().copy(todos = listOf(timed)))),
+            ),
+            persistenceDispatcher = UnconfinedTestDispatcher(testScheduler),
+            reminders = scheduler,
+        )
+        advanceUntilIdle()
+
+        holder.updateTodo("timed", TodoDraft(title = "Edited", percentComplete = 50))
+        advanceUntilIdle()
+
+        // The startup replace-all plus one differential pass that only cancels this todo's key.
+        assertEquals(2, scheduler.passes.size)
+        val pass = assertIs<RecordingReminderScheduler.Pass.Execute>(scheduler.passes.last())
+        assertTrue(pass.registered.isEmpty())
+        assertEquals(
+            setOf("t:timed:0:once:${Instant.parse("2026-10-28T11:30:00Z").toEpochMilliseconds()}"),
+            pass.keys,
+        )
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun editingATodoWithoutRemindersDoesNotCallTheScheduler() = runTest {
+        val scheduler = RecordingReminderScheduler()
         val holder = AppStateHolder(
             scope = this,
             initialSystemLocale = "en-US",
@@ -299,23 +339,14 @@ class TodoServiceTest {
             persistenceDispatcher = UnconfinedTestDispatcher(testScheduler),
             reminders = scheduler,
         )
-        holder.addTodo("Task", TodoPriority.Normal, null)
         advanceUntilIdle()
-        val afterAdd = scheduler.calls
+        val afterInit = scheduler.passes.size
 
+        holder.addTodo("Task", TodoPriority.Normal, null)
         holder.updateTodo(holder.appState.todos.single().id, TodoDraft(title = "Edited", percentComplete = 50))
         advanceUntilIdle()
 
-        assertTrue(scheduler.calls > afterAdd)
+        // Without a reminder the plan does not change, so the scheduler is never contacted again.
+        assertEquals(afterInit, scheduler.passes.size)
     }
-}
-
-private class CountingReminderScheduler : ReminderScheduler {
-    var calls = 0
-
-    override suspend fun reschedule(state: AppState, strings: Strings) {
-        calls++
-    }
-
-    override suspend fun ensurePermission(): Boolean = true
 }
