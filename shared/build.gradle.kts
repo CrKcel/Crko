@@ -254,7 +254,6 @@ val verifyFileSizes = tasks.register("verifyFileSizes") {
             "ui/schedule/EventEditor.kt",
             "ui/schedule/MonthCalendar.kt",
             "domain/Recurrence.kt",
-            "domain/Models.kt",
         )
         val violations = mutableListOf<String>()
         commonMain.asFile.walkTopDown()
