@@ -24,7 +24,10 @@ import com.crko.state.planReminders
 import com.crko.storage.FileStateStorage
 import com.crko.storage.KeyValueStore
 import com.crko.storage.LoadDamage
+import com.crko.storage.SqliteStateStorage
 import com.crko.storage.StateStorage
+import com.crko.storage.db.CrkoDatabase
+import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,6 +40,7 @@ import kotlinx.datetime.TimeZone
 import kotlin.test.Test
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Properties
 import kotlin.io.path.exists
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
@@ -168,11 +172,79 @@ class PerfBaselineTest {
             ) {
                 todoSink += holder.activeTodos().size
             }
+            rows += measureSqlite(state, eventCount, directory)
             rows
         } finally {
             scope.cancel()
             directory.toFile().deleteRecursively()
         }
+    }
+
+    /**
+     * F2.3 comparison: the same deterministic state through SQLDelight. The edit states are built
+     * outside the timed block so the numbers measure the storage transaction, not fixture copying.
+     */
+    private fun measureSqlite(state: AppState, eventCount: Int, parent: Path): List<Row> {
+        val directory = Files.createDirectory(parent.resolve("sqlite"))
+        val path = directory.resolve("crko.db")
+        val driver = JdbcSqliteDriver("jdbc:sqlite:$path", Properties(), CrkoDatabase.Schema)
+        val storage = SqliteStateStorage(CrkoDatabase(driver), { DirectoryKeyValueStore(directory) })
+        val edits = List(Warmups + Samples) { index ->
+            val target = state.calendars.first { it.events.isNotEmpty() }
+            val event = target.events.first()
+            state.copy(
+                calendars = state.calendars.map { calendar ->
+                    if (calendar.id != target.id) {
+                        calendar
+                    } else {
+                        calendar.copy(
+                            events = calendar.events.map { existing ->
+                                if (existing.id != event.id) existing else existing.copy(title = "Edited $index")
+                            },
+                        )
+                    }
+                },
+            )
+        }
+        val rows = mutableListOf<Row>()
+        try {
+            storage.saveState(state)
+            driver.execute(null, "PRAGMA wal_checkpoint(TRUNCATE)", 0)
+            val size = Files.size(path)
+            rows += measure(
+                "SqliteStateStorage.loadState",
+                events = eventCount,
+                note = "database=${bytes(size)}",
+            ) {
+                loadedEvents += storage.loadState().calendars.sumOf { it.events.size }
+            }
+            var editIndex = 0
+            rows += measure(
+                "SqliteStateStorage.saveState (1 edit)",
+                events = eventCount,
+                note = "database=${bytes(size)}",
+            ) {
+                storage.saveState(edits[editIndex++ % edits.size])
+            }
+            val repository = StateRepository(
+                scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+                storage = storage,
+                ioDispatcher = Dispatchers.Default,
+            )
+            rows += measure(
+                "StateRepository.persist SQLite (1 edit + awaitIdle)",
+                events = eventCount,
+                note = "database=${bytes(size)}",
+            ) {
+                runBlocking {
+                    repository.persist(edits[editIndex++ % edits.size])
+                    repository.awaitIdle()
+                }
+            }
+        } finally {
+            driver.close()
+        }
+        return rows
     }
 
     private fun measureBurst(

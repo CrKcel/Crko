@@ -83,7 +83,11 @@
 
 ### 数据存储
 
-数据保存在本机：Android 使用 SharedPreferences，iOS 使用 UserDefaults。
+默认使用 SQLDelight / SQLite：Android 数据库位于应用私有 `databases/crko.db`，iOS 位于 `Application Support/Crko/crko.db`。设置仍保存在 `SharedPreferences`（Android）/ `NSUserDefaults`（iOS）。
+
+- 每条事件、待办、日志存为一行，RFC JSON payload 是事实来源；`calendar_id` / `ics_uid` / 时间与状态列只用于查询、差异写入和后台读取。
+- 首次启动把旧 `state.v1` 一次性迁移到新库：先备份到 `state.v1.pre-sqlite`，写库后读回校验，通过才切换；失败保留原 JSON 并继续使用 JSON 引擎。
+- 回退开关为 `persistence.engine=json`；启动时会先把数据库状态导出回 `state.v1` 再切换，导出失败则继续使用 SQLite。
 
 ## 构建
 
@@ -111,11 +115,13 @@ shared/src/
 ├── commonMain/kotlin/com/crko/
 │   ├── domain/     纯 Kotlin：模型、重复规则（RecurrenceMatching / RecurrenceIndex / TodoRecurrence）、ICS 编解码
 │   ├── migration/  旧版持久化 DTO 与迁移转换（只被 storage 与迁移测试依赖）
-│   ├── storage/    持久化接口、平台声明（expect）与文本解码（CalendarTextReader）
+│   ├── storage/    持久化门面、SQLDelight 读写/迁移、平台声明（expect）与文本解码（CalendarTextReader）
 │   ├── sync/       订阅抓取与 CalDAV 协议实现
 │   ├── state/      AppStateHolder 门面 + event/todo/journal/import/settings/persistence 服务
 │   ├── i18n/       中英文文案
 │   └── ui/         主题、组件、日程/待办/更多三个页面；ui/transfer 只编排导入导出
+├── commonMain/sqldelight/com/crko/storage/db/  SQLDelight 表结构与查询（生成的 Kotlin 在 build/）
+├── androidHostTest/kotlin/com/crko/  SQLite 持久化测试与 F2.1 性能基线
 └── commonTest/kotlin/com/crko/
     ├── Ics*Test.kt 读写、时区、附件、往返与重复实例按场景拆分
     └── StateHolder 相关测试按服务拆分
@@ -148,7 +154,7 @@ shared/src/
 - **时区**：`VTIMEZONE` 属于 `Calendar`，事件只保存 `TZID`；未解析的未知时区由所属日历的定义兜底。
 - **界面投影**：设备时区只通过 `day` / `endDay` / `localStart` / `localEnd` / `occursOn` / `timeRangeOn` 等展示投影参与界面，不写回持久化模型。
 - **本地归属**：`importSource` / `sourceLine` 等放在 `LocalRecordMeta`，不与 RFC 属性混在一起；订阅记录以所属 `Calendar` 为作用域，不再用 `importSource` 前缀充当日历身份。
-- **迁移**：旧版持久化 JSON 由 `migration` 包的 `LegacyModels` / `LegacyEventCompat` 与 `storage.StateCodec` 迁移；`domain` 不包含迁移 DTO，新版本只写当前结构（`schemaVersion = 6`）。
+- **迁移**：旧版持久化 JSON 由 `migration` 包的 `LegacyModels` / `LegacyEventCompat` 与 `storage.StateCodec` 迁移；`domain` 不包含迁移 DTO，新版本只写当前结构（`schemaVersion = 6`）。迁移后的默认存储是 SQLDelight/SQLite（`storage.db.CrkoDatabase`），跨平台表结构在 `shared/src/commonMain/sqldelight/com/crko/storage/db/Crko.sq`。
 
 ## 校验与防回归
 

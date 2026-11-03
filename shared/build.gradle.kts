@@ -6,6 +6,18 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.kotlinSerialization)
+    alias(libs.plugins.sqldelight)
+}
+
+sqldelight {
+    databases {
+        create("CrkoDatabase") {
+            packageName.set("com.crko.storage.db")
+            // Payload columns stay the source of truth; the schema itself only moves through .sqm
+            // files once the first version ships.
+            generateAsync.set(false)
+        }
+    }
 }
 
 kotlin {
@@ -46,8 +58,18 @@ kotlin {
             implementation(libs.androidx.activity.compose)
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.compose.uiTooling)
+            implementation(libs.sqldelight.android.driver)
+        }
+        iosMain.dependencies {
+            implementation(libs.sqldelight.native.driver)
+        }
+        named("androidHostTest") {
+            dependencies {
+                implementation(libs.sqldelight.sqlite.driver)
+            }
         }
         commonMain.dependencies {
+            implementation(libs.sqldelight.runtime)
             implementation(libs.compose.runtime)
             implementation(libs.compose.foundation)
             implementation(libs.compose.ui)

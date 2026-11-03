@@ -9,6 +9,8 @@ import com.crko.domain.replaceIcsTimeZones
 import com.crko.domain.withLocalCalendar
 import com.crko.storage.LoadDamage
 import com.crko.storage.StateStorage
+import com.crko.storage.ensureRecordIds
+import com.crko.storage.newId
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -30,6 +32,11 @@ internal class StateRepository(
     private val scope: CoroutineScope,
     private val storage: StateStorage,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    /**
+     * Fills ids before the first frame and before every write. The same normalized state reaches
+     * memory and storage, so SQLite's `(calendar_id, record_id)` key stays stable across saves.
+     */
+    private val idProvider: () -> String = ::newId,
     /** Called after [state] changed; the facade hooks reminder rescheduling in here. */
     private val onStateChanged: (AppState) -> Unit = {},
     /** Receives write errors without stopping later writes, so memory state stays intact. */
@@ -41,7 +48,7 @@ internal class StateRepository(
         class Flush(val done: CompletableDeferred<Unit>) : Write
     }
 
-    private val loaded: AppState = storage.loadState().withLocalCalendar()
+    private val loaded: AppState = storage.loadState().withLocalCalendar().ensureRecordIds(idProvider)
 
     var state: AppState by mutableStateOf(loaded)
         private set
@@ -62,12 +69,13 @@ internal class StateRepository(
 
     /** Applies [next] to memory immediately and queues its disk write behind earlier requests. */
     fun persist(next: AppState) {
+        val normalized = next.withLocalCalendar().ensureRecordIds(idProvider)
         // The lookup cache is a derived index of the stored calendars: rebuilding it per write drops
         // the definitions of a deleted calendar and of an import preview that was never applied.
-        replaceIcsTimeZones(next.calendars)
-        state = next
-        enqueue(Write.State(next))
-        onStateChanged(next)
+        replaceIcsTimeZones(normalized.calendars)
+        state = normalized
+        enqueue(Write.State(normalized))
+        onStateChanged(normalized)
     }
 
     /** Queues the preference write; the latest snapshot wins when requests are coalesced. */

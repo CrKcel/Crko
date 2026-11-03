@@ -1,0 +1,219 @@
+-- Initial database schema (version 1). Table layout follows ADR 0002: one row per record, the
+-- RFC payload stays the source of truth, and the index columns are rebuilt from it on every write.
+-- When this schema ships, later changes go into .sqm files; do not edit the tables below in place.
+
+CREATE TABLE calendar (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    color_argb INTEGER,
+    visible INTEGER NOT NULL DEFAULT 1,
+    method TEXT,
+    refresh_minutes INTEGER,
+    position INTEGER NOT NULL,
+    sync_url TEXT,
+    sync_enabled INTEGER,
+    sync_refresh_minutes INTEGER,
+    sync_last_sync TEXT,
+    sync_etag TEXT,
+    sync_token TEXT,
+    sync_caldav INTEGER
+);
+
+CREATE TABLE calendar_timezone (
+    calendar_id TEXT NOT NULL REFERENCES calendar(id) ON DELETE CASCADE,
+    tzid TEXT NOT NULL,
+    definition TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (calendar_id, tzid)
+);
+
+CREATE TABLE record (
+    calendar_id TEXT NOT NULL REFERENCES calendar(id) ON DELETE CASCADE,
+    record_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    ics_uid TEXT,
+    recurrence_key TEXT,
+    title TEXT NOT NULL,
+    start_ms INTEGER,
+    end_ms INTEGER,
+    due_ms INTEGER,
+    completed_ms INTEGER,
+    status TEXT,
+    priority INTEGER,
+    payload TEXT NOT NULL,
+    payload_version INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    updated_ms INTEGER NOT NULL,
+    PRIMARY KEY (calendar_id, record_id)
+);
+
+CREATE INDEX record_calendar_kind_start ON record(calendar_id, kind, start_ms);
+CREATE INDEX record_calendar_kind_due ON record(calendar_id, kind, due_ms);
+CREATE INDEX record_uid ON record(calendar_id, ics_uid, recurrence_key);
+
+CREATE TABLE busy_period (
+    busy_period_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    position INTEGER NOT NULL,
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    payload_version INTEGER NOT NULL
+);
+
+CREATE TABLE outbox (
+    outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    calendar_id TEXT NOT NULL,
+    entity TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    recurrence_key TEXT NOT NULL DEFAULT '',
+    operation TEXT NOT NULL,
+    sequence INTEGER NOT NULL DEFAULT 0,
+    base_etag TEXT,
+    created_ms INTEGER NOT NULL,
+    updated_ms INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_ms INTEGER,
+    last_error TEXT
+);
+
+CREATE UNIQUE INDEX outbox_pending
+    ON outbox(calendar_id, entity, uid, recurrence_key);
+
+CREATE TABLE damaged_record (
+    damaged_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_ms INTEGER NOT NULL,
+    source_table TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX damaged_record_source
+    ON damaged_record(source_table, source_key);
+
+CREATE TABLE meta (
+    key TEXT NOT NULL PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+selectCalendars:
+SELECT id, name, color_argb, visible, method, refresh_minutes, position,
+       sync_url, sync_enabled, sync_refresh_minutes, sync_last_sync, sync_etag, sync_token, sync_caldav
+FROM calendar
+ORDER BY position;
+
+insertCalendar:
+INSERT OR IGNORE INTO calendar(
+    id, name, color_argb, visible, method, refresh_minutes, position,
+    sync_url, sync_enabled, sync_refresh_minutes, sync_last_sync, sync_etag, sync_token, sync_caldav
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- A plain update instead of INSERT OR REPLACE: REPLACE deletes the row first, and with foreign keys
+-- on that would cascade-delete every record and timezone belonging to the calendar.
+updateCalendar:
+UPDATE calendar SET
+    name = ?, color_argb = ?, visible = ?, method = ?, refresh_minutes = ?, position = ?,
+    sync_url = ?, sync_enabled = ?, sync_refresh_minutes = ?, sync_last_sync = ?,
+    sync_etag = ?, sync_token = ?, sync_caldav = ?
+WHERE id = ?;
+
+deleteCalendar:
+DELETE FROM calendar WHERE id = ?;
+
+deleteAllCalendars:
+DELETE FROM calendar;
+
+selectTimeZones:
+SELECT calendar_id, tzid, definition, position
+FROM calendar_timezone
+ORDER BY calendar_id, position;
+
+insertTimeZone:
+INSERT OR IGNORE INTO calendar_timezone(calendar_id, tzid, definition, position)
+VALUES (?, ?, ?, ?);
+
+updateTimeZone:
+UPDATE calendar_timezone SET definition = ?, position = ?
+WHERE calendar_id = ? AND tzid = ?;
+
+deleteTimeZones:
+DELETE FROM calendar_timezone WHERE calendar_id = ?;
+
+deleteAllTimeZones:
+DELETE FROM calendar_timezone;
+
+selectRecords:
+SELECT calendar_id, record_id, kind, ics_uid, recurrence_key, title, start_ms, end_ms,
+       due_ms, completed_ms, status, priority, payload, payload_version, position, updated_ms
+FROM record
+ORDER BY calendar_id, position;
+
+insertRecord:
+INSERT OR IGNORE INTO record(
+    calendar_id, record_id, kind, ics_uid, recurrence_key, title, start_ms, end_ms,
+    due_ms, completed_ms, status, priority, payload, payload_version, position, updated_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+updateRecord:
+UPDATE record SET
+    kind = ?, ics_uid = ?, recurrence_key = ?, title = ?, start_ms = ?, end_ms = ?,
+    due_ms = ?, completed_ms = ?, status = ?, priority = ?, payload = ?, payload_version = ?,
+    position = ?, updated_ms = ?
+WHERE calendar_id = ? AND record_id = ?;
+
+deleteRecord:
+DELETE FROM record WHERE calendar_id = ? AND record_id = ?;
+
+deleteRecordsForCalendar:
+DELETE FROM record WHERE calendar_id = ?;
+
+deleteAllRecords:
+DELETE FROM record;
+
+-- Stable read path for Widget / notification background work: index only, payload decoded later.
+selectRecordsByKindAndStart:
+SELECT calendar_id, record_id, kind, start_ms, payload
+FROM record
+WHERE calendar_id = ? AND kind = ? AND start_ms >= ? AND start_ms < ?
+ORDER BY start_ms, position;
+
+selectBusyPeriods:
+SELECT busy_period_id, position, start_ms, end_ms, payload, payload_version
+FROM busy_period
+ORDER BY position;
+
+insertBusyPeriod:
+INSERT INTO busy_period(position, start_ms, end_ms, payload, payload_version)
+VALUES (?, ?, ?, ?, ?);
+
+deleteBusyPeriods:
+DELETE FROM busy_period;
+
+deleteBusyPeriod:
+DELETE FROM busy_period WHERE busy_period_id = ?;
+
+selectDamaged:
+SELECT damaged_id, captured_ms, source_table, source_key, payload
+FROM damaged_record
+ORDER BY damaged_id;
+
+insertDamaged:
+INSERT OR IGNORE INTO damaged_record(captured_ms, source_table, source_key, payload)
+VALUES (?, ?, ?, ?);
+
+deleteDamaged:
+DELETE FROM damaged_record WHERE source_table = ? AND source_key = ?;
+
+deleteAllDamaged:
+DELETE FROM damaged_record;
+
+countOutbox:
+SELECT count(*) FROM outbox;
+
+getMeta:
+SELECT value FROM meta WHERE key = ?;
+
+putMeta:
+INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?);
+
+deleteMeta:
+DELETE FROM meta WHERE key = ?;

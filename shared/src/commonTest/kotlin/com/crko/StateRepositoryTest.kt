@@ -2,12 +2,15 @@ package com.crko
 
 import com.crko.domain.AppState
 import com.crko.domain.Calendar
+import com.crko.domain.Event
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.PersistedSettings
 import com.crko.state.persistence.StateRepository
 import com.crko.storage.StateStorage
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.datetime.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -119,5 +122,29 @@ class StateRepositoryTest {
         advanceUntilIdle()
         assertEquals(1, storage.settingsWrites.size)
         assertEquals("en", storage.settingsWrites.single().language)
+    }
+
+    @Test
+    fun recordsWithoutAnIdAreIdentifiedBeforeMemoryAndDiskSeeThem() = runTest {
+        val storage = RecordingStorage()
+        val repository = StateRepository(
+            scope = this,
+            storage = storage,
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+            idProvider = { "fixed-id" },
+        )
+        val anonymous = Event(
+            id = null,
+            title = "Anonymous",
+            start = IcsTimeValue.Date(LocalDate(2026, 10, 27)),
+        )
+        repository.persist(AppState(calendars = listOf(Calendar.local().copy(events = listOf(anonymous)))))
+
+        // The same identified state must be visible to Compose and passed to the writer; generating
+        // the id again inside storage would insert a second row for the same event.
+        val stored = repository.state.events.single()
+        assertEquals("fixed-id", stored.id)
+        advanceUntilIdle()
+        assertEquals("fixed-id", storage.state.events.single().id)
     }
 }

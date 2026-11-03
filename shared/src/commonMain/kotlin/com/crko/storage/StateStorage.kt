@@ -8,8 +8,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
-private const val STATE_KEY = "state.v1"
-private const val SETTINGS_KEY = "settings.v1"
 private const val CORRUPT_STATE_KEY = "state.v1.corrupt"
 
 /** What went wrong while reading a stored payload, if anything. */
@@ -108,4 +106,33 @@ class FileStateStorage(
     }
 }
 
-object AppStorage : StateStorage by FileStateStorage(::appStore, ::settingsStore)
+object AppStorage : StateStorage {
+    private var seedProvider: (() -> AppState?)? = null
+
+    /**
+     * Debug builds install their sample seed before the first storage read. The setter is ignored
+     * after the delegate exists; background receivers that ran first keep their empty first launch,
+     * which is the same behavior the non-debug app has.
+     */
+    fun configureSeedProvider(provider: (() -> AppState?)?) {
+        seedProvider = provider
+    }
+
+    private val delegate by lazy {
+        createAppStateStorage(
+            stateStore = ::appStore,
+            settingsStore = ::settingsStore,
+            seedProvider = seedProvider,
+        )
+    }
+
+    override fun loadState(): AppState = delegate.loadState()
+
+    override fun saveState(state: AppState) = delegate.saveState(state)
+
+    override fun loadSettings(): PersistedSettings = delegate.loadSettings()
+
+    override fun saveSettings(settings: PersistedSettings) = delegate.saveSettings(settings)
+
+    override fun loadDamage(): LoadDamage = delegate.loadDamage()
+}

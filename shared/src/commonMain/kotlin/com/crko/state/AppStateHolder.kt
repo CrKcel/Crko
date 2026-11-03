@@ -170,6 +170,7 @@ class AppStateHolder(
         scope = scope,
         storage = storage,
         ioDispatcher = persistenceDispatcher,
+        idProvider = idProvider,
         onStateChanged = { scheduleReminders() },
     )
 

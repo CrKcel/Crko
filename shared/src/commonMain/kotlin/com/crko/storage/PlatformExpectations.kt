@@ -1,5 +1,7 @@
 package com.crko.storage
 
+import app.cash.sqldelight.db.SqlDriver
+
 /**
  * Minimal key-value persistence. Reads are synchronous so the first frame shows restored data.
  */
@@ -13,6 +15,13 @@ expect fun appStore(): KeyValueStore
 
 /** Settings storage, kept separate so a corrupt state payload never loses preferences. */
 expect fun settingsStore(): KeyValueStore
+
+/**
+ * Opens the single process-wide SQLite driver, or returns null when the platform has no writable
+ * location yet (host tests, receivers before `AndroidAppContext.install`). Never open a second
+ * driver from background code; the state facade owns the only write connection.
+ */
+expect fun persistenceDriver(): SqlDriver?
 
 /**
  * Holds the payloads of embedded ICS attachments as files, outside the serialized state. The
