@@ -206,8 +206,6 @@ val verifyArchitecture = tasks.register("verifyArchitecture") {
         // Keep the allowlist keyed by file and forbidden package, so a new boundary crossing in an
         // already-known file still fails the guard.
         val knownViolations = setOf(
-            "domain/Models.kt|storage",
-            "domain/Ics.kt|storage",
             "storage/Platform.kt|dev",
             "ui/schedule/EventEditor.kt|storage",
             "ui/theme/Theme.kt|storage",

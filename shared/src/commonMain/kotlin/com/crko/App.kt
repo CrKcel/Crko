@@ -6,6 +6,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import com.crko.state.AppStateHolder
 import com.crko.state.reminderScheduler
+import com.crko.storage.AttachmentRepository
 import com.crko.storage.defaultSubscriptionHttp
 import com.crko.storage.systemLocaleTag
 import com.crko.ui.common.CrkoApp
@@ -29,6 +30,7 @@ fun App(
             initialSystemLocale = systemLocale,
             reminders = reminderScheduler(),
             subscriptionHttp = defaultSubscriptionHttp(),
+            attachmentRepository = AttachmentRepository(),
         )
     }
 

@@ -12,7 +12,6 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
-import com.crko.storage.AppAttachmentStore
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -184,7 +183,13 @@ enum class IcsImportFailure {
 fun exportIcs(
     events: List<Event>,
     now: Instant = Clock.System.now(),
-): String = exportCalendar(events = events, todos = emptyList(), now = now)
+    storedAttachment: (String) -> ByteArray? = { null },
+): String = exportCalendar(
+    events = events,
+    todos = emptyList(),
+    now = now,
+    storedAttachment = storedAttachment,
+)
 
 /**
  * Serializes events and todos into one VCALENDAR, emitting `VTIMEZONE` blocks for the unknown zones
@@ -200,6 +205,12 @@ fun exportCalendar(
     method: ItipMethod? = null,
     refreshMinutes: Int? = null,
     timeZones: List<CalendarTimeZone> = emptyList(),
+    /**
+     * Reads the payload of a materialized attachment by its stored file name. Domain code has no
+     * file-system access, so the caller supplies this port; the default writes no stored payloads,
+     * keeping every existing read/write test call unchanged.
+     */
+    storedAttachment: (String) -> ByteArray? = { null },
 ): String = buildString {
     line("BEGIN:VCALENDAR")
     line("VERSION:2.0")
@@ -234,9 +245,9 @@ fun exportCalendar(
     zones.forEach { (_, definition) ->
         definition.trimEnd().split(Regex("\\r?\\n")).forEach { line(it) }
     }
-    events.forEachIndexed { index, event -> appendEvent(event, events, index, now) }
-    todos.forEachIndexed { index, todo -> appendTodo(todo, index, now) }
-    journals.forEachIndexed { index, journal -> appendJournal(journal, index, now) }
+    events.forEachIndexed { index, event -> appendEvent(event, events, index, now, storedAttachment) }
+    todos.forEachIndexed { index, todo -> appendTodo(todo, index, now, storedAttachment) }
+    journals.forEachIndexed { index, journal -> appendJournal(journal, index, now, storedAttachment) }
     line("END:VCALENDAR")
 }
 
@@ -481,7 +492,14 @@ fun exportItipRequest(
     events: List<Event>,
     now: Instant = Clock.System.now(),
     calendarName: String? = null,
-): String = exportCalendar(events = events, now = now, calendarName = calendarName, method = ItipMethod.Request)
+    storedAttachment: (String) -> ByteArray? = { null },
+): String = exportCalendar(
+    events = events,
+    now = now,
+    calendarName = calendarName,
+    method = ItipMethod.Request,
+    storedAttachment = storedAttachment,
+)
 
 /**
  * iTIP message that withdraws [events] (`METHOD:CANCEL`): every copy is written with
@@ -490,10 +508,12 @@ fun exportItipRequest(
 fun exportItipCancel(
     events: List<Event>,
     now: Instant = Clock.System.now(),
+    storedAttachment: (String) -> ByteArray? = { null },
 ): String = exportCalendar(
     events = events.map { it.copy(status = EventStatus.Cancelled) },
     now = now,
     method = ItipMethod.Cancel,
+    storedAttachment = storedAttachment,
 )
 
 /**
@@ -530,7 +550,13 @@ private fun StringBuilder.line(value: String) {
     append(LineBreak)
 }
 
-private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, index: Int, now: Instant) {
+private fun StringBuilder.appendEvent(
+    event: Event,
+    allEvents: List<Event>,
+    index: Int,
+    now: Instant,
+    storedAttachment: (String) -> ByteArray?,
+) {
     val uid = event.uid ?: "crko-${index + 1}@local"
     line("BEGIN:VEVENT")
     appendComponentHeader(event, uid, now)
@@ -548,7 +574,7 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     // RFC 5545 represents a zero-length timed event by leaving out DTEND/DURATION.
     event.end?.let { appendTimeLine("DTEND", it) }
 
-    appendComponentText(event)
+    appendComponentText(event, storedAttachment)
     if (event.location.isNotBlank()) {
         line("LOCATION${event.textParameters.textPropertyParameters("LOCATION")}:${escapeText(event.location)}")
     }
@@ -595,7 +621,10 @@ private fun StringBuilder.appendComponentHeader(
 }
 
 /** `SUMMARY`, `DESCRIPTION`, `URL`, `CATEGORIES` and `ATTACH` of any component. */
-private fun StringBuilder.appendComponentText(component: CalendarComponent) {
+private fun StringBuilder.appendComponentText(
+    component: CalendarComponent,
+    storedAttachment: (String) -> ByteArray?,
+) {
     line("SUMMARY${component.textParameters.textPropertyParameters("SUMMARY")}:${escapeText(component.title)}")
     if (component.note.isNotBlank()) {
         line("DESCRIPTION${component.textParameters.textPropertyParameters("DESCRIPTION")}:${escapeText(component.note)}")
@@ -607,7 +636,7 @@ private fun StringBuilder.appendComponentText(component: CalendarComponent) {
     if (component.url.isNotBlank()) {
         line("URL${component.textParameters.textPropertyParameters("URL")}:${sanitizeUriValue(component.url)}")
     }
-    appendAttachments(component.attachments)
+    appendAttachments(component.attachments, storedAttachment)
 }
 
 /**
@@ -681,13 +710,18 @@ internal fun StringBuilder.appendTimeLine(name: String, value: IcsTimeValue) {
     }
 }
 
-private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
+private fun StringBuilder.appendTodo(
+    todo: Todo,
+    index: Int,
+    now: Instant,
+    storedAttachment: (String) -> ByteArray?,
+) {
     line("BEGIN:VTODO")
     val createdFallback = todo.createdAt.takeIf { it > 0 }?.let { Instant.fromEpochMilliseconds(it) }
     appendComponentHeader(todo, todo.icsUid ?: "${todo.id}@crko", now, createdFallback)
     todo.start?.let { appendTimeLine("DTSTART", it) }
     todo.due?.let { appendTimeLine("DUE", it) }
-    appendComponentText(todo)
+    appendComponentText(todo, storedAttachment)
     if (todo.location.isNotBlank()) {
         line("LOCATION${todo.textParameters.textPropertyParameters("LOCATION")}:${escapeText(todo.location)}")
     }
@@ -2731,11 +2765,16 @@ private fun busyTypeOf(value: String?): BusyType = when (value?.trim()?.uppercas
     else -> BusyType.Busy
 }
 
-private fun StringBuilder.appendJournal(journal: Journal, index: Int, now: Instant) {
+private fun StringBuilder.appendJournal(
+    journal: Journal,
+    index: Int,
+    now: Instant,
+    storedAttachment: (String) -> ByteArray?,
+) {
     line("BEGIN:VJOURNAL")
     appendComponentHeader(journal, journal.icsUid ?: "${journal.id}@crko", now)
     journal.start?.let { appendTimeLine("DTSTART", it) }
-    appendComponentText(journal)
+    appendComponentText(journal, storedAttachment)
     journal.status?.let { line("STATUS:${it.wireName}") }
     journal.eventClass?.let { line("CLASS:${it.name.uppercase()}") }
     journal.recurrence?.let { appendJournalRecurrence(it) }
@@ -3051,7 +3090,10 @@ private fun foldLine(line: String): String {
 }
 
 @OptIn(ExperimentalEncodingApi::class)
-private fun StringBuilder.appendAttachments(attachments: List<Attachment>) {
+private fun StringBuilder.appendAttachments(
+    attachments: List<Attachment>,
+    storedAttachment: (String) -> ByteArray?,
+) {
     attachments.forEach { attachment ->
         // A stored payload is re-encoded at export time; the parameters stay with the record so
         // FMTTYPE and any unknown parameter survive without the base64 blob living in the state.
@@ -3060,7 +3102,7 @@ private fun StringBuilder.appendAttachments(attachments: List<Attachment>) {
             if (attachment.value.isNotBlank()) {
                 attachment.value.filterNot { it.isWhitespace() }
             } else {
-                val bytes = stored?.let(AppAttachmentStore::read) ?: return@forEach
+                val bytes = stored?.let(storedAttachment) ?: return@forEach
                 Base64.encode(bytes)
             }
         } else {

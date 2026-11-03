@@ -1190,11 +1190,17 @@ class StateHolderTest {
         val serialized = AppJson.encodeToString(AppState.serializer(), f.storage.state)
         assertFalse(serialized.contains("VGVzdA=="), serialized)
         // Export re-encodes the payload from the stored file, parameters included.
-        val exported = exportIcs(listOf(f.holder.appState.events.single()))
+        val exported = exportIcs(
+            listOf(f.holder.appState.events.single()),
+            storedAttachment = f.holder::readStoredAttachment,
+        )
         assertTrue(
             exported.contains("ATTACH;FMTTYPE=text/plain;ENCODING=BASE64;FILENAME=notes.txt:VGVzdA=="),
             exported,
         )
+        // Round trip: the exported base64 is still the imported payload.
+        val reimported = importCalendar(exported, TimeZone.UTC, "Untitled").events.single()
+        assertEquals("Test", reimported.attachments.single().decodedBytes()?.decodeToString())
     }
 
     @Test

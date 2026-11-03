@@ -1,6 +1,5 @@
 package com.crko.domain
 
-import com.crko.storage.AppAttachmentStore
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
 import kotlinx.datetime.TimeZone
@@ -293,17 +292,6 @@ fun Attachment.decodedBytes(): ByteArray? {
         else -> return null
     }
     return runCatching { Base64.decode(padded) }.getOrNull()
-}
-
-/**
- * Bytes of [this] attachment wherever they live: the attachment-store file for an imported payload,
- * the inline base64 for one that has not been materialized yet. Null when neither is readable.
- */
-fun Attachment.attachmentBytes(): ByteArray? {
-    val file = storedFile?.takeIf { it.isNotBlank() }
-    if (file != null && data.isBlank()) return AppAttachmentStore.read(file)
-    if (data.isNotBlank()) return decodedBytes()
-    return null
 }
 
 /** Characters a file name must never contain when it is handed to the platform file picker. */

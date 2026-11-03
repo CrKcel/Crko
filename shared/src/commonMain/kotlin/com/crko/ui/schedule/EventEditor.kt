@@ -48,7 +48,6 @@ import com.crko.domain.Recurrence
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.attachmentMimeType
-import com.crko.domain.attachmentBytes
 import com.crko.domain.daysTo
 import com.crko.domain.localEnd
 import com.crko.domain.localStart
@@ -91,12 +90,22 @@ internal fun EventEditorDialog(
     occurrenceDate: LocalDate?,
     strings: Strings,
     today: LocalDate,
+    readAttachment: (Attachment) -> ByteArray?,
     onDismiss: () -> Unit,
     onSave: (Event, EditScope) -> Boolean,
     onDelete: (Event, EditScope) -> Unit,
 ) {
     if (event != null) {
-        EventEditorContent(event, occurrenceDate, strings, today, onDismiss, onSave, onDelete)
+        EventEditorContent(
+            event,
+            occurrenceDate,
+            strings,
+            today,
+            readAttachment,
+            onDismiss,
+            onSave,
+            onDelete,
+        )
     }
 }
 
@@ -106,6 +115,7 @@ private fun EventEditorContent(
     occurrenceDate: LocalDate?,
     strings: Strings,
     today: LocalDate,
+    readAttachment: (Attachment) -> ByteArray?,
     onDismiss: () -> Unit,
     onSave: (Event, EditScope) -> Boolean,
     onDelete: (Event, EditScope) -> Unit,
@@ -477,7 +487,7 @@ private fun EventEditorContent(
                     Spacer(Modifier.height(8.dp))
                     Caption(strings.attachments)
                     event.attachments.forEach { attachment ->
-                        AttachmentRow(attachment, strings, fileBridge) { attachmentNotice = it }
+                        AttachmentRow(attachment, strings, fileBridge, readAttachment) { attachmentNotice = it }
                     }
                     attachmentNotice?.let { notice ->
                         Text(
@@ -779,6 +789,7 @@ private fun AttachmentRow(
     attachment: Attachment,
     strings: Strings,
     bridge: CalendarFileBridge,
+    readAttachment: (Attachment) -> ByteArray?,
     onNotice: (String) -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
@@ -788,7 +799,7 @@ private fun AttachmentRow(
     var payload by remember(attachment) { mutableStateOf<ByteArray?>(null) }
     var settled by remember(attachment) { mutableStateOf(!attachment.binary) }
     LaunchedEffect(attachment) {
-        payload = if (attachment.binary) attachment.attachmentBytes() else null
+        payload = if (attachment.binary) readAttachment(attachment) else null
         settled = true
     }
     val label = attachment.name.ifBlank {

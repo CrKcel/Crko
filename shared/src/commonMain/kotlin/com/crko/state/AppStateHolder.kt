@@ -86,7 +86,7 @@ import com.crko.i18n.languageTag
 import com.crko.i18n.resolveLanguage
 import com.crko.i18n.stringsFor
 import com.crko.sync.fetchSubscription
-import com.crko.storage.AppAttachmentStore
+import com.crko.storage.AttachmentRepository
 import com.crko.storage.AppStorage
 import com.crko.storage.StateStorage
 import com.crko.storage.SubscriptionHttp
@@ -196,6 +196,11 @@ class AppStateHolder(
      * the test scheduler instead of racing the real default dispatcher.
      */
     private val parseDispatcher: CoroutineDispatcher? = null,
+    /**
+     * Reads and writes materialized `ATTACH` payloads. Injectable so tests can keep files in memory
+     * and so the domain package never needs a storage import.
+     */
+    private val attachmentRepository: AttachmentRepository = AttachmentRepository(),
 ) {
     var appState: AppState by mutableStateOf(storage.loadState().withLocalCalendar())
         private set
@@ -1485,6 +1490,59 @@ class AppStateHolder(
             runCatching { scheduler.ensurePermission() }
         }
     }
+
+    /**
+     * Payloads of embedded `ENCODING=BASE64` attachments move to the attachment store when a record
+     * is imported, leaving only a file reference in the serialized state. Without this, every
+     * re-import of the same calendar added the payload to the stored JSON again and it grew without
+     * bound.
+     */
+    private fun withStoredAttachments(event: Event): Event =
+        if (event.attachments.any(::needsMaterialization)) {
+            event.copy(attachments = event.attachments.map { storeAttachmentPayload(it) })
+        } else {
+            event
+        }
+
+    private fun withStoredAttachments(todo: Todo): Todo =
+        if (todo.attachments.any(::needsMaterialization)) {
+            todo.copy(attachments = todo.attachments.map { storeAttachmentPayload(it) })
+        } else {
+            todo
+        }
+
+    private fun withStoredAttachments(journal: Journal): Journal =
+        if (journal.attachments.any(::needsMaterialization)) {
+            journal.copy(attachments = journal.attachments.map { storeAttachmentPayload(it) })
+        } else {
+            journal
+        }
+
+    /** A binary attachment that still carries its payload inline and has no file yet. */
+    private fun needsMaterialization(attachment: Attachment): Boolean =
+        attachment.binary && attachment.storedFile == null && attachment.data.isNotBlank()
+
+    private fun storeAttachmentPayload(attachment: Attachment): Attachment {
+        if (!needsMaterialization(attachment)) return attachment
+        val bytes = attachment.decodedBytes() ?: return attachment
+        val stored = attachmentRepository.save(safeAttachmentFileName(attachment), bytes) ?: return attachment
+        // The base64 value is the part that used to grow the stored state; export re-encodes it from
+        // the file, while the parameters stay with the record.
+        return attachment.copy(
+            value = "",
+            storedFile = stored,
+            parameters = attachment.parameters + ("ENCODING" to "BASE64"),
+        )
+    }
+
+    /**
+     * Bytes of [attachment] for previews and downloads in the UI. Reading a materialized payload is
+     * a storage concern, so the UI asks the state instead of importing `com.crko.storage`.
+     */
+    fun attachmentBytes(attachment: Attachment): ByteArray? = attachmentRepository.readBytes(attachment)
+
+    /** Payload of the stored attachment file [storedFile]; used when exporting a calendar. */
+    fun readStoredAttachment(storedFile: String): ByteArray? = attachmentRepository.read(storedFile)
 }
 
 /**
@@ -1516,49 +1574,6 @@ private fun matchesUid(event: Event, uid: String): Boolean =
 private fun matchesOwnExport(recordId: String?, uid: String): Boolean {
     if (!uid.endsWith("@crko")) return false
     return uid.removeSuffix("@crko") == recordId
-}
-
-/**
- * Payloads of embedded `ENCODING=BASE64` attachments move to the attachment store when a record is
- * imported, leaving only a file reference in the serialized state. Without this, every re-import of
- * the same calendar added the payload to the stored JSON again and it grew without bound.
- */
-private fun withStoredAttachments(event: Event): Event =
-    if (event.attachments.any(::needsMaterialization)) {
-        event.copy(attachments = event.attachments.map(::storeAttachmentPayload))
-    } else {
-        event
-    }
-
-private fun withStoredAttachments(todo: Todo): Todo =
-    if (todo.attachments.any(::needsMaterialization)) {
-        todo.copy(attachments = todo.attachments.map(::storeAttachmentPayload))
-    } else {
-        todo
-    }
-
-private fun withStoredAttachments(journal: Journal): Journal =
-    if (journal.attachments.any(::needsMaterialization)) {
-        journal.copy(attachments = journal.attachments.map(::storeAttachmentPayload))
-    } else {
-        journal
-    }
-
-/** A binary attachment that still carries its payload inline and has no file yet. */
-private fun needsMaterialization(attachment: Attachment): Boolean =
-    attachment.binary && attachment.storedFile == null && attachment.data.isNotBlank()
-
-private fun storeAttachmentPayload(attachment: Attachment): Attachment {
-    if (!needsMaterialization(attachment)) return attachment
-    val bytes = attachment.decodedBytes() ?: return attachment
-    val stored = AppAttachmentStore.save(safeAttachmentFileName(attachment), bytes) ?: return attachment
-    // The base64 value is the part that used to grow the stored state; export re-encodes it from
-    // the file, while the parameters stay with the record.
-    return attachment.copy(
-        value = "",
-        storedFile = stored,
-        parameters = attachment.parameters + ("ENCODING" to "BASE64"),
-    )
 }
 
 /** `SEQUENCE` wins, then `DTSTAMP`, then `LAST-MODIFIED`; missing metadata never overwrites. */

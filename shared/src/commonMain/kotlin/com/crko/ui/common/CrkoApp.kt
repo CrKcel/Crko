@@ -227,6 +227,7 @@ fun CrkoApp(state: AppStateHolder) {
                     journals = journals,
                     refreshMinutes = calendar.refreshMinutes,
                     timeZones = calendar.timeZones,
+                    storedAttachment = state::readStoredAttachment,
                 )
             }
             fileBridge.saveExport(
@@ -341,6 +342,7 @@ fun CrkoApp(state: AppStateHolder) {
         occurrenceDate = eventEditor?.occurrenceDate,
         strings = strings,
         today = state.today,
+        readAttachment = state::attachmentBytes,
         onDismiss = { eventEditor = null },
         onSave = { event, scope ->
             val saved = state.saveEvent(
