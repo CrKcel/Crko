@@ -1,4 +1,4 @@
-package com.crko.ui.transfer
+package com.crko.storage
 
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsImportFailure

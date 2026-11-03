@@ -19,6 +19,7 @@ import com.crko.domain.SubscriptionFailure
 import com.crko.domain.Todo
 import com.crko.domain.TodoNode
 import com.crko.domain.TodoPriority
+import com.crko.domain.exportCalendar
 import com.crko.domain.occurringOn
 import com.crko.domain.icsTimeZoneConflicts
 import com.crko.domain.toCalendar
@@ -28,8 +29,10 @@ import com.crko.i18n.AppLanguage
 import com.crko.i18n.Strings
 import com.crko.storage.AttachmentRepository
 import com.crko.storage.AppStorage
+import com.crko.storage.CalendarReadException
 import com.crko.storage.StateStorage
 import com.crko.storage.SubscriptionHttp
+import com.crko.storage.importCalendarChunks
 import com.crko.storage.newId
 import com.crko.storage.systemLocaleTag
 import com.crko.state.`import`.AttachmentMaterializer
@@ -42,6 +45,7 @@ import com.crko.state.stats.StatsService
 import com.crko.state.subscription.SubscriptionSyncService
 import com.crko.state.todo.TodoService
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.TimeZone
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +55,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 import kotlin.time.Instant
 
@@ -95,6 +100,12 @@ sealed interface AppMessage {
      * be parsed; the damaged payload itself was kept by the storage.
      */
     data class StorageRecovered(val droppedRecords: Int) : AppMessage
+}
+
+/** Outcome of reading a picked calendar file; the UI maps [Failed] onto a message. */
+sealed interface CalendarFileParse {
+    data class Parsed(val import: IcsImport) : CalendarFileParse
+    data class Failed(val failure: IcsImportFailure) : CalendarFileParse
 }
 
 enum class PaletteSetting { Monet, Monochrome, Custom }
@@ -313,6 +324,55 @@ class AppStateHolder(
         source: String? = null,
         calendarId: String? = null,
     ): ImportOutcome = importService.importCalendar(import, source, calendarId)
+
+    /**
+     * Reads a calendar file picked by the host. Decoding and unfolding run on the parse dispatcher,
+     * so the UI never has to choose a background thread for them.
+     */
+    suspend fun parseCalendarFile(chunks: List<ByteArray>): CalendarFileParse =
+        withContext(parseDispatcher ?: persistenceDispatcher) {
+            runCatching {
+                importCalendarChunks(
+                    chunks,
+                    TimeZone.currentSystemDefault(),
+                    currentStrings.untitledEvent,
+                )
+            }.fold(
+                onSuccess = { CalendarFileParse.Parsed(it) },
+                onFailure = { error ->
+                    CalendarFileParse.Failed(
+                        (error as? CalendarReadException)?.failure ?: IcsImportFailure.InvalidFormat,
+                    )
+                },
+            )
+        }
+
+    /**
+     * Applies a parsed file off the caller thread: materializing attachments and merging records is
+     * file and CPU work, so the UI only awaits the outcome.
+     */
+    suspend fun applyCalendarImport(import: IcsImport, source: String? = null): ImportOutcome =
+        withContext(persistenceDispatcher) { importCalendar(import, source) }
+
+    /** The whole calendar as ICS text, encoded off the caller thread for export/share. */
+    suspend fun exportCalendarIcs(): String {
+        val current = appState
+        val events = current.events
+        val todos = current.todos
+        val journals = current.journals
+        val calendar = current.calendar
+        return withContext(persistenceDispatcher) {
+            exportCalendar(
+                events,
+                todos,
+                calendarName = calendar.name ?: "Crko",
+                journals = journals,
+                refreshMinutes = calendar.refreshMinutes,
+                timeZones = calendar.timeZones,
+                storedAttachment = ::readStoredAttachment,
+            )
+        }
+    }
 
     // ----- todos (delegated to TodoService) -----
 

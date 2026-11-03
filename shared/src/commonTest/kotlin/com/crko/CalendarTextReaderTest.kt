@@ -2,8 +2,8 @@ package com.crko.test
 
 import com.crko.domain.IcsUnfolder
 import com.crko.domain.unfold
-import com.crko.ui.transfer.CalendarReadException
-import com.crko.ui.transfer.importCalendarChunks
+import com.crko.storage.CalendarReadException
+import com.crko.storage.importCalendarChunks
 import kotlinx.datetime.TimeZone
 import kotlin.test.Test
 import kotlin.test.assertEquals
