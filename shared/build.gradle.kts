@@ -273,3 +273,25 @@ val verifyFileSizes = tasks.register("verifyFileSizes") {
 tasks.matching { it.name == "check" }.configureEach {
     dependsOn(verifyDomainModel, verifyArchitecture, verifyFileSizes)
 }
+
+/**
+ * F2.1: `./gradlew :shared:testAndroidHostTest -PperfBaseline` runs the deterministic persistence
+ * baseline only. Without the property the class returns immediately, so normal test runs stay fast.
+ * The JVM default zone is pinned to UTC because `Event.day` and reminder planning project through it.
+ */
+val perfBaselineRequested = providers.gradleProperty("perfBaseline").isPresent
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    if (perfBaselineRequested) {
+        systemProperty("crko.perfBaseline", "true")
+        systemProperty("user.timezone", "UTC")
+        filter {
+            includeTestsMatching("com.crko.perf.PerfBaselineTest")
+        }
+        testLogging {
+            showStandardStreams = true
+            events("passed", "failed")
+        }
+        // A fresh baseline run should never be served from Gradle's up-to-date check.
+        outputs.upToDateWhen { false }
+    }
+}
