@@ -3,6 +3,7 @@ package com.crko
 import com.crko.domain.AlarmTrigger
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
+import com.crko.domain.Calendar
 import com.crko.domain.CurrentSchemaVersion
 import com.crko.domain.Event
 import com.crko.domain.IcsTimeValue
@@ -300,7 +301,7 @@ class StorageTest {
     fun legacyPayloadIsBackedUpBeforeItIsMigrated() {
         val legacy = """{"events":[{"id":"e","title":"Old","date":"2026-10-27","startMinutes":540,"endMinutes":600}]}"""
         val store = MemoryStore(mapOf("state.v1" to legacy))
-        val storage = FileStateStorage({ store }, { MemoryStore() }, seedSampleOnFirstLaunch = false)
+        val storage = FileStateStorage({ store }, { MemoryStore() })
         val restored = storage.loadState()
         assertEquals(1, restored.events.size)
         assertEquals(legacy, store.values["state.v1.legacy-backup"])
@@ -322,7 +323,7 @@ class StorageTest {
         )
         payloads.forEach { payload ->
             val store = MemoryStore(mapOf("state.v1" to payload))
-            val storage = FileStateStorage({ store }, { MemoryStore() }, seedSampleOnFirstLaunch = false)
+            val storage = FileStateStorage({ store }, { MemoryStore() })
             val restored = storage.loadState()
             assertEquals(CurrentSchemaVersion, restored.schemaVersion, payload)
             storage.saveState(restored)
@@ -334,7 +335,7 @@ class StorageTest {
     fun onlyTheFirstMigratedPayloadIsBackedUpAndCurrentPayloadsAreLeftAlone() {
         val first = """{"schemaVersion":5,"events":[],"todos":[],"journals":[],"subscriptions":[],"busyPeriods":[],"calendar":{}}"""
         val store = MemoryStore(mapOf("state.v1" to first))
-        val storage = FileStateStorage({ store }, { MemoryStore() }, seedSampleOnFirstLaunch = false)
+        val storage = FileStateStorage({ store }, { MemoryStore() })
         storage.loadState()
         store.putString("state.v1", """{"schemaVersion":4,"events":[],"todos":[],"journals":[],"subscriptions":[],"busyPeriods":[],"calendar":{}}""")
         storage.loadState()
@@ -342,7 +343,7 @@ class StorageTest {
 
         val current = AppJson.encodeToString(AppState.serializer(), AppState())
         val currentStore = MemoryStore(mapOf("state.v1" to current))
-        val currentStorage = FileStateStorage({ currentStore }, { MemoryStore() }, seedSampleOnFirstLaunch = false)
+        val currentStorage = FileStateStorage({ currentStore }, { MemoryStore() })
         currentStorage.loadState()
         assertNull(currentStore.values["state.v1.migration-backup"])
     }
@@ -389,7 +390,7 @@ class StorageTest {
     @Test
     fun aDamagedPayloadIsBackedUpBeforeTheShrunkenStateCanReplaceIt() {
         val store = MemoryStore(mapOf("state.v1" to MIXED_PAYLOAD))
-        val storage = FileStateStorage({ store }, { MemoryStore() }, seedSampleOnFirstLaunch = false)
+        val storage = FileStateStorage({ store }, { MemoryStore() })
         val restored = storage.loadState()
         assertEquals(listOf("Kept"), restored.events.map { it.title })
         assertEquals(1, storage.loadDamage().droppedRecords)
@@ -413,13 +414,13 @@ class StorageTest {
     @Test
     fun theBackupKeepsTheFirstDamagedCopyAndHealthyDataIsLeftAlone() {
         val store = MemoryStore(mapOf("state.v1" to MIXED_PAYLOAD))
-        val storage = FileStateStorage({ store }, { MemoryStore() }, seedSampleOnFirstLaunch = false)
+        val storage = FileStateStorage({ store }, { MemoryStore() })
         storage.loadState()
         storage.loadState()
         assertEquals(MIXED_PAYLOAD, store.values["state.v1.corrupt"])
 
         val healthy = MemoryStore(mapOf("state.v1" to """{"events":[],"todos":[]}"""))
-        val healthyStorage = FileStateStorage({ healthy }, { MemoryStore() }, seedSampleOnFirstLaunch = false)
+        val healthyStorage = FileStateStorage({ healthy }, { MemoryStore() })
         assertEquals(0, healthyStorage.loadState().events.size)
         assertTrue(healthyStorage.loadDamage().isEmpty)
         assertNull(healthy.values["state.v1.corrupt"])
@@ -428,9 +429,48 @@ class StorageTest {
     @Test
     fun settingsSurviveADamagedStatePayload() {
         val settings = MemoryStore()
-        val storage = FileStateStorage({ MemoryStore() }, { settings }, seedSampleOnFirstLaunch = false)
+        val storage = FileStateStorage({ MemoryStore() }, { settings })
         storage.saveSettings(PersistedSettings(language = "zh"))
         assertEquals("zh", storage.loadSettings().language)
+    }
+
+    @Test
+    fun firstLaunchSeedContentComesFromTheInjectedProviderOnlyOnce() {
+        val store = MemoryStore()
+        var seedCalls = 0
+        val seeded = AppState(
+            calendars = listOf(
+                Calendar.local().copy(
+                    events = listOf(
+                        Event(
+                            id = "seed",
+                            title = "Seed",
+                            start = IcsTimeValue.Date(LocalDate(2026, 10, 27)),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val storage = FileStateStorage(
+            { store },
+            { MemoryStore() },
+            seedProvider = { seedCalls++; seeded },
+        )
+
+        assertEquals("Seed", storage.loadState().events.single().title)
+        assertEquals(1, seedCalls)
+        // The seed is persisted so later launches and background readers see the same data.
+        assertTrue(store.values.containsKey("state.v1"))
+        assertEquals("Seed", storage.loadState().events.single().title)
+        assertEquals(1, seedCalls)
+    }
+
+    @Test
+    fun firstLaunchWithoutASeedProviderStartsEmpty() {
+        val store = MemoryStore()
+        val storage = FileStateStorage({ store }, { MemoryStore() })
+        assertTrue(storage.loadState().events.isEmpty())
+        assertNull(store.values["state.v1"])
     }
 
     @Test

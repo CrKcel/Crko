@@ -140,6 +140,23 @@ class StateHolderTest {
     }
 
     @Test
+    fun newEventsReceiveAPersistedUniqueIdFromTheStateLayer() {
+        val f = Fixture()
+        assertEquals(
+            WriteResult.Success,
+            f.holder.saveEvent(legacyEvent(null, "First", "2026-10-27", 540, 600)),
+        )
+        assertEquals(
+            WriteResult.Success,
+            f.holder.saveEvent(legacyEvent(null, "Second", "2026-10-27", 660, 720)),
+        )
+        val ids = f.storage.state.events.map { it.id }
+        assertEquals(listOf("id-0", "id-1"), ids)
+        assertTrue(ids.all { it != null && it.isNotBlank() })
+        assertEquals(2, ids.toSet().size)
+    }
+
+    @Test
     fun deletingAnUnsavedEventIsANoOp() {
         val f = Fixture()
         f.holder.saveEvent(legacyEvent("e1", "Keep", "2026-10-27", 60, 120))

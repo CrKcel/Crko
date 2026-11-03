@@ -1,6 +1,5 @@
 package com.crko.storage
 
-import com.crko.dev.sampleState
 import com.crko.domain.AppJson
 import com.crko.domain.AppState
 import com.crko.domain.Calendar
@@ -23,9 +22,7 @@ import com.crko.domain.normalizeTimeZoneId
 import com.crko.domain.replaceIcsTimeZones
 import com.crko.domain.toCurrentEvent
 import com.crko.domain.toCurrentTodo
-import com.crko.domain.today
 import com.crko.domain.withLocalCalendar
-import com.crko.isDebugBuild
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -141,18 +138,21 @@ private fun payloadSchemaVersion(raw: String): Int? {
 class FileStateStorage(
     private val stateStore: () -> KeyValueStore,
     private val settingsStore: () -> KeyValueStore,
-    private val seedSampleOnFirstLaunch: Boolean = isDebugBuild(),
+    /**
+     * Supplies the content persisted on first launch. The composition root passes the debug sample
+     * state so this package stays independent of `com.crko.dev`; release builds pass null.
+     */
+    private val seedProvider: (() -> AppState?)? = null,
 ) : StateStorage {
     private var lastDamage: LoadDamage = LoadDamage.None
 
     override fun loadState(): AppState {
         val raw = stateStore().getString(STATE_KEY)
         if (raw == null) {
-            if (!seedSampleOnFirstLaunch) return AppState()
-            // First launch of a debug build: seed sample content, then persist it so edits stick.
-            val sample = sampleState(today())
-            saveState(sample)
-            return sample
+            val seed = seedProvider?.invoke() ?: return AppState()
+            // First launch: seed content, then persist it so edits stick.
+            saveState(seed)
+            return seed
         }
         // A payload written before stage 1 has no `schemaVersion`; keep the original once so a
         // migration that drops an unrecoverable field still has a copy to recover from.

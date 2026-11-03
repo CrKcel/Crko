@@ -309,8 +309,11 @@ class AppStateHolder(
         scope: EditScope = EditScope.AllEvents,
     ): WriteResult {
         val normalized = normalize(event) ?: return validationError(event)
-        val existing = appState.events.firstOrNull { it.id == normalized.id }
-        val validated = normalized
+        // The editor leaves new records without an id; assigning it here keeps identifier creation
+        // out of the UI, which no longer needs to know how a platform makes one.
+        val identified = if (normalized.id == null) normalized.copy(id = idProvider()) else normalized
+        val existing = appState.events.firstOrNull { it.id == identified.id }
+        val validated = identified
         val now = clock.now()
         if (validated.alarms.isNotEmpty()) ensureReminderPermission()
         // An edit belongs to the calendar that owns the stored record; a new record goes local.

@@ -63,7 +63,6 @@ import kotlin.time.Duration.Companion.minutes
 import com.crko.i18n.Strings
 import com.crko.i18n.alarmLabel
 import com.crko.state.EditScope
-import com.crko.storage.newId
 import com.crko.ui.icons.AppIcons
 import com.crko.ui.transfer.CalendarFileBridge
 import com.crko.ui.transfer.rememberCalendarFileBridge
@@ -595,7 +594,6 @@ private fun EventEditorContent(
                     }
                     val saved = onSave(
                         event.copy(
-                            id = event.id ?: newId(),
                             title = title,
                             note = note,
                             start = newStart,

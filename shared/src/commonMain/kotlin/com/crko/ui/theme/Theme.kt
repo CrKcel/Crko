@@ -8,7 +8,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import com.crko.state.DarkModeSetting
 import com.crko.state.PaletteSetting
-import com.crko.storage.platformSupportsMonet
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeColorSpec
@@ -17,6 +16,12 @@ import top.yukonga.miuix.kmp.theme.ThemePaletteStyle
 
 /** Palette actually in effect after platform fallbacks. */
 enum class EffectivePalette { Monet, Monochrome, Custom }
+
+/**
+ * Host capabilities the theme cannot detect itself. The composition root injects them so the UI
+ * package never has to read platform storage declarations.
+ */
+data class PlatformCapabilities(val supportsMonet: Boolean = false)
 
 val LocalEffectivePalette = compositionLocalOf { EffectivePalette.Monet }
 val LocalIsDark = compositionLocalOf { false }
@@ -69,6 +74,7 @@ fun CrkoTheme(
     palette: PaletteSetting,
     keyColor: Long,
     systemDark: Boolean? = null,
+    platform: PlatformCapabilities = PlatformCapabilities(),
     content: @Composable () -> Unit,
 ) {
     val isDark = when (darkMode) {
@@ -76,7 +82,7 @@ fun CrkoTheme(
         DarkModeSetting.Light -> false
         DarkModeSetting.Dark -> true
     }
-    val effective = resolvePalette(palette, platformSupportsMonet())
+    val effective = resolvePalette(palette, platform.supportsMonet)
     val seed = Color(keyColor)
     // The resolved brightness is passed explicitly: a manual override must not depend on the
     // platform configuration, which can lag the user's choice.
