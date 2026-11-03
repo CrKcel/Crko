@@ -184,9 +184,9 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
 
 /**
  * Package-level dependency guard. Each package may only import the packages listed as allowed in
- * `docs/TODO`; the guard scans every Kotlin file under the shared source sets, so platform-specific
- * code cannot slip across the same boundaries. `knownViolations` is the cleanup list from
- * `docs/TODO` section 13; it is empty now that A2/A3/A4 and C1-C4 have landed.
+ * the README "结构" section; the guard scans every Kotlin file under the shared source sets, so
+ * platform-specific code cannot slip across the same boundaries. `knownViolations` stays empty:
+ * the package split is complete, so new violations must be fixed in code instead of exempted.
  */
 val verifyArchitecture = tasks.register("verifyArchitecture") {
     group = "verification"
