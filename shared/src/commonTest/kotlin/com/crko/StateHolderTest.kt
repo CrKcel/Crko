@@ -52,8 +52,8 @@ import com.crko.storage.StateStorage
 import com.crko.domain.daysTo
 import com.crko.domain.decodedBytes
 import com.crko.ui.common.importSummaryText
-import com.crko.ui.schedule.endMinutesAfterStartChange
-import com.crko.ui.schedule.updateReminderAlarms
+import com.crko.state.event.endMinutesAfterStartChange
+import com.crko.state.event.updateReminderAlarms
 import com.crko.ui.transfer.importSelection
 import com.crko.ui.transfer.toIcsImport
 import com.crko.ui.more.journalWithEdits
