@@ -5,30 +5,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.crko.domain.AppState
-import com.crko.domain.AlarmRelated
 import com.crko.domain.AlarmTrigger
 import com.crko.domain.Attachment
 import com.crko.domain.BusyInterval
 import com.crko.domain.Calendar
 import com.crko.domain.CalendarSubscription
-import com.crko.domain.CalendarTimeZone
 import com.crko.domain.Event
 import com.crko.domain.EventStatus
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsImportFailure
 import com.crko.domain.IcsWarning
 import com.crko.domain.IcsWarningDetail
-import com.crko.domain.ItipDecision
-import com.crko.domain.ItipMethod
 import com.crko.domain.IcsPartStat
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.Journal
 import com.crko.domain.PersistedSettings
 import com.crko.domain.Recurrence
-import com.crko.domain.RecurrenceDate
-import com.crko.domain.RecurrenceRange
 import com.crko.domain.RelatedTo
-import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.boundedBefore
 import com.crko.domain.SubscriptionFailure
@@ -37,28 +30,22 @@ import com.crko.domain.Todo
 import com.crko.domain.TodoNode
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
-import com.crko.domain.applyingReply
 import com.crko.domain.daysTo
-import com.crko.domain.effectiveUid
+import com.crko.domain.gatedCancellations
 import com.crko.domain.importCalendarLines
 import com.crko.domain.instantOrNull
-import com.crko.domain.itipDecision
-import com.crko.domain.itipReply
-import com.crko.domain.matchesReplyTarget
 import com.crko.domain.movedByWallDays
-import com.crko.domain.toIcsPriority
-import com.crko.domain.todoForest
-import com.crko.domain.todoPriorityRank
 import com.crko.domain.mergeBusyPeriods
-import com.crko.domain.normalizeTimeZoneId
-import com.crko.domain.occurrenceStartOn
+import com.crko.domain.mergeCalendarTimeZones
+import com.crko.domain.mergeEvents
+import com.crko.domain.mergeJournals
+import com.crko.domain.mergeTodos
 import com.crko.domain.nextOccurrenceDate
+import com.crko.domain.occurrenceStartOn
 import com.crko.domain.occursOn
 import com.crko.domain.occurringOn
-import com.crko.domain.decodedBytes
-import com.crko.domain.parseStoredDate
+import com.crko.domain.plusDays
 import com.crko.domain.plusWallDays
-import com.crko.domain.recurrenceSlotDate
 import com.crko.domain.recurrenceSlotOn
 import com.crko.domain.icsTimeZoneConflicts
 import com.crko.domain.registerIcsTimeZones
@@ -66,12 +53,13 @@ import com.crko.domain.replaceIcsTimeZones
 import com.crko.domain.shiftedByWallDays
 import com.crko.domain.subscription
 import com.crko.domain.toCalendar
+import com.crko.domain.toIcsPriority
 import com.crko.domain.toSyncState
+import com.crko.domain.todoForest
+import com.crko.domain.todoPriorityRank
 import com.crko.domain.wallDate
 import com.crko.domain.withExclusion
 import com.crko.domain.withLocalCalendar
-import com.crko.domain.plusDays
-import com.crko.domain.safeAttachmentFileName
 import com.crko.domain.resolveSubscriptionUrl
 import com.crko.domain.today
 import com.crko.domain.unfold
@@ -92,6 +80,8 @@ import com.crko.storage.StateStorage
 import com.crko.storage.SubscriptionHttp
 import com.crko.storage.newId
 import com.crko.storage.systemLocaleTag
+import com.crko.state.`import`.AttachmentMaterializer
+import com.crko.state.`import`.ImportService
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.LocalTime
@@ -153,17 +143,6 @@ sealed interface AppMessage {
     data class StorageRecovered(val droppedRecords: Int) : AppMessage
 }
 
-/** What one import changed; the feedback names every kind, so a journal-only file is not "nothing". */
-data class ImportOutcome(
-    val events: Int = 0,
-    val todos: Int = 0,
-    val journals: Int = 0,
-    /** Local records removed: cancelled by the file, or gone from a re-imported source. */
-    val removed: Int = 0,
-) {
-    val isEmpty: Boolean get() = events == 0 && todos == 0 && journals == 0 && removed == 0
-}
-
 enum class PaletteSetting { Monet, Monochrome, Custom }
 
 /** Result of a mutation attempt; the UI maps [WriteResult] onto localized text. */
@@ -204,6 +183,19 @@ class AppStateHolder(
 ) {
     var appState: AppState by mutableStateOf(storage.loadState().withLocalCalendar())
         private set
+
+    private val attachmentMaterializer = AttachmentMaterializer(attachmentRepository)
+
+    private val importService = ImportService(
+        access = object : StateAccess {
+            override val state: AppState get() = appState
+            override fun persist(next: AppState) = this@AppStateHolder.persist(next)
+            override fun notify(message: AppMessage) = this@AppStateHolder.notify(message)
+        },
+        attachments = attachmentMaterializer,
+        clock = clock,
+        idProvider = idProvider,
+    )
 
     var settings: PersistedSettings by mutableStateOf(storage.loadSettings())
         private set
@@ -612,344 +604,22 @@ class AppStateHolder(
         persist(appState.replacingCalendar(storedCalendarIndex) { it.copy(events = updated) })
     }
 
-    /**
-     * Merges events parsed from an ICS file. A known UID is replaced when the file carries a newer
-     * `SEQUENCE`/`DTSTAMP`, so re-importing an updated file does not keep stale copies.
-     */
-    fun importEvents(events: List<Event>): Int {
-        val index = localCalendarIndex
-        val merged = mergeEvents(
-            base = appState.calendars[index].events,
-            incoming = events.map(::withStoredAttachments),
-            cancelledUids = emptySet(),
-            source = null,
-            removeVanished = false,
-        )
-        if (merged.changed > 0 || merged.items != appState.calendars[index].events) {
-            persist(appState.replacingCalendar(index) { it.copy(events = merged.items) })
-        }
-        return merged.changed
-    }
+    /** Merges events parsed from an ICS file through the import service. */
+    fun importEvents(events: List<Event>): Int = importService.importEvents(events)
 
-    /** Merges todos from an ICS file, updating known UIDs newer than the stored copy. */
-    fun importTodos(todos: List<Todo>): Int {
-        val index = localCalendarIndex
-        val merged = mergeTodos(
-            base = appState.calendars[index].todos,
-            incoming = todos.map(::withStoredAttachments),
-            source = null,
-            removeVanished = false,
-        )
-        if (merged.changed > 0 || merged.items != appState.calendars[index].todos) {
-            persist(appState.replacingCalendar(index) { it.copy(todos = merged.items) })
-        }
-        return merged.changed
-    }
+    /** Merges todos from an ICS file through the import service. */
+    fun importTodos(todos: List<Todo>): Int = importService.importTodos(todos)
 
     /**
-     * Merges everything one calendar message contained in a single write: two separate writes could
-     * leave a stored calendar with the events of a half-finished import, and serialised the whole
-     * state twice. [source] is the picked file's name; records keep it, so a later import of the
-     * same source can tell "removed upstream" apart from a partial export.
-     *
-     * A calendar that carries an iTIP `METHOD` is not a plain snapshot: a `REPLY` only updates the
-     * answering attendee's status and a `CANCEL` must carry a `SEQUENCE` at least as new as the
-     * stored copy before it may remove anything.
+     * Merges everything one calendar message contained in a single write. [source] is the picked
+     * file's name; records keep it, so a later import of the same source can tell "removed
+     * upstream" apart from a partial export. iTIP replies and cancellations keep their semantics.
      */
     fun importCalendar(
         import: IcsImport,
         source: String? = null,
         calendarId: String? = null,
-    ): ImportOutcome {
-        if (import.method == ItipMethod.Reply) return applyItipReply(import)
-        val hasContent = import.events.isNotEmpty() || import.todos.isNotEmpty() ||
-            import.journals.isNotEmpty() || import.cancelledUids.isNotEmpty() || import.freeBusy.isNotEmpty()
-        val hasCalendarMeta = import.calendarName != null || import.refreshMinutes != null ||
-            import.timeZones.isNotEmpty()
-        if (!hasContent && !hasCalendarMeta && source.isNullOrBlank()) return ImportOutcome()
-        val calendarIndex = calendarId
-            ?.let { id -> appState.calendars.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
-            ?: localCalendarIndex
-        val baseCalendar = appState.calendars[calendarIndex]
-        // Registered under the calendar the records land in, so a file naming a TZID its own way
-        // cannot redefine a same-named zone of another calendar.
-        registerIcsTimeZones(import.timeZones, baseCalendar.id)
-        val sourceName = source?.takeIf { it.isNotBlank() }
-        // The vanished-record pass compares against every UID the file describes, not against the
-        // kept rows alone: unchecking a preview row skips that one update without deleting the
-        // local record the file still lists. A directly built import derives the set from its rows.
-        val described = import.describedUids.ifEmpty {
-            buildSet {
-                import.events.mapNotNullTo(this) { it.icsUid }
-                import.todos.mapNotNullTo(this) { it.icsUid }
-                import.journals.mapNotNullTo(this) { it.icsUid }
-                import.cancelledUids.mapTo(this) { it }
-            }
-        }
-        // Removal of records that no longer appear is scoped per kind: a file that carries no todo
-        // at all (or none but cancellations) says nothing about the user's todos.
-        val events = mergeEvents(
-            base = baseCalendar.events,
-            incoming = import.events.map(::withStoredAttachments),
-            cancelledUids = gatedCancellations(import, baseCalendar.events),
-            source = sourceName,
-            removeVanished = sourceName != null &&
-                (import.events.isNotEmpty() || import.cancelledUids.isNotEmpty()),
-            describedUids = described,
-        )
-        val todos = mergeTodos(
-            base = baseCalendar.todos,
-            incoming = import.todos.map(::withStoredAttachments),
-            source = sourceName,
-            removeVanished = sourceName != null && import.todos.isNotEmpty(),
-            describedUids = described,
-        )
-        val journals = mergeJournals(
-            base = baseCalendar.journals,
-            incoming = import.journals.map(::withStoredAttachments),
-            source = sourceName,
-            removeVanished = sourceName != null && import.journals.isNotEmpty(),
-            describedUids = described,
-        )
-        val outcome = ImportOutcome(
-            events = events.changed,
-            todos = todos.changed,
-            journals = journals.changed,
-            removed = events.removed + todos.removed + journals.removed,
-        )
-        val updatedCalendar = baseCalendar.copy(
-            name = import.calendarName ?: baseCalendar.name,
-            refreshMinutes = import.refreshMinutes ?: baseCalendar.refreshMinutes,
-            method = import.method?.wireName ?: baseCalendar.method,
-            timeZones = mergeCalendarTimeZones(baseCalendar.timeZones, import.timeZones),
-            events = events.items,
-            todos = todos.items,
-            journals = journals.items,
-        )
-        val changed = updatedCalendar != baseCalendar || import.freeBusy.isNotEmpty()
-        // An all-zero outcome is only "nothing happened" when the calendar did not move either;
-        // provenance may have followed the file even though no record was added or replaced.
-        if (outcome.isEmpty && !changed) return outcome
-        if (changed) {
-            persist(
-                appState.replacingCalendar(calendarIndex) { updatedCalendar }.copy(
-                    busyPeriods = mergeBusyPeriods(appState.busyPeriods, import.freeBusy, clock.now()),
-                ),
-            )
-        }
-        return outcome
-    }
-
-    /**
-     * Applies an imported `METHOD:REPLY`: the replying attendee's `PARTSTAT` is written onto the
-     * stored record the reply refers to. The whole outcome is one attendee status, so there is no
-     * record preview for this method.
-     */
-    private fun applyItipReply(import: IcsImport): ImportOutcome {
-        val reply = import.itipReply() ?: return ImportOutcome()
-        val calendarIndex = calendarIndexContaining { calendar ->
-            calendar.events.any { event -> event.matchesReplyTarget(reply) }
-        } ?: return ImportOutcome().also { notify(AppMessage.ItipReplyUnknown(reply.attendee.displayName)) }
-        val storedEvents = appState.calendars[calendarIndex].events
-        val target = storedEvents.firstOrNull { event -> event.matchesReplyTarget(reply) }
-        if (target == null) {
-            notify(AppMessage.ItipReplyUnknown(reply.attendee.displayName))
-            return ImportOutcome()
-        }
-        // A reply that answers an older revision than the stored copy must not overwrite a newer
-        // state; messages without a sequence are always allowed (mainstream senders omit it).
-        if (itipDecision(reply.sequence, target.sequence) == ItipDecision.Stale) {
-            notify(AppMessage.ItipReplyUnknown(reply.attendee.displayName))
-            return ImportOutcome()
-        }
-        val result = storedEvents.applyingReply(reply, clock.now())
-        if (!result.applied) return ImportOutcome()
-        persist(appState.replacingCalendar(calendarIndex) { it.copy(events = result.events) })
-        notify(AppMessage.ItipReplyProcessed(reply.attendee.displayName, reply.attendee.partStat ?: IcsPartStat.NeedsAction))
-        return ImportOutcome(events = 1)
-    }
-
-    /**
-     * The cancellations [import] may apply: one whose `SEQUENCE` is older than every stored copy of
-     * that UID is stale and must not remove the newer record (RFC 5546 conflict resolution). The
-     * comparison is scoped to the calendar being imported into.
-     */
-    private fun gatedCancellations(import: IcsImport, storedEvents: List<Event>): Set<String> =
-        import.cancelledUids.filterTo(mutableSetOf()) { uid ->
-            val incoming = import.cancelled.firstOrNull { it.uid == uid }?.sequence ?: 0
-            val stored = storedEvents.filter { matchesUid(it, uid) }.maxOfOrNull { it.sequence } ?: 0
-            incoming >= stored
-        }
-
-    private class MergeResult<T>(val items: List<T>, val changed: Int, val removed: Int)
-
-    /**
-     * Merges parsed events. A known UID is replaced when the file carries a newer
-     * `SEQUENCE`/`DTSTAMP`, so re-importing an updated file does not keep stale copies. With
-     * [source] set, records proven to come from that file are also removed when the new file marks
-     * their series cancelled or no longer lists them.
-     */
-    private fun mergeEvents(
-        base: List<Event>,
-        incoming: List<Event>,
-        cancelledUids: Set<String>,
-        source: String?,
-        removeVanished: Boolean,
-        describedUids: Set<String> = emptySet(),
-    ): MergeResult<Event> {
-        val merged = base.toMutableList()
-        var removed = 0
-        if (cancelledUids.isNotEmpty()) {
-            val before = merged.size
-            merged.removeAll { event -> cancelledUids.any { uid -> matchesUid(event, uid) } }
-            removed += before - merged.size
-        }
-        // A record that simply stopped appearing in the file used to be kept because without import
-        // provenance a partial export looks exactly like a removal. Provenance closes that gap: only
-        // records this very file brought in are eligible, and only when the file still describes the
-        // same kind of content.
-        if (removeVanished) {
-            val present = describedUids.ifEmpty { incoming.mapNotNullTo(mutableSetOf()) { it.icsUid } }
-            val before = merged.size
-            merged.removeAll { event ->
-                // A file import only owns records it brought in; a subscription owns its whole
-                // calendar, so anything upstream no longer describes is gone.
-                (source == null || event.importSource == source) &&
-                    event.icsUid != null && event.icsUid !in present
-            }
-            removed += before - merged.size
-        }
-        var changed = 0
-        val seen = mutableSetOf<String>()
-        incoming.forEach { parsed ->
-            val incoming = parsed.copy(local = parsed.local.copy(importSource = parsed.importSource ?: source))
-            val uid = incoming.icsUid
-            if (uid == null) {
-                merged += incoming.copy(id = idProvider())
-                changed++
-                return@forEach
-            }
-            // A master and every exception share the UID, so the storage identity is the pair.
-            if (!seen.add(uid + "|" + incoming.recurrenceId)) return@forEach
-            val exact = merged.indexOfFirst { it.icsUid == uid && it.recurrenceId == incoming.recurrenceId }
-            val index = if (exact >= 0) {
-                exact
-            } else if (incoming.recurrenceId == null) {
-                merged.indexOfFirst { matchesOwnExport(it.id, uid) }
-            } else {
-                -1
-            }
-            if (index >= 0) {
-                val existing = merged[index]
-                if (isNewer(incoming.sequence, incoming.dtStamp, incoming.lastModified, existing.sequence, existing.dtStamp, existing.lastModified)) {
-                    merged[index] = incoming.copy(id = existing.id)
-                    changed++
-                } else if (existing.importSource != incoming.importSource) {
-                    // Provenance follows the newest import even when the content itself is stale,
-                    // or the next import of the renamed file would remove the record after all.
-                    merged[index] = existing.copy(local = existing.local.copy(importSource = incoming.importSource))
-                }
-            } else {
-                merged += incoming.copy(id = idProvider())
-                changed++
-            }
-        }
-        return MergeResult(merged, changed, removed)
-    }
-
-    private fun mergeTodos(
-        base: List<Todo>,
-        incoming: List<Todo>,
-        source: String?,
-        removeVanished: Boolean,
-        describedUids: Set<String> = emptySet(),
-    ): MergeResult<Todo> {
-        val merged = base.toMutableList()
-        var removed = 0
-        if (removeVanished) {
-            val present = describedUids.ifEmpty { incoming.mapNotNullTo(mutableSetOf()) { it.icsUid } }
-            val before = merged.size
-            merged.removeAll { todo ->
-                (source == null || todo.importSource == source) &&
-                    todo.icsUid != null && todo.icsUid !in present
-            }
-            removed += before - merged.size
-        }
-        var changed = 0
-        val seen = mutableSetOf<String>()
-        incoming.forEach { parsed ->
-            val incoming = parsed.copy(local = parsed.local.copy(importSource = parsed.importSource ?: source))
-            val uid = incoming.icsUid
-            if (uid == null) {
-                merged += incoming.copy(id = idProvider())
-                changed++
-                return@forEach
-            }
-            if (!seen.add(uid)) return@forEach
-            val exact = merged.indexOfFirst { it.icsUid == uid }
-            val index = if (exact >= 0) exact else if ('#' !in uid) merged.indexOfFirst { matchesOwnExport(it.id, uid) } else -1
-            if (index >= 0) {
-                val existing = merged[index]
-                if (isNewer(incoming.sequence, incoming.dtStamp, incoming.lastModified, existing.sequence, existing.dtStamp, existing.lastModified)) {
-                    merged[index] = incoming.copy(id = existing.id)
-                    changed++
-                } else if (existing.importSource != incoming.importSource) {
-                    merged[index] = existing.copy(local = existing.local.copy(importSource = incoming.importSource))
-                }
-            } else {
-                merged += incoming.copy(id = idProvider())
-                changed++
-            }
-        }
-        return MergeResult(merged, changed, removed)
-    }
-
-    private fun mergeJournals(
-        base: List<Journal>,
-        incoming: List<Journal>,
-        source: String?,
-        removeVanished: Boolean,
-        describedUids: Set<String> = emptySet(),
-    ): MergeResult<Journal> {
-        val merged = base.toMutableList()
-        var removed = 0
-        if (removeVanished) {
-            val present = describedUids.ifEmpty { incoming.mapNotNullTo(mutableSetOf()) { it.icsUid } }
-            val before = merged.size
-            merged.removeAll { journal ->
-                (source == null || journal.importSource == source) &&
-                    journal.icsUid != null && journal.icsUid !in present
-            }
-            removed += before - merged.size
-        }
-        var changed = 0
-        val seen = mutableSetOf<String>()
-        incoming.forEach { parsed ->
-            val incoming = parsed.copy(local = parsed.local.copy(importSource = parsed.importSource ?: source))
-            val uid = incoming.icsUid
-            if (uid == null) {
-                merged += incoming.copy(id = idProvider())
-                changed++
-                return@forEach
-            }
-            if (!seen.add(uid)) return@forEach
-            val exact = merged.indexOfFirst { it.icsUid == uid }
-            val index = if (exact >= 0) exact else if ('#' !in uid) merged.indexOfFirst { matchesOwnExport(it.id, uid) } else -1
-            if (index >= 0) {
-                val existing = merged[index]
-                if (isNewer(incoming.sequence, incoming.dtStamp, incoming.lastModified, existing.sequence, existing.dtStamp, existing.lastModified)) {
-                    merged[index] = incoming.copy(id = existing.id)
-                    changed++
-                } else if (existing.importSource != incoming.importSource) {
-                    merged[index] = existing.copy(local = existing.local.copy(importSource = incoming.importSource))
-                }
-            } else {
-                merged += incoming.copy(id = idProvider())
-                changed++
-            }
-        }
-        return MergeResult(merged, changed, removed)
-    }
+    ): ImportOutcome = importService.importCalendar(import, source, calendarId)
 
     /**
      * Clears a single day: one-off events are removed while repeating events only skip that date,
@@ -1343,22 +1013,25 @@ class AppStateHolder(
         // merges and vanished-record detection are scoped to this calendar alone.
         val events = mergeEvents(
             base = baseCalendar.events,
-            incoming = parsed.events.map(::withStoredAttachments),
+            incoming = parsed.events.map(attachmentMaterializer::materialize),
             cancelledUids = gatedCancellations(parsed, baseCalendar.events),
             source = null,
             removeVanished = removeVanished,
+            idProvider = idProvider,
         )
         val todos = mergeTodos(
             base = baseCalendar.todos,
-            incoming = parsed.todos.map(::withStoredAttachments),
+            incoming = parsed.todos.map(attachmentMaterializer::materialize),
             source = null,
             removeVanished = removeVanished,
+            idProvider = idProvider,
         )
         val journals = mergeJournals(
             base = baseCalendar.journals,
-            incoming = parsed.journals.map(::withStoredAttachments),
+            incoming = parsed.journals.map(attachmentMaterializer::materialize),
             source = null,
             removeVanished = removeVanished,
+            idProvider = idProvider,
         )
         val updatedCalendar = baseCalendar.copy(
             refreshMinutes = parsed.refreshMinutes ?: baseCalendar.refreshMinutes,
@@ -1495,50 +1168,6 @@ class AppStateHolder(
     }
 
     /**
-     * Payloads of embedded `ENCODING=BASE64` attachments move to the attachment store when a record
-     * is imported, leaving only a file reference in the serialized state. Without this, every
-     * re-import of the same calendar added the payload to the stored JSON again and it grew without
-     * bound.
-     */
-    private fun withStoredAttachments(event: Event): Event =
-        if (event.attachments.any(::needsMaterialization)) {
-            event.copy(attachments = event.attachments.map { storeAttachmentPayload(it) })
-        } else {
-            event
-        }
-
-    private fun withStoredAttachments(todo: Todo): Todo =
-        if (todo.attachments.any(::needsMaterialization)) {
-            todo.copy(attachments = todo.attachments.map { storeAttachmentPayload(it) })
-        } else {
-            todo
-        }
-
-    private fun withStoredAttachments(journal: Journal): Journal =
-        if (journal.attachments.any(::needsMaterialization)) {
-            journal.copy(attachments = journal.attachments.map { storeAttachmentPayload(it) })
-        } else {
-            journal
-        }
-
-    /** A binary attachment that still carries its payload inline and has no file yet. */
-    private fun needsMaterialization(attachment: Attachment): Boolean =
-        attachment.binary && attachment.storedFile == null && attachment.data.isNotBlank()
-
-    private fun storeAttachmentPayload(attachment: Attachment): Attachment {
-        if (!needsMaterialization(attachment)) return attachment
-        val bytes = attachment.decodedBytes() ?: return attachment
-        val stored = attachmentRepository.save(safeAttachmentFileName(attachment), bytes) ?: return attachment
-        // The base64 value is the part that used to grow the stored state; export re-encodes it from
-        // the file, while the parameters stay with the record.
-        return attachment.copy(
-            value = "",
-            storedFile = stored,
-            parameters = attachment.parameters + ("ENCODING" to "BASE64"),
-        )
-    }
-
-    /**
      * Bytes of [attachment] for previews and downloads in the UI. Reading a materialized payload is
      * a storage concern, so the UI asks the state instead of importing `com.crko.storage`.
      */
@@ -1546,52 +1175,6 @@ class AppStateHolder(
 
     /** Payload of the stored attachment file [storedFile]; used when exporting a calendar. */
     fun readStoredAttachment(storedFile: String): ByteArray? = attachmentRepository.read(storedFile)
-}
-
-/**
- * One definition per `TZID`: the incoming file's copy wins, while zones it does not mention keep
- * the definition already stored.
- */
-private fun mergeCalendarTimeZones(
-    existing: List<CalendarTimeZone>,
-    incoming: List<CalendarTimeZone>,
-): List<CalendarTimeZone> {
-    val merged = LinkedHashMap<String, CalendarTimeZone>()
-    (existing + incoming).forEach { zone ->
-        val id = normalizeTimeZoneId(zone.tzid)
-        if (id.isNotEmpty() && zone.definition.isNotBlank()) {
-            merged[id] = zone.copy(tzid = id)
-        }
-    }
-    return merged.values.toList()
-}
-
-/**
- * Whether [event] belongs to [uid]. The master and its exceptions share the UID, so no synthetic
- * suffix is involved; own-export ids (`<id>@crko`) are recognized as before.
- */
-private fun matchesUid(event: Event, uid: String): Boolean =
-    event.icsUid == uid || matchesOwnExport(event.id, uid)
-
-/** Whether [uid] is the own-export id (`<recordId>@crko`) of [recordId]. */
-private fun matchesOwnExport(recordId: String?, uid: String): Boolean {
-    if (!uid.endsWith("@crko")) return false
-    return uid.removeSuffix("@crko") == recordId
-}
-
-/** `SEQUENCE` wins, then `DTSTAMP`, then `LAST-MODIFIED`; missing metadata never overwrites. */
-private fun isNewer(
-    sequence: Int,
-    dtStamp: String?,
-    lastModified: String?,
-    existingSequence: Int,
-    existingDtStamp: String?,
-    existingLastModified: String?,
-): Boolean {
-    if (sequence != existingSequence) return sequence > existingSequence
-    val incoming = parseInstantOrNull(dtStamp ?: lastModified) ?: return false
-    val existing = parseInstantOrNull(existingDtStamp ?: existingLastModified)
-    return existing == null || incoming > existing
 }
 
 private fun parseInstantOrNull(value: String?): kotlin.time.Instant? =
