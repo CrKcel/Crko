@@ -30,6 +30,7 @@ import com.crko.domain.RecurrenceRange
 import com.crko.domain.RelatedTo
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
+import com.crko.domain.boundedBefore
 import com.crko.domain.SubscriptionFailure
 import com.crko.domain.SubscriptionFetch
 import com.crko.domain.Todo
@@ -457,16 +458,9 @@ class AppStateHolder(
         if (occurrence <= series.day) {
             return saveWholeSeries(storedEvents, series, edited, occurrence, now, calendarIndex)
         }
-        val previous = occurrence.plusDays(-1)
         // RDATEs and EXDATEs belong to whichever segment covers their slot. A value kept on the
         // wrong side either duplicates the other segment or becomes a phantom occurrence on export.
-        val oldRecurrence = series.recurrence?.let { recurrence ->
-            recurrence.copy(
-                rule = recurrence.rule?.copy(until = IcsTimeValue.Date(previous), count = null, raw = null),
-                rdates = recurrence.rdates.filter { it.value.wallDate < occurrence },
-                exdates = recurrence.exdates.filter { it.wallDate < occurrence },
-            )
-        }
+        val oldRecurrence = series.recurrence?.boundedBefore(occurrence)?.first
         val oldSeries = series.copy(
             recurrence = oldRecurrence,
             lastModified = now.toString(),
@@ -597,17 +591,7 @@ class AppStateHolder(
                     storedEvents.mapNotNull { current ->
                         when {
                             current.id == stored.id -> current.copy(
-                                recurrence = current.recurrence?.let { recurrence ->
-                                    recurrence.copy(
-                                        rule = recurrence.rule?.copy(
-                                            until = IcsTimeValue.Date(occurrence.plusDays(-1)),
-                                            count = null,
-                                            raw = null,
-                                        ),
-                                        rdates = recurrence.rdates.filter { it.value.wallDate < occurrence },
-                                        exdates = recurrence.exdates.filter { it.wallDate < occurrence },
-                                    )
-                                },
+                                recurrence = current.recurrence?.boundedBefore(occurrence)?.first,
                             )
                             belongsToSeries(current) && current.recurrenceId!!.wallDate >= occurrence -> null
                             else -> current

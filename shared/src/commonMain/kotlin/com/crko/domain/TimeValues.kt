@@ -11,10 +11,14 @@ import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonPrimitive
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
@@ -62,8 +66,7 @@ object InstantIso8601Serializer : KSerializer<Instant> {
     override fun deserialize(decoder: Decoder): Instant = Instant.parse(decoder.decodeString())
 }
 
-/**
- * Whole seconds of a duration, the granularity an `RDATE;VALUE=PERIOD` length has.
+/** Whole seconds of a duration, the granularity an `RDATE;VALUE=PERIOD` length has.
  *
  * The descriptor name must not be the class name of the value it serializes: `kotlin.time.Duration`
  * is already registered by kotlinx.serialization's own `DurationSerializer`, and two serializers for
@@ -78,6 +81,39 @@ object DurationSecondsSerializer : KSerializer<Duration> {
     override fun serialize(encoder: Encoder, value: Duration) = encoder.encodeLong(value.inWholeSeconds)
 
     override fun deserialize(decoder: Decoder): Duration = decoder.decodeLong().seconds
+}
+
+/**
+ * `Todo.excludedDates`: typed `IcsTimeValue` values, so a timed `EXDATE` keeps its own time of day.
+ * The payload shape changed from bare ISO date strings to typed objects without a schema version
+ * bump, so the decoder accepts both — a string becomes a DATE value, and a string no
+ * [parseStoredDate] can read is dropped, exactly how persisted date strings are read everywhere
+ * else. Encoding always writes the typed shape.
+ */
+object TodoExdatesSerializer : KSerializer<List<IcsTimeValue>> {
+    private val values = ListSerializer(IcsTimeValue.serializer())
+
+    override val descriptor = values.descriptor
+
+    override fun serialize(encoder: Encoder, value: List<IcsTimeValue>) {
+        encoder.encodeSerializableValue(values, value)
+    }
+
+    override fun deserialize(decoder: Decoder): List<IcsTimeValue> {
+        val json = decoder as? JsonDecoder ?: return decoder.decodeSerializableValue(values)
+        val array = json.decodeJsonElement() as? JsonArray ?: return emptyList()
+        return buildList {
+            array.forEach { element ->
+                when {
+                    element is JsonPrimitive && element.isString ->
+                        parseStoredDate(element.content)?.let { add(IcsTimeValue.Date(it)) }
+                    else -> runCatching { json.json.decodeFromJsonElement(IcsTimeValue.serializer(), element) }
+                        .getOrNull()
+                        ?.let(::add)
+                }
+            }
+        }
+    }
 }
 
 /** Wall-clock date of the value, i.e. the date the calendar file itself names. */

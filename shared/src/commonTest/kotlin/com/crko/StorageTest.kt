@@ -248,8 +248,24 @@ class StorageTest {
             listOf(RecurrenceDate(IcsTimeValue.Date(LocalDate(2026, 12, 24)))),
             todo.rDates,
         )
-        assertEquals(listOf("2026-10-12"), todo.excludedDates)
+        assertEquals(listOf(IcsTimeValue.Date(LocalDate(2026, 10, 12))), todo.excludedDates)
         assertEquals("Journal", decoded.state.journals.single().title)
+    }
+
+    @Test
+    fun aCurrentPayloadWithLegacyStringExdatesStillDecodes() {
+        // The version-6 payloads the previous release wrote carried bare ISO date strings; the
+        // typed list must read them instead of dropping every todo as undecodable.
+        val payload = """{"schemaVersion":6,"calendars":[{"id":"local","name":"Crko","todos":[""" +
+            """{"id":"t1","title":"Report","due":"2026-10-06","excludedDates":["2026-10-12"]}]}]}"""
+        val decoded = decodeStateWithReport(payload)
+        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
+        val todo = decoded.state.calendars.single().todos.single()
+        assertEquals(listOf(IcsTimeValue.Date(LocalDate(2026, 10, 12))), todo.excludedDates)
+        // The next save writes the typed shape, and that round-trips through the same decoder.
+        val encoded = AppJson.encodeToString(AppState.serializer(), decoded.state)
+        val redecoded = decodeStateWithReport(encoded)
+        assertEquals(decoded.state, redecoded.state)
     }
 
     @Test

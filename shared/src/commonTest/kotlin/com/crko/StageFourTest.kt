@@ -20,6 +20,7 @@ import com.crko.domain.occursOn
 import com.crko.domain.triggerMinutes
 import com.crko.storage.decodeStateWithReport
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -439,12 +440,16 @@ class StageFourTest {
             """,
         )
         val todo = importCalendar(text, newYork, "Untitled").todos.single()
-        // The series expands on its own wall clock, so the exclusion is the day the file names —
-        // projecting it through the device zone moved it to the day before and dropped it on export.
-        assertEquals(listOf("2026-11-12"), todo.excludedDates)
+        // The series expands on its own wall clock, so the exclusion keeps the value type the file
+        // names — projecting it through the device zone moved it to the day before and dropped it
+        // on export.
+        assertEquals(
+            listOf(IcsTimeValue.Zoned(LocalDateTime(2026, 11, 12, 9, 0), "Asia/Shanghai")),
+            todo.excludedDates,
+        )
         assertFalse(todo.occursOn(LocalDate(2026, 11, 12)))
         val exported = exportCalendar(emptyList(), listOf(todo), now = Instant.parse("2026-11-01T00:00:00Z"))
-        assertTrue(exported.contains("EXDATE;VALUE=DATE:20261112"), exported)
+        assertTrue(exported.contains("EXDATE;TZID=Asia/Shanghai:20261112T090000"), exported)
     }
 
     @Test
@@ -463,7 +468,7 @@ class StageFourTest {
         val todo = importCalendar(text, utc, "Untitled").todos.single()
         assertNull(todo.repeat)
         assertEquals(1, todo.rDates.size)
-        assertEquals(listOf("2026-11-05"), todo.excludedDates)
+        assertEquals(listOf(IcsTimeValue.Date(LocalDate(2026, 11, 5))), todo.excludedDates)
         // The added and excluded instances belong to the recurrence set, which a `VTODO` may carry
         // without any `RRULE`; writing them only next to a rule dropped them from the export.
         val exported = exportCalendar(emptyList(), listOf(todo), now = Instant.parse("2026-11-01T00:00:00Z"))
@@ -697,7 +702,11 @@ class StageFourTest {
             """,
         )
         val todo = importCalendar(text, utc, "Untitled").todos.single()
-        assertEquals(listOf("2026-11-02", "2026-11-03"), todo.excludedDates, todo.excludedDates.toString())
+        assertEquals(
+            listOf(IcsTimeValue.Date(LocalDate(2026, 11, 2)), IcsTimeValue.Date(LocalDate(2026, 11, 3))),
+            todo.excludedDates,
+            todo.excludedDates.toString(),
+        )
         // The series' real extent, before any exclusion: its own +03:00 clock passes the UTC `UNTIL`
         // on the third day, so that day has no instance at all.
         val unexcluded = todo.copy(excludedDates = emptyList())

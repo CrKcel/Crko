@@ -789,7 +789,7 @@ class RecurrenceTest {
             title = "Chore",
             due = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
             repeat = RepeatRule(RepeatFrequency.Weekly, byDay = days(0)),
-            excludedDates = listOf("2026-10-12"),
+            excludedDates = listOf(IcsTimeValue.Date(LocalDate(2026, 10, 12))),
         )
         assertFalse(todo.occursOn(LocalDate(2026, 10, 12)))
         assertEquals(LocalDate(2026, 10, 19), todo.nextOccurrenceDate(LocalDate(2026, 10, 12)))

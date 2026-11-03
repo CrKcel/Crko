@@ -71,6 +71,13 @@ interface CalendarComponent {
     val extraProperties: List<String>
     val local: LocalRecordMeta
 
+    /**
+     * Parameters of the TEXT properties this component carries (`LANGUAGE`, `ALTREP`, ...), keyed by
+     * property name, without a leading `;`. Export re-applies them to the derived lines, so a round
+     * trip keeps them even when the text itself was edited afterwards.
+     */
+    val textParameters: Map<String, String> get() = emptyMap()
+
     val importSource: String? get() = local.importSource
     val sourceLine: Int get() = local.sourceLine
 }
@@ -489,6 +496,8 @@ data class Event(
     override val sequence: Int = 0,
     /** Unknown content lines kept verbatim so a round trip does not drop them. */
     override val extraProperties: List<String> = emptyList(),
+    /** Parameters of the TEXT properties (`LANGUAGE`, `ALTREP`, ...), re-applied on export. */
+    override val textParameters: Map<String, String> = emptyMap(),
     /** Storage provenance, separate from the RFC properties. */
     override val local: LocalRecordMeta = LocalRecordMeta(),
 ) : CalendarComponent {
@@ -594,6 +603,8 @@ data class Todo(
     override val dtStamp: String? = null,
     override val sequence: Int = 0,
     override val extraProperties: List<String> = emptyList(),
+    /** Parameters of the TEXT properties (`LANGUAGE`, `ALTREP`, ...), re-applied on export. */
+    override val textParameters: Map<String, String> = emptyMap(),
     /** `STATUS`; older saved data defaults to [TodoStatus.NeedsAction]. */
     val status: TodoStatus = TodoStatus.NeedsAction,
     /** `PERCENT-COMPLETE`, 0..100. */
@@ -603,8 +614,9 @@ data class Todo(
     val repeat: RepeatRule? = null,
     /** Additional `RDATE` instances of the series, keeping their own time and length. */
     val rDates: List<RecurrenceDate> = emptyList(),
-    /** Occurrence dates the series skips, from `EXDATE`. */
-    val excludedDates: List<String> = emptyList(),
+    /** Occurrence instances the series skips, from `EXDATE`; typed, so a timed one keeps its clock. */
+    @Serializable(with = TodoExdatesSerializer::class)
+    val excludedDates: List<IcsTimeValue> = emptyList(),
     /** Storage provenance, separate from the RFC properties. */
     override val local: LocalRecordMeta = LocalRecordMeta(),
 ) : CalendarComponent {
@@ -675,6 +687,8 @@ data class Journal(
     override val sequence: Int = 0,
     override val icsUid: String? = null,
     override val extraProperties: List<String> = emptyList(),
+    /** Parameters of the TEXT properties (`LANGUAGE`, `ALTREP`, ...), re-applied on export. */
+    override val textParameters: Map<String, String> = emptyMap(),
     /** `RRULE`, `RDATE` and `EXDATE` of a repeating journal. */
     val recurrence: Recurrence? = null,
     val status: JournalStatus? = null,

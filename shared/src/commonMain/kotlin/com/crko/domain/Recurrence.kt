@@ -816,14 +816,21 @@ fun Todo.occurrenceDate(occStart: LocalDate): LocalDate {
     return occStart.plusDays(displayOffset(anchor))
 }
 
-/** Recurrence set a todo series expands, including the date-only exclusions the model stores. */
+/** Recurrence set a todo series expands, including the typed exclusions the model stores. */
 private fun Todo.recurrenceSet(): Recurrence? {
     if (repeat == null && rDates.isEmpty() && excludedDates.isEmpty()) return null
     return Recurrence(
         rule = repeat,
         rdates = rDates,
-        exdates = excludedDates.mapNotNull { parseStoredDate(it)?.let(IcsTimeValue::Date) },
+        exdates = excludedDates,
     )
+}
+
+/** Time of day the series' anchor (`DTSTART`, falling back to `DUE`) names; null for date-only. */
+private fun Todo.seriesStartTime(): OccurrenceTime? {
+    val value = start ?: due ?: return null
+    val time = value.wallTime ?: return null
+    return OccurrenceTime(time.hour * 60 + time.minute, time.second)
 }
 
 /**
@@ -836,7 +843,15 @@ fun Todo.occursOn(date: LocalDate): Boolean {
     val recurrence = recurrenceSet()
     if (rule == null && recurrence == null) return date == occurrenceDate(anchor)
     val occStart = date.plusDays(-displayOffset(anchor))
-    return isRuleOccurrence(anchor, rule, recurrence, occStart, count = rule?.count, anchorValue = start ?: due)
+    return isRuleOccurrence(
+        anchor,
+        rule,
+        recurrence,
+        occStart,
+        startTime = seriesStartTime(),
+        count = rule?.count,
+        anchorValue = start ?: due,
+    )
 }
 
 /**
@@ -853,7 +868,16 @@ fun Todo.occurrenceStartsBetween(from: LocalDate, to: LocalDate): List<LocalDate
     val last = to.plusDays(-offset)
     var steps = 0
     while (candidate <= last && steps <= NextOccurrenceSearchDays) {
-        if (isRuleOccurrence(anchor, rule, recurrenceSet(), candidate, count = rule.count, anchorValue = start ?: due)) {
+        if (isRuleOccurrence(
+                anchor,
+                rule,
+                recurrenceSet(),
+                candidate,
+                startTime = seriesStartTime(),
+                count = rule.count,
+                anchorValue = start ?: due,
+            )
+        ) {
             dates += candidate
         }
         candidate = candidate.plusDays(1)
@@ -875,7 +899,16 @@ fun Todo.nextOccurrenceDate(today: LocalDate): LocalDate? {
     var candidate = maxOf(anchor, today.plusDays(-offset))
     var steps = 0
     while (steps <= NextOccurrenceSearchDays) {
-        if (isRuleOccurrence(anchor, rule, recurrenceSet(), candidate, count = rule.count, anchorValue = start ?: due)) {
+        if (isRuleOccurrence(
+                anchor,
+                rule,
+                recurrenceSet(),
+                candidate,
+                startTime = seriesStartTime(),
+                count = rule.count,
+                anchorValue = start ?: due,
+            )
+        ) {
             return candidate.plusDays(offset)
         }
         candidate = candidate.plusDays(1)
@@ -892,6 +925,41 @@ private const val NextOccurrenceSearchDays = 366 * 5
 /** Adds [slot] to the excluded set, creating the recurrence set when the series has none yet. */
 fun Recurrence?.withExclusion(slot: IcsTimeValue): Recurrence =
     (this ?: Recurrence()).let { it.copy(exdates = (it.exdates + slot).distinct()) }
+
+/**
+ * Truncates the set at [date]: the rule ends the day before (COUNT and its own text no longer
+ * describe the shorter series), and every added or excluded instance from [date] on belongs to the
+ * part after the split, returned separately. An already earlier `UNTIL` is kept, so truncating a
+ * series that was truncated before is a no-op. This is what "this and future" edits do to the old
+ * series, both in the app and when an imported `RANGE=THISANDFUTURE` exception carries its own
+ * recurrence.
+ */
+fun Recurrence.boundedBefore(date: LocalDate): Pair<Recurrence, Recurrence> {
+    val previous = date.plusDays(-1)
+    val rule = rule
+    val bounded = if (rule == null) {
+        null
+    } else {
+        val until = rule.until
+        val earlier = when (until) {
+            is IcsTimeValue.Date -> if (until.date < previous) until else IcsTimeValue.Date(previous)
+            null -> IcsTimeValue.Date(previous)
+            else -> if (until.wallDate < previous) until else IcsTimeValue.Date(previous)
+        }
+        rule.copy(until = earlier, count = null, raw = null)
+    }
+    val head = copy(
+        rule = bounded,
+        rdates = rdates.filter { it.value.wallDate < date },
+        exdates = exdates.filter { it.wallDate < date },
+    )
+    val tail = copy(
+        rule = null,
+        rdates = rdates.filter { it.value.wallDate >= date },
+        exdates = exdates.filter { it.wallDate >= date },
+    )
+    return head to tail
+}
 
 /** Moves every typed value of the recurrence set by whole wall days, keeping its value type. */
 fun Recurrence.shiftedByWallDays(days: Int): Recurrence {

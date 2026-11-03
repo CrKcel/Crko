@@ -399,6 +399,7 @@ object ZhStrings : Strings {
         IcsWarning.ExruleIgnored -> "部分日程包含已废弃的 EXRULE 排除规则，已忽略"
         IcsWarning.UnknownSubcomponent -> "部分日程包含不支持的子组件，已忽略"
         IcsWarning.ExdateMismatch -> "部分排除日期的时刻与日程开始时间不一致，已忽略"
+        IcsWarning.UnappliedRecurrenceRange -> "部分例外标记为“此次及以后”但没有自带重复规则，其后的实例仍按原重复进行"
     }
     override fun importWarningLocation(line: Int?, record: String?): String = when {
         record != null && line != null -> "（$record，第 $line 行）"
@@ -663,6 +664,7 @@ object EnStrings : Strings {
         IcsWarning.ExruleIgnored -> "Some events contain deprecated EXRULE exclusions, which were ignored"
         IcsWarning.UnknownSubcomponent -> "Some events contain unsupported subcomponents, which were ignored"
         IcsWarning.ExdateMismatch -> "Some excluded dates did not match the event start time and were ignored"
+        IcsWarning.UnappliedRecurrenceRange -> "Some \"this and future\" exceptions carry no recurrence of their own; later instances still follow the original rule"
     }
     override fun importWarningLocation(line: Int?, record: String?): String = when {
         record != null && line != null -> " ($record, line $line)"

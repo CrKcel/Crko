@@ -106,6 +106,12 @@ enum class IcsWarning {
 
     /** An `EXDATE` fell on an occurrence date but at a different time of day. */
     ExdateMismatch,
+
+    /**
+     * A `RECURRENCE-ID;RANGE=THISANDFUTURE` exception carried no recurrence of its own, so nothing
+     * replaces the master's later instances and the exception covers its slot only.
+     */
+    UnappliedRecurrenceRange,
 }
 
 data class IcsImport(
@@ -543,7 +549,9 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     event.end?.let { appendTimeLine("DTEND", it) }
 
     appendComponentText(event)
-    if (event.location.isNotBlank()) line("LOCATION:${escapeText(event.location)}")
+    if (event.location.isNotBlank()) {
+        line("LOCATION${event.textParameters.textPropertyParameters("LOCATION")}:${escapeText(event.location)}")
+    }
     if (!event.geo.isNullOrBlank()) line("GEO:${sanitizeUriValue(event.geo)}")
     if (event.eventClass != null) line("CLASS:${event.eventClass.name.uppercase()}")
     if (event.status != EventStatus.Confirmed) line("STATUS:${event.status.name.uppercase()}")
@@ -555,7 +563,16 @@ private fun StringBuilder.appendEvent(event: Event, allEvents: List<Event>, inde
     event.recurrence?.let { appendRecurrence(it, event) }
 
     appendAlarms(event.alarms)
-    appendComponentExtras(event)
+    // An unknown enum value kept in the extras is the only writer of its line unless the user
+    // changed the enum; then the derived line replaces it instead of duplicating it.
+    appendComponentExtras(
+        event,
+        buildSet {
+            if (event.status != EventStatus.Confirmed) add("STATUS")
+            if (event.transparency == EventTransparency.Transparent) add("TRANSP")
+            if (event.eventClass != null) add("CLASS")
+        },
+    )
     line("END:VEVENT")
 }
 
@@ -579,19 +596,34 @@ private fun StringBuilder.appendComponentHeader(
 
 /** `SUMMARY`, `DESCRIPTION`, `URL`, `CATEGORIES` and `ATTACH` of any component. */
 private fun StringBuilder.appendComponentText(component: CalendarComponent) {
-    line("SUMMARY:${escapeText(component.title)}")
-    if (component.note.isNotBlank()) line("DESCRIPTION:${escapeText(component.note)}")
-    if (component.categories.isNotEmpty()) {
-        line("CATEGORIES:${component.categories.joinToString(",") { escapeText(it) }}")
+    line("SUMMARY${component.textParameters.textPropertyParameters("SUMMARY")}:${escapeText(component.title)}")
+    if (component.note.isNotBlank()) {
+        line("DESCRIPTION${component.textParameters.textPropertyParameters("DESCRIPTION")}:${escapeText(component.note)}")
     }
-    if (component.url.isNotBlank()) line("URL:${sanitizeUriValue(component.url)}")
+    if (component.categories.isNotEmpty()) {
+        val categories = component.textParameters.textPropertyParameters("CATEGORIES")
+        line("CATEGORIES$categories:${component.categories.joinToString(",") { escapeText(it) }}")
+    }
+    if (component.url.isNotBlank()) {
+        line("URL${component.textParameters.textPropertyParameters("URL")}:${sanitizeUriValue(component.url)}")
+    }
     appendAttachments(component.attachments)
 }
 
-/** Unknown lines kept on every component, written last so they survive a round trip. */
-private fun StringBuilder.appendComponentExtras(component: CalendarComponent) {
-    component.extraProperties.forEach { line(it) }
+/**
+ * Unknown lines kept on every component, written last so they survive a round trip. [suppress]
+ * names the properties the derived export also writes: an unknown `STATUS` lives in the extras and
+ * must not appear a second time next to the line the enum path produced.
+ */
+private fun StringBuilder.appendComponentExtras(component: CalendarComponent, suppress: Set<String> = emptySet()) {
+    component.extraProperties.forEach { extra ->
+        if (extraPropertyName(extra) !in suppress) line(extra)
+    }
 }
+
+/** Property name of a stored raw content line, for matching it against the derived lines. */
+private fun extraPropertyName(raw: String): String =
+    raw.substringBefore(':').substringBefore(';').trim().uppercase()
 
 /** Writes `VALARM` subcomponents with their relative or absolute trigger. */
 private fun StringBuilder.appendAlarms(alarms: List<Alarm>) {
@@ -625,7 +657,7 @@ private fun StringBuilder.appendAbsoluteTrigger(value: IcsTimeValue) {
                 line("TRIGGER;VALUE=DATE-TIME:${formatUtc(value.dateTime.toInstant(TimeZone.UTC))}")
             } else {
                 line(
-                    "TRIGGER;VALUE=DATE-TIME;TZID=${value.tzid}:" +
+                    "TRIGGER;VALUE=DATE-TIME;TZID=${icsParameterValue(value.tzid)}:" +
                         formatIcsLocalDateTime(value.dateTime, utc = false),
                 )
             }
@@ -642,7 +674,7 @@ internal fun StringBuilder.appendTimeLine(name: String, value: IcsTimeValue) {
             if (value.tzid.equals("UTC", ignoreCase = true)) {
                 line("$name:${formatUtc(value.dateTime.toInstant(TimeZone.UTC))}")
             } else {
-                line("$name;TZID=${value.tzid}:${formatIcsLocalDateTime(value.dateTime, utc = false)}")
+                line("$name;TZID=${icsParameterValue(value.tzid)}:${formatIcsLocalDateTime(value.dateTime, utc = false)}")
             }
         }
         is IcsTimeValue.Utc -> line("$name:${formatUtc(value.instant)}")
@@ -656,7 +688,9 @@ private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
     todo.start?.let { appendTimeLine("DTSTART", it) }
     todo.due?.let { appendTimeLine("DUE", it) }
     appendComponentText(todo)
-    if (todo.location.isNotBlank()) line("LOCATION:${escapeText(todo.location)}")
+    if (todo.location.isNotBlank()) {
+        line("LOCATION${todo.textParameters.textPropertyParameters("LOCATION")}:${escapeText(todo.location)}")
+    }
     todo.relatedTo.forEach { related ->
         val reltype = related.reltype.uppercase()
         val parameter = if (reltype == "PARENT" || reltype.isBlank()) "" else ";RELTYPE=$reltype"
@@ -678,14 +712,21 @@ private fun StringBuilder.appendTodo(todo: Todo, index: Int, now: Instant) {
         todo.status == TodoStatus.Completed -> 100
         else -> 0
     }
-    line("STATUS:$statusText")
+    // An unknown STATUS kept in the extras stands in for the derived line while the todo carries no
+    // other status; once the user picks a real one, the derived line replaces it instead of
+    // appearing next to it (RFC 5545 allows STATUS only once).
+    val extraCarriesStatus = todo.extraProperties.any { extraPropertyName(it) == "STATUS" }
+    if (todo.status != TodoStatus.NeedsAction || !extraCarriesStatus) line("STATUS:$statusText")
     line("PERCENT-COMPLETE:$percent")
     if (todo.status == TodoStatus.Completed) {
         todo.completed?.let { line("COMPLETED:${formatUtc(it)}") }
     }
     todo.priority?.let { if (it in 0..9) line("PRIORITY:$it") }
     appendAlarms(todo.alarms)
-    appendComponentExtras(todo)
+    appendComponentExtras(
+        todo,
+        if (extraCarriesStatus && todo.status == TodoStatus.NeedsAction) emptySet() else setOf("STATUS"),
+    )
     line("END:VTODO")
 }
 
@@ -701,18 +742,19 @@ private fun StringBuilder.appendTodoExDate(todo: Todo) {
     if (todo.excludedDates.isEmpty()) return
     val anchor = todo.seriesAnchor ?: return
     val rule = todo.repeat
-    val exdates = todo.excludedDates.mapNotNull { parseStoredDate(it)?.let(IcsTimeValue::Date) }
     // The exclusions are matched against the untouched set: an EXDATE must not hide itself.
     val recurrence = Recurrence(rule = rule, rdates = todo.rDates)
-    // Only dates that really are instances of the set belong in EXDATE; without a rule the added
+    // Only values that really are instances of the set belong in EXDATE; without a rule the added
     // dates and the anchor are the only ones a date-only exclusion can remove. The todo's own value
     // type decides where a UTC `UNTIL` bounds the series, exactly as in the expansion queries: left
     // out, the export folded the candidate day through the device zone and wrote (or dropped) the
     // last day's `EXDATE` differently on every machine.
-    val values = exdates
-        .filter { date -> isRuleOccurrence(anchor, rule, recurrence, date.date, anchorValue = todo.start ?: todo.due) }
-        .map { formatDate(it.date) }
-    if (values.isNotEmpty()) line("EXDATE;VALUE=DATE:${values.joinToString(",")}")
+    val values = todo.excludedDates
+        .filter { isRuleOccurrence(anchor, rule, recurrence, it.wallDate, anchorValue = todo.start ?: todo.due) }
+    values.groupBy { recurrenceValueParameters(it) }.forEach { (params, group) ->
+        val written = group.distinct().sortedBy { it.wallDateTime }
+        line("EXDATE$params:${written.joinToString(",") { formatTimeValue(it) }}")
+    }
 }
 
 /** Writes the `RRULE`, `RDATE` and `EXDATE` of [recurrence]. */
@@ -767,7 +809,8 @@ private fun IcsTimeValue.exclusionFor(event: Event, recurrence: Recurrence): Lis
 private fun recurrenceValueParameters(value: IcsTimeValue, period: Boolean = false): String = when {
     period -> ";VALUE=PERIOD"
     value is IcsTimeValue.Date -> ";VALUE=DATE"
-    value is IcsTimeValue.Zoned -> if (value.tzid.equals("UTC", ignoreCase = true)) "" else ";TZID=${value.tzid}"
+    value is IcsTimeValue.Zoned ->
+        if (value.tzid.equals("UTC", ignoreCase = true)) "" else ";TZID=${icsParameterValue(value.tzid)}"
     else -> ""
 }
 
@@ -1404,14 +1447,27 @@ private class CommonFields {
     var lastModified: String? = null
     var sequence = 0
     var dtStamp: String? = null
+    val textParameters = mutableMapOf<String, String>()
 
     fun handle(line: ContentLine): Boolean {
         when (line.name) {
             "UID" -> uid = unescapeText(line.value).trim().takeIf { it.isNotEmpty() }
-            "SUMMARY" -> summary = unescapeText(line.value).trim()
-            "DESCRIPTION" -> description = unescapeText(line.value).trim()
-            "URL" -> url = unescapeText(line.value).trim()
-            "CATEGORIES" -> categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
+            "SUMMARY" -> {
+                summary = unescapeText(line.value).trim()
+                captureTextParameter(line)
+            }
+            "DESCRIPTION" -> {
+                description = unescapeText(line.value).trim()
+                captureTextParameter(line)
+            }
+            "URL" -> {
+                url = unescapeText(line.value).trim()
+                captureTextParameter(line)
+            }
+            "CATEGORIES" -> {
+                categories += splitList(line.value).map(::unescapeText).filter { it.isNotBlank() }
+                captureTextParameter(line)
+            }
             "ATTACH" -> attachments += readAttachment(line)
             "CREATED" -> created = parseIcsInstant(line.value) ?: line.value.trim()
             "LAST-MODIFIED" -> lastModified = parseIcsInstant(line.value) ?: line.value.trim()
@@ -1421,7 +1477,27 @@ private class CommonFields {
         }
         return true
     }
+
+    /** Remembers the parameters of the TEXT property [line] carries, for the export to re-apply. */
+    fun captureTextParameter(line: ContentLine) {
+        textParametersOf(line)?.let { textParameters[line.name] = it }
+    }
 }
+
+/**
+ * Parameters of a TEXT property, rebuilt for the export to splice behind the property name.
+ * `ENCODING` and `CHARSET` only served the decode (the value is now plain text) and must not be
+ * written back next to it.
+ */
+private fun textParametersOf(line: ContentLine): String? =
+    line.params.filterKeys { it != "ENCODING" && it != "CHARSET" }
+        .takeIf { it.isNotEmpty() }
+        ?.entries
+        ?.joinToString(";") { (name, value) -> "$name=${icsParameterValue(value)}" }
+
+/** Parameter prefix stored for [name], ready to splice behind the property name on export. */
+private fun Map<String, String>.textPropertyParameters(name: String): String =
+    this[name]?.let { ";$it" }.orEmpty()
 
 private data class RawEvent(
     val uid: String? = null,
@@ -1456,6 +1532,8 @@ private data class RawEvent(
     val dtStamp: String? = null,
     val alarms: List<Alarm> = emptyList(),
     val extraProperties: List<String> = emptyList(),
+    /** Parameters of the TEXT properties, carried to [Event.textParameters] on the way out. */
+    val textParameters: Map<String, String> = emptyMap(),
     /** Line of `BEGIN:VEVENT`, used to point a warning at the record. */
     val lineNumber: Int = 0,
 )
@@ -1491,11 +1569,25 @@ private fun readEvent(
 
     component.properties.forEach { line ->
         when (line.name) {
-            "LOCATION" -> location = unescapeText(line.value).trim()
+            "LOCATION" -> {
+                location = unescapeText(line.value).trim()
+                common.captureTextParameter(line)
+            }
             "GEO" -> geo = line.value.trim().takeIf { it.isNotEmpty() }
-            "STATUS" -> status = line.value.trim().uppercase()
-            "TRANSP" -> transparency = line.value.trim().uppercase()
-            "CLASS" -> eventClass = line.value.trim().uppercase()
+            "STATUS" -> {
+                status = line.value.trim().uppercase()
+                // RFC 5545 allows X- extension values; the model has no slot for them, so the raw
+                // line is kept for the export instead of silently normalizing what the file said.
+                if (status != null && status !in listOf("CONFIRMED", "TENTATIVE", "CANCELLED")) extra += line.raw
+            }
+            "TRANSP" -> {
+                transparency = line.value.trim().uppercase()
+                if (transparency != null && transparency !in listOf("OPAQUE", "TRANSPARENT")) extra += line.raw
+            }
+            "CLASS" -> {
+                eventClass = line.value.trim().uppercase()
+                if (rawClass(eventClass) == null && eventClass?.isNotEmpty() == true) extra += line.raw
+            }
             "PRIORITY" -> priority = line.value.trim().toIntOrNull()?.coerceIn(0, 9)
             "ORGANIZER" -> organizer = CalAddress.fromContentLine(line)
             "ATTENDEE" -> CalAddress.fromContentLine(line)
@@ -1581,6 +1673,7 @@ private fun readEvent(
         dtStamp = common.dtStamp,
         alarms = alarms,
         extraProperties = extra,
+        textParameters = common.textParameters,
         lineNumber = component.lineNumber,
     )
 }
@@ -1664,7 +1757,7 @@ private fun parseTime(
     val hour = body.substring(9, 11).toIntOrNull() ?: return null
     val minute = body.substring(11, 13).toIntOrNull() ?: return null
     val second = if (body.length >= 15) body.substring(13, 15).toIntOrNull() ?: 0 else 0
-    if (minute !in 0..59 || second !in 0..59 || hour !in 0..24) {
+    if (minute !in 0..59 || second !in 0..60 || hour !in 0..24) {
         warnings += IcsWarning.InvalidValue
         return null
     }
@@ -1677,7 +1770,15 @@ private fun parseTime(
         val zone = resolveLineZone(utc, line.params["TZID"], zones, warnings, defaultZone)
         return IcsTime.DateTime(LocalDateTime(nextDay, LocalTime(0, 0)), zone, text)
     }
-    val local = LocalDateTime(date, LocalTime(hour, minute, second))
+    // RFC 5545 allows a leap second (a value of 60) at the end of a minute; the model has no 60th
+    // second, so the value rolls into the next minute, which names the same instant.
+    val secondsOfDay = hour * 3600 + minute * 60 + second
+    val extraDays = secondsOfDay / (24 * 60 * 60)
+    val daySeconds = secondsOfDay % (24 * 60 * 60)
+    val local = LocalDateTime(
+        if (extraDays > 0) date.plusDays(extraDays) else date,
+        LocalTime(daySeconds / 3600, daySeconds % 3600 / 60, daySeconds % 60),
+    )
     val zone = resolveLineZone(utc, line.params["TZID"], zones, warnings, defaultZone)
     return IcsTime.DateTime(local, zone, text)
 }
@@ -1842,31 +1943,43 @@ private fun parseUntil(
 private fun parseDurationSeconds(value: String): Long? {
     val text = value.trim().uppercase()
     if (!text.startsWith("P")) return null
-    var total = 0L
-    var number = 0L
+    var total = 0.0
+    var number = 0.0
+    var fraction = 0.0
+    var fractionScale = 0.0
     var inTime = false
     var sawDigit = false
     text.drop(1).forEach { ch ->
         when {
             ch == 'T' -> inTime = true
             ch.isDigit() -> {
-                number = number * 10 + (ch - '0')
                 sawDigit = true
-            }
-            else -> {
-                total += when (ch) {
-                    'W' -> number * 7 * 24 * 3600
-                    'D' -> number * 24 * 3600
-                    'H' -> if (inTime) number * 3600 else 0
-                    'M' -> if (inTime) number * 60 else 0
-                    'S' -> if (inTime) number else 0
-                    else -> 0
+                if (fractionScale > 0.0) {
+                    fractionScale /= 10
+                    fraction += (ch - '0') * fractionScale
+                } else {
+                    number = number * 10 + (ch - '0')
                 }
-                number = 0
+            }
+            // A fractional component is not part of RFC 5545, but weighing the digits by their
+            // position beats misreading them as whole units ("PT1.5S" used to read as five seconds).
+            ch == '.' || ch == ',' -> fractionScale = 1.0
+            else -> {
+                total += (number + fraction) * when (ch) {
+                    'W' -> 7.0 * 24 * 3600
+                    'D' -> 24.0 * 3600
+                    'H' -> if (inTime) 3600.0 else 0.0
+                    'M' -> if (inTime) 60.0 else 0.0
+                    'S' -> if (inTime) 1.0 else 0.0
+                    else -> 0.0
+                }
+                number = 0.0
+                fraction = 0.0
+                fractionScale = 0.0
             }
         }
     }
-    return if (sawDigit) total else null
+    return if (sawDigit) kotlin.math.floor(total).toLong() else null
 }
 
 private fun parseSignedDurationSeconds(value: String): Long? {
@@ -1991,43 +2104,79 @@ private fun mapSeries(
     val exclusions = mutableListOf<IcsTimeValue>()
     val seenSlots = mutableSetOf<IcsTimeValue>()
     var ambiguous = false
-    group.filter { it.recurrenceId != null }.forEach { override ->
-        val rawSlot = override.recurrenceId?.toValue() ?: return@forEach
-        // The slot must be comparable with the master's generated starts: a feed that names it in
-        // another value type (UTC on a TZID series) still means the same instant, so it is read in
-        // the master's type. Two exceptions naming the very same instant are indistinguishable; two
-        // on one day but at different times are fine, which is exactly what the typed slot makes
-        // possible.
-        val slot = alignExclusionValue(series.start, rawSlot, deviceZone)
+    val slots = group.filter { it.recurrenceId != null }.mapNotNull { raw ->
+        raw.recurrenceId?.toValue()?.let { raw to alignExclusionValue(series.start, it, deviceZone) }
+    }
+    // An imported `RANGE=THISANDFUTURE` exception that carries a recurrence of its own takes over
+    // everything from its slot on: the master is truncated before the slot and the exception
+    // becomes the segment generating the later instances. Without a recurrence of its own there is
+    // no pattern to continue with, so the file's own shape — an exception replacing its slot only —
+    // is kept and reported instead.
+    val split = slots.firstOrNull { (raw, slot) ->
+        RecurrenceRange.parse(raw.recurrenceRange) == RecurrenceRange.ThisAndFuture &&
+            slot.wallDate > series.wallDay &&
+            mapRecurrence(raw.rule, raw.rawRule, raw.rDates, raw.exdates) != null
+    }?.first
+    var masterRecurrence = series.recurrence
+    var segment: Event? = null
+    var segmentSlot: IcsTimeValue? = null
+    val segmentExclusions = mutableListOf<IcsTimeValue>()
+    slots.forEach { (override, slot) ->
         if (!seenSlots.add(slot)) ambiguous = true
-        exclusions += slot
         val range = RecurrenceRange.parse(override.recurrenceRange)
         if (range == RecurrenceRange.ThisAndPrior) {
             // THISANDPRIOR is not RFC 5545; keep it so an export writes the range back, but say so.
             warnings += IcsWarning.UnsupportedRecurrence
         }
-        val mapped = mapSingle(
-            override,
-            deviceZone,
-            untitledTitle,
-            zones,
-            warnings,
-            recurrence = null,
-        ) ?: return@forEach
-        exceptions += mapped.copy(
-            icsUid = uid,
-            recurrenceId = slot,
-            recurrenceRange = range,
-        )
+        if (override === split) {
+            val own = mapRecurrence(override.rule, override.rawRule, override.rDates, override.exdates)
+            if (own != null) {
+                // The master keeps only what came before the slot; its own later RDATEs and EXDATEs
+                // describe old-pattern instances the segment never generates, so they go with the
+                // truncation — the same partition a "this and future" edit performs in the app.
+                masterRecurrence = (masterRecurrence ?: Recurrence()).boundedBefore(slot.wallDate).first
+                val mapped = mapSingle(override, deviceZone, untitledTitle, zones, warnings, recurrence = own)
+                    ?: return@forEach
+                segment = mapped.copy(icsUid = uid, recurrenceId = slot, recurrenceRange = range)
+                segmentSlot = slot
+                return@forEach
+            }
+        }
+        if (range == RecurrenceRange.ThisAndFuture) {
+            warnings += IcsWarning.UnappliedRecurrenceRange
+        }
+        val mapped = mapSingle(override, deviceZone, untitledTitle, zones, warnings, recurrence = null)
+            ?: return@forEach
+        exceptions += mapped.copy(icsUid = uid, recurrenceId = slot, recurrenceRange = range)
+        // Exceptions from the slot on replace instances the segment generates, not the master's:
+        // it was truncated, and their slots would come back as mismatched exclusions on it.
+        if (segmentSlot != null && slot.wallDate >= segmentSlot!!.wallDate) {
+            segmentExclusions += alignExclusionValue(segmentSlot!!, slot, deviceZone)
+        } else {
+            exclusions += slot
+        }
     }
     if (ambiguous) warnings += IcsWarning.AmbiguousRecurrenceId
-    if (exclusions.isEmpty()) return listOf(series) + exceptions
     // The master skips every slot an exception describes; the exception itself carries the change,
     // including a `STATUS:CANCELLED` copy that must keep its SEQUENCE for later imports.
-    val recurrence = series.recurrence?.copy(
-        exdates = (series.recurrence.exdates + exclusions).distinct(),
-    ) ?: Recurrence(exdates = exclusions.distinct())
-    return listOf(series.copy(recurrence = recurrence)) + exceptions
+    val boundedMaster = when {
+        exclusions.isEmpty() -> masterRecurrence
+        else -> {
+            val current = masterRecurrence ?: Recurrence()
+            current.copy(exdates = (current.exdates + exclusions).distinct())
+        }
+    }
+    val results = mutableListOf(series.copy(recurrence = boundedMaster))
+    segment?.let { seg ->
+        val updated = when {
+            segmentExclusions.isEmpty() -> seg
+            else -> seg.copy(
+                recurrence = seg.recurrence?.copy(exdates = (seg.recurrence.exdates + segmentExclusions).distinct()),
+            )
+        }
+        results += updated
+    }
+    return results + exceptions
 }
 
 private fun mapSingle(
@@ -2077,6 +2226,7 @@ private fun mapSingle(
         dtStamp = raw.dtStamp,
         sequence = raw.sequence,
         extraProperties = raw.extraProperties,
+        textParameters = raw.textParameters,
         local = LocalRecordMeta(sourceLine = raw.lineNumber),
     ).withValidExdates(warnings)
 }
@@ -2322,12 +2472,22 @@ private fun readTodo(
                     floatingZone,
                 )?.let { rdates += it }
             }
-            "LOCATION" -> location = unescapeText(line.value).trim()
+            "LOCATION" -> {
+                location = unescapeText(line.value).trim()
+                common.captureTextParameter(line)
+            }
             "RELATED-TO" -> unescapeText(line.value).trim().takeIf { it.isNotEmpty() }?.let { target ->
                 val reltype = line.params["RELTYPE"]?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: "PARENT"
                 relatedTo += RelatedTo(target, reltype)
             }
-            "STATUS" -> rawStatus = line.value.trim().uppercase()
+            "STATUS" -> {
+                rawStatus = line.value.trim().uppercase()
+                // An X- extension status has no enum slot; keep the raw line so the export does not
+                // quietly replace it with NEEDS-ACTION.
+                if (rawStatus != null && rawStatus !in listOf("NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED")) {
+                    extra += line.raw
+                }
+            }
             "PERCENT-COMPLETE" -> percent = line.value.trim().toIntOrNull()?.coerceIn(0, 100) ?: 0
             "PRIORITY" -> priority = line.value.trim().toIntOrNull()?.coerceIn(0, 9)
             "COMPLETED" -> completedValue = parseTime(line, zones, warnings, floatingZone)
@@ -2391,17 +2551,34 @@ private fun readTodo(
         lastModified = common.lastModified,
         dtStamp = common.dtStamp,
         extraProperties = extra,
+        textParameters = common.textParameters,
         status = status,
         percentComplete = percent,
         alarms = alarms,
         repeat = rule,
         rDates = rdates.map { RecurrenceDate(it.toValue(), it.periodDuration()) },
-        // The day the file itself names: a todo series expands on its own wall clock, so projecting
-        // an exclusion through the device zone could move it to the day before or after.
-        excludedDates = exdates.map { it.localWallDate().toString() }.distinct(),
+        // Aligned to the series' own value type, like an event's exclusions: a UTC `EXDATE` inside a
+        // TZID todo series still names its instance, and a date-only one means the day the file
+        // itself names — projecting it through the device zone could move it to the day before or
+        // after.
+        excludedDates = alignedTodoExdates(
+            exdates,
+            startValue?.toValue() ?: dueValue?.toValue(),
+            deviceZone,
+        ),
         local = LocalRecordMeta(sourceLine = component.lineNumber),
     )
 }
+
+/** Typed exclusions of a todo series, aligned to the anchor's value type like an event's are. */
+private fun alignedTodoExdates(
+    exdates: List<IcsTime>,
+    anchor: IcsTimeValue?,
+    deviceZone: TimeZone,
+): List<IcsTimeValue> = exdates
+    .map { it.toValue() }
+    .mapNotNull { value -> anchor?.let { alignExclusionValue(it, value, deviceZone) } ?: value }
+    .distinct()
 
 private fun readJournal(
     component: IcsComponent,
@@ -2505,6 +2682,7 @@ private fun readJournal(
         sequence = common.sequence,
         icsUid = common.uid,
         extraProperties = extra,
+        textParameters = common.textParameters,
         recurrence = recurrence,
         status = JournalStatus.parse(rawStatus),
         eventClass = rawClass(journalClass),
@@ -2561,7 +2739,13 @@ private fun StringBuilder.appendJournal(journal: Journal, index: Int, now: Insta
     journal.status?.let { line("STATUS:${it.wireName}") }
     journal.eventClass?.let { line("CLASS:${it.name.uppercase()}") }
     journal.recurrence?.let { appendJournalRecurrence(it) }
-    appendComponentExtras(journal)
+    appendComponentExtras(
+        journal,
+        buildSet {
+            if (journal.status != null) add("STATUS")
+            if (journal.eventClass != null) add("CLASS")
+        },
+    )
     line("END:VJOURNAL")
 }
 

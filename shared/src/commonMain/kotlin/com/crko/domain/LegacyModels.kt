@@ -640,7 +640,8 @@ private fun buildTodo(
         alarms = alarms.map { it.toCurrent() },
         repeat = repeat,
         rDates = rDates,
-        excludedDates = excludedDates,
+        // Older payloads carried bare ISO date strings; the typed model wants values.
+        excludedDates = excludedDates.mapNotNull(::parseLegacyDate),
         local = legacyLocal(importSource, sourceLine),
     )
 }
