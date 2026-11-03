@@ -5,11 +5,15 @@ import com.crko.domain.OrdinalWeekday
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
+import com.crko.domain.TodoStatus
 import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.occurrenceDate
 import com.crko.domain.occurrenceStartsBetween
 import com.crko.domain.occursOn
+import com.crko.domain.recurrenceSlotOn
+import com.crko.domain.wallDate
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -82,4 +86,44 @@ class TodoRecurrenceTest {
         assertEquals(LocalDate(2026, 10, 2), todo.nextOccurrenceDate(LocalDate(2026, 11, 30)))
     }
 
+    @Test
+    fun storedInstanceSlotsAreSkippedByTheProjection() {
+        val master = Todo(
+            id = "t5",
+            title = "Dose",
+            due = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
+            repeat = RepeatRule(RepeatFrequency.Daily),
+        )
+        val instance = Todo(
+            id = "t5-done",
+            title = "Dose",
+            due = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
+            recurrenceId = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
+            icsUid = "t5@crko",
+            status = TodoStatus.Completed,
+        )
+        assertFalse(master.occursOn(LocalDate(2026, 10, 5), listOf(instance)))
+        assertTrue(master.occursOn(LocalDate(2026, 10, 6), listOf(instance)))
+        assertEquals(
+            LocalDate(2026, 10, 6),
+            master.nextOccurrenceDate(LocalDate(2026, 10, 5), listOf(instance)),
+        )
+        // An instance of another series leaves the projection alone.
+        assertTrue(master.occursOn(LocalDate(2026, 10, 5), listOf(instance.copy(icsUid = "other"))))
+    }
+
+    @Test
+    fun recurrenceSlotKeepsTheMasterValueTypeAndDueOffset() {
+        val todo = Todo(
+            id = "t6",
+            title = "Report",
+            start = IcsTimeValue.Floating(LocalDateTime(2026, 10, 1, 9, 0)),
+            due = IcsTimeValue.Floating(LocalDateTime(2026, 10, 1, 18, 0)),
+            repeat = RepeatRule(RepeatFrequency.Weekly),
+        )
+        val slot = todo.recurrenceSlotOn(LocalDate(2026, 10, 8))
+        assertEquals(IcsTimeValue.Floating(LocalDateTime(2026, 10, 8, 9, 0)), slot)
+        // An instance's due sits on the display date the occurrence is shown under.
+        assertEquals(LocalDate(2026, 10, 8), todo.occurrenceDate(slot!!.wallDate))
+    }
 }

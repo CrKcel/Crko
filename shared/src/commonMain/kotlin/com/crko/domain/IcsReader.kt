@@ -91,9 +91,12 @@ internal fun importCalendarLines(
     }
     val cancelledUids = cancelled.mapTo(mutableSetOf()) { it.uid }
 
-    val todos = components
-        .filter { it.name == "VTODO" }
-        .mapNotNull { readTodo(it, timeZone, zones, floatingZone, details) }
+    val todos = alignTodoInstances(
+        components
+            .filter { it.name == "VTODO" }
+            .mapNotNull { readTodo(it, timeZone, zones, floatingZone, details) },
+        timeZone,
+    )
     val journals = components
         .filter { it.name == "VJOURNAL" }
         .mapNotNull { readJournal(it, timeZone, zones, floatingZone, details) }
@@ -425,6 +428,7 @@ private fun readTodo(
     var startValue: IcsTime? = null
     var dueValue: IcsTime? = null
     var completedValue: IcsTime? = null
+    var recurrenceIdValue: IcsTime? = null
     var rule: RepeatRule? = null
     var rawRule: String? = null
     val exdates = mutableListOf<IcsTime>()
@@ -444,6 +448,10 @@ private fun readTodo(
             "DUE" -> {
                 dueValue = parseTime(line, zones, warnings, floatingZone)
                 if (dueValue == null) warnings += IcsWarning.InvalidValue
+            }
+            "RECURRENCE-ID" -> {
+                recurrenceIdValue = parseTime(line, zones, warnings, floatingZone)
+                if (recurrenceIdValue == null) warnings += IcsWarning.InvalidValue
             }
             "RRULE" -> {
                 val parsed = parseRule(
@@ -570,6 +578,7 @@ private fun readTodo(
             startValue?.toValue() ?: dueValue?.toValue(),
             deviceZone,
         ),
+        recurrenceId = recurrenceIdValue?.toValue(),
         local = LocalRecordMeta(sourceLine = component.lineNumber),
     )
 }
@@ -583,6 +592,22 @@ private fun alignedTodoExdates(
     .map { it.toValue() }
     .mapNotNull { value -> anchor?.let { alignExclusionValue(it, value, deviceZone) } ?: value }
     .distinct()
+
+/**
+ * Aligns the `RECURRENCE-ID` of an occurrence instance to its master's anchor value. RFC 5545 names
+ * an instance in the master's own value type; feeds do mix types (a UTC slot inside a `TZID`
+ * series), and an unaligned slot would not match the master's projection or a later export.
+ */
+private fun alignTodoInstances(todos: List<Todo>, deviceZone: TimeZone): List<Todo> {
+    val masters = todos
+        .filter { it.recurrenceId == null && it.icsUid != null }
+        .associateBy { it.icsUid }
+    return todos.map { todo ->
+        val slot = todo.recurrenceId ?: return@map todo
+        val anchor = todo.icsUid?.let { masters[it] }?.let { it.start ?: it.due } ?: return@map todo
+        todo.copy(recurrenceId = alignExclusionValue(anchor, slot, deviceZone))
+    }
+}
 
 private fun readJournal(
     component: IcsComponent,

@@ -1,10 +1,12 @@
 package com.crko
 
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.RelatedTo
 import com.crko.domain.Todo
 import com.crko.domain.TodoStatus
 import com.crko.domain.effectiveUid
 import com.crko.domain.todoForest
+import kotlinx.datetime.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -16,13 +18,28 @@ class TodoForestTest {
         relatedTo: List<String> = emptyList(),
         icsUid: String? = null,
         done: Boolean = false,
+        recurrenceId: IcsTimeValue? = null,
     ): Todo = Todo(
         id = id,
         title = id,
         relatedTo = relatedTo.map { RelatedTo.parent(it) },
         icsUid = icsUid,
         status = if (done) TodoStatus.Completed else TodoStatus.NeedsAction,
+        recurrenceId = recurrenceId,
     )
+
+    @Test
+    fun aCompletedInstanceNeverBecomesTheParentOfLiveSubtasks() {
+        val forest = listOf(
+            todo("done-instance", icsUid = "series", done = true, recurrenceId = IcsTimeValue.Date(LocalDate(2026, 10, 5))),
+            todo("master", icsUid = "series"),
+            todo("child", relatedTo = listOf("series"), icsUid = "child"),
+        ).todoForest()
+        // The master owns the UID, so the live subtask stays under it instead of moving into the
+        // completed projection with the finished instance.
+        assertEquals(listOf("done-instance", "master"), forest.map { it.todo.id })
+        assertEquals("child", forest[1].children.single().todo.id)
+    }
 
     @Test
     fun effectiveUidPrefersTheImportedUidOverTheLocalOne() {

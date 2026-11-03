@@ -36,11 +36,27 @@ private fun Todo.seriesStartTime(): OccurrenceTime? {
 }
 
 /**
- * Whether [todo] is shown on [date]: the stored date for a one-off todo, and the display date of
- * an occurrence for a series.
+ * Display dates of [instances] that belong to this series. An instance shares its master's `UID`
+ * and names its slot through `RECURRENCE-ID`, so a completed occurrence is skipped by the master's
+ * projection without the master itself having to change.
  */
-fun Todo.occursOn(date: LocalDate): Boolean {
+fun Todo.instanceDates(instances: List<Todo>): Set<LocalDate> {
+    val uid = effectiveUid
+    return instances.mapNotNullTo(mutableSetOf()) { instance ->
+        val slot = instance.recurrenceId ?: return@mapNotNullTo null
+        if (instance.effectiveUid != uid) return@mapNotNullTo null
+        occurrenceDate(slot.wallDate)
+    }
+}
+
+/**
+ * Whether [todo] is shown on [date]: the stored date for a one-off todo, and the display date of
+ * an occurrence for a series. [instances] are the stored occurrences of the same series; their
+ * slots count as taken, so completing one moves the projection on instead of repeating it.
+ */
+fun Todo.occursOn(date: LocalDate, instances: List<Todo> = emptyList()): Boolean {
     val anchor = seriesAnchor ?: return false
+    if (date in instanceDates(instances)) return false
     val rule = repeat
     val recurrence = recurrenceSet()
     if (rule == null && recurrence == null) return date == occurrenceDate(anchor)
@@ -90,12 +106,14 @@ fun Todo.occurrenceStartsBetween(from: LocalDate, to: LocalDate): List<LocalDate
 
 /**
  * Display date of the next occurrence on or after [today]; the stored due date is the fallback
- * when the series has already ended or the search window ran out.
+ * when the series has already ended or the search window ran out. Slots covered by [instances]
+ * are skipped, so a completed occurrence never comes back as the next one.
  */
-fun Todo.nextOccurrenceDate(today: LocalDate): LocalDate? {
+fun Todo.nextOccurrenceDate(today: LocalDate, instances: List<Todo> = emptyList()): LocalDate? {
     val anchor = seriesAnchor ?: return null
     val rule = repeat ?: return occurrenceDate(anchor)
     val offset = displayOffset(anchor)
+    val covered = instanceDates(instances)
     // An occurrence is shown under its display date, so the first candidate starts that many days
     // before today.
     var candidate = maxOf(anchor, today.plusDays(-offset))
@@ -111,7 +129,8 @@ fun Todo.nextOccurrenceDate(today: LocalDate): LocalDate? {
                 anchorValue = start ?: due,
             )
         ) {
-            return candidate.plusDays(offset)
+            val shown = candidate.plusDays(offset)
+            if (shown !in covered) return shown
         }
         candidate = candidate.plusDays(1)
         steps++
@@ -119,6 +138,17 @@ fun Todo.nextOccurrenceDate(today: LocalDate): LocalDate? {
     // The series is over, or its next occurrence lies beyond the search window: the stored due
     // stays what the todo is shown and sorted under, like the one-off branch above returns.
     return occurrenceDate(anchor)
+}
+
+/**
+ * `RECURRENCE-ID` of the occurrence shown on [date]: the series anchor in the record's own value
+ * type, moved to the occurrence start. Used for the completion instance so its slot aligns with the
+ * master's `DUE` / `DTSTART`.
+ */
+fun Todo.recurrenceSlotOn(date: LocalDate): IcsTimeValue? {
+    val anchor = seriesAnchor ?: return null
+    val value = start ?: due ?: return null
+    return value.withWallDate(date.plusDays(-displayOffset(anchor)))
 }
 
 /** Days the next-occurrence search walks before giving up and falling back to the stored due. */

@@ -82,7 +82,7 @@ fun exportCalendar(
         definition.trimEnd().split(Regex("\\r?\\n")).forEach { line(it) }
     }
     events.forEachIndexed { index, event -> appendEvent(event, events, index, now, storedAttachment) }
-    todos.forEachIndexed { index, todo -> appendTodo(todo, index, now, storedAttachment) }
+    todos.forEachIndexed { index, todo -> appendTodo(todo, todos, index, now, storedAttachment) }
     journals.forEachIndexed { index, journal -> appendJournal(journal, index, now, storedAttachment) }
     line("END:VCALENDAR")
 }
@@ -110,6 +110,7 @@ private fun Todo.referencedTimeZoneIds(): Set<String> = buildSet {
     }
     add(start)
     add(due)
+    add(recurrenceId)
     add(repeat?.until)
     rDates.forEach { add(it.value) }
     alarms.forEach { alarm -> (alarm.trigger as? AlarmTrigger.Absolute)?.let { add(it.value) } }
@@ -356,6 +357,7 @@ internal fun StringBuilder.appendTimeLine(name: String, value: IcsTimeValue) {
 
 private fun StringBuilder.appendTodo(
     todo: Todo,
+    allTodos: List<Todo>,
     index: Int,
     now: Instant,
     storedAttachment: (String) -> ByteArray?,
@@ -363,6 +365,14 @@ private fun StringBuilder.appendTodo(
     line("BEGIN:VTODO")
     val createdFallback = todo.createdAt.takeIf { it > 0 }?.let { Instant.fromEpochMilliseconds(it) }
     appendComponentHeader(todo, todo.icsUid ?: "${todo.id}@crko", now, createdFallback)
+    // An instance shares its master's UID; RECURRENCE-ID is only meaningful inside the file that
+    // carries that master, so an orphan instance is written as a plain todo instead.
+    val masterPresent = todo.recurrenceId != null && allTodos.any { candidate ->
+        candidate !== todo && candidate.effectiveUid == todo.effectiveUid && candidate.recurrenceId == null
+    }
+    if (masterPresent) {
+        todo.recurrenceId?.let { appendTimeLine("RECURRENCE-ID", it) }
+    }
     todo.start?.let { appendTimeLine("DTSTART", it) }
     todo.due?.let { appendTimeLine("DUE", it) }
     appendComponentText(todo, storedAttachment)

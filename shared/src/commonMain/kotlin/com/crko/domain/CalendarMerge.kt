@@ -121,9 +121,15 @@ fun mergeTodos(
             changed++
             return@forEach
         }
-        if (!seen.add(uid)) return@forEach
-        val exact = merged.indexOfFirst { it.icsUid == uid }
-        val index = if (exact >= 0) exact else if ('#' !in uid) merged.indexOfFirst { matchesOwnExport(it.id, uid) } else -1
+        // A series master and each completed occurrence share the UID, so the storage identity is
+        // the pair, exactly like an event's exception and its master.
+        if (!seen.add(uid + "|" + incoming.recurrenceId)) return@forEach
+        val exact = merged.indexOfFirst { it.icsUid == uid && it.recurrenceId == incoming.recurrenceId }
+        val index = when {
+            exact >= 0 -> exact
+            incoming.recurrenceId == null && '#' !in uid -> merged.indexOfFirst { matchesOwnExport(it.id, uid) }
+            else -> -1
+        }
         if (index >= 0) {
             val existing = merged[index]
             if (isNewer(incoming.sequence, incoming.dtStamp, incoming.lastModified, existing.sequence, existing.dtStamp, existing.lastModified)) {

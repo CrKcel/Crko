@@ -11,6 +11,8 @@ import com.crko.domain.TodoStatus
 import com.crko.domain.displayDate
 import com.crko.domain.effectiveUid
 import com.crko.domain.nextOccurrenceDate
+import com.crko.domain.occursOn
+import com.crko.domain.recurrenceSlotOn
 import com.crko.domain.targetCalendarIndex
 import com.crko.domain.toIcsPriority
 import com.crko.domain.todoForest
@@ -56,14 +58,31 @@ internal class TodoService(
     /** Displayed due date of every todo: the next occurrence for a series, the stored due otherwise. */
     private fun shownDueDates(): Map<String, String?> {
         val today = today()
-        return state.visibleTodos.associate { todo ->
-            todo.id to if (todo.repeat != null) {
-                todo.nextOccurrenceDate(today)?.toString()
-            } else {
-                todo.dueDay?.toString()
+        return state.visibleCalendars.flatMap { calendar ->
+            // Completion instances share their master's UID; the projected next occurrence skips
+            // their slots, so the lookup is scoped to the calendar that holds the master.
+            val instances = calendar.todos.filter { it.isOccurrence }
+            calendar.todos.map { todo ->
+                todo.id to if (todo.repeat != null) {
+                    todo.nextOccurrenceDate(today, instances)?.toString()
+                } else {
+                    todo.dueDay?.toString()
+                }
             }
-        }
+        }.toMap()
     }
+
+    /** Display date the todo lists show for [todo]; null for an undated one-off todo. */
+    fun nextOccurrence(todo: Todo): LocalDate? =
+        if (todo.repeat != null) todo.nextOccurrenceDate(today(), occurrencesOf(todo)) else todo.dueDay
+
+    /** Occurrence instances stored next to [master] in the same calendar. */
+    private fun occurrencesOf(master: Todo): List<Todo> =
+        state.calendars
+            .firstOrNull { calendar -> calendar.todos.any { it.id == master.id } }
+            ?.todos
+            .orEmpty()
+            .filter { it.isOccurrence }
 
     fun activeTodos(): List<Todo> {
         val shownDue = shownDueDates()
@@ -251,5 +270,85 @@ internal class TodoService(
         access.persist(state.replacingCalendar(index) { calendar ->
             calendar.copy(todos = calendar.todos.filterNot { it.id == id })
         })
+    }
+
+    // ----- recurring completion -----
+
+    /**
+     * Completes the occurrence of the series [id] that is shown on [date]. The stored record is a
+     * `VTODO` sharing the master's `UID` and carrying `RECURRENCE-ID` for the slot; the master keeps
+     * its rule and its own fields, so the series projects its next occurrence instead of vanishing.
+     * Completing the same slot twice updates that instance rather than adding a second one.
+     */
+    fun completeOccurrence(id: String, date: LocalDate): WriteResult {
+        val index = calendarIndexContaining { calendar -> calendar.todos.any { it.id == id } }
+            ?: return WriteResult.Success
+        val calendar = state.calendars[index]
+        val master = calendar.todos.first { it.id == id }
+        // Without a rule the record completes itself; only a series needs an occurrence instance.
+        if (master.repeat == null) {
+            if (!master.done) setTodoDone(id, true)
+            return WriteResult.Success
+        }
+        if (master.done) return WriteResult.Success
+        // A date the rule never generates (an EXDATE, a skipped weekday) has no slot to complete.
+        if (!master.occursOn(date)) return WriteResult.Success
+        val slot = master.recurrenceSlotOn(date) ?: return WriteResult.Success
+        val existing = calendar.todos.firstOrNull { todo ->
+            todo.isOccurrence && todo.id != master.id &&
+                todo.effectiveUid == master.effectiveUid && todo.recurrenceId == slot
+        }
+        val now = clock.now()
+        val todos = if (existing != null) {
+            calendar.todos.map { if (it.id == existing.id) existing.occurrenceCompleted(now) else it }
+        } else {
+            calendar.todos + master.completedOccurrence(slot, idProvider(), now)
+        }
+        access.persist(state.replacingCalendar(index) { it.copy(todos = todos) })
+        return WriteResult.Success
+    }
+
+    /** Completes the whole series: the master turns done, so no further occurrence is projected. */
+    fun completeSeries(id: String): WriteResult {
+        val master = state.calendars
+            .firstOrNull { calendar -> calendar.todos.any { it.id == id } }
+            ?.todos
+            ?.first { it.id == id }
+            ?: return WriteResult.Success
+        if (!master.done) setTodoDone(id, true)
+        return WriteResult.Success
+    }
+
+    /**
+     * Clears the recurrence set of [id] but keeps the record itself, so a series that has run its
+     * course becomes an ordinary todo. Completed occurrence instances stay as history.
+     */
+    fun stopRecurrence(id: String): WriteResult {
+        val index = calendarIndexContaining { calendar -> calendar.todos.any { it.id == id } }
+            ?: return WriteResult.Success
+        val master = state.calendars[index].todos.first { it.id == id }
+        if (master.repeat == null && master.rDates.isEmpty() && master.excludedDates.isEmpty()) {
+            return WriteResult.Success
+        }
+        val now = clock.now()
+        access.persist(state.replacingCalendar(index) { calendar ->
+            calendar.copy(
+                todos = calendar.todos.map { todo ->
+                    if (todo.id != id) {
+                        todo
+                    } else {
+                        todo.copy(
+                            repeat = null,
+                            rDates = emptyList(),
+                            excludedDates = emptyList(),
+                            lastModified = now.toString(),
+                            dtStamp = now.toString(),
+                            sequence = todo.sequence + 1,
+                        )
+                    }
+                },
+            )
+        })
+        return WriteResult.Success
     }
 }

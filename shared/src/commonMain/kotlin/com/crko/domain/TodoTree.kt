@@ -29,7 +29,15 @@ data class TodoNode(
  */
 fun List<Todo>.todoForest(): List<TodoNode> {
     val byUid = LinkedHashMap<String, Todo>()
-    forEach { todo -> if (todo.effectiveUid !in byUid) byUid[todo.effectiveUid] = todo }
+    forEach { todo ->
+        val current = byUid[todo.effectiveUid]
+        // An occurrence instance shares its master's UID. The master owns the hierarchy, so a
+        // finished instance never becomes the record a live subtask hangs under — that would move
+        // the subtask into the completed projection along with the instance.
+        if (current == null || (current.isOccurrence && !todo.isOccurrence)) {
+            byUid[todo.effectiveUid] = todo
+        }
+    }
     // The first resolvable `PARENT` relation that is not the todo itself wins; `CHILD` and
     // `SIBLING` links are kept on the record for export but do not build the hierarchy. Links are
     // kept per record (by id), not per UID: two records may share a UID, and neither inherits the

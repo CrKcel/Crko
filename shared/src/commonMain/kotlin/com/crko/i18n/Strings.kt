@@ -143,6 +143,12 @@ interface Strings {
     val todoStatusInProgress: String
     val todoStatusCancelled: String
     val emptyTodos: String
+
+    /** Completion scope of a repeating todo. */
+    val todoActions: String
+    val todoCompleteSeries: String
+    val todoStopRecurrence: String
+
     fun items(count: Int): String
 
     /** `RELATED-TO` sub-tasks. */
@@ -368,6 +374,9 @@ object ZhStrings : Strings {
     override val todoStatusInProgress = "进行中"
     override val todoStatusCancelled = "已取消"
     override val emptyTodos = "暂无待办"
+    override val todoActions = "待办操作"
+    override val todoCompleteSeries = "完成整个系列"
+    override val todoStopRecurrence = "停止重复"
     override fun items(count: Int) = "$count 项"
     override val subtaskAdd = "添加子任务"
     override fun subtaskOf(parent: String) = "「$parent」的子任务"

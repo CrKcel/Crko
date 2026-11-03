@@ -45,7 +45,6 @@ import com.crko.domain.TodoNode
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
 import com.crko.domain.effectiveUid
-import com.crko.domain.nextOccurrenceDate
 import com.crko.i18n.Strings
 import com.crko.i18n.todoPriorityLabel
 import com.crko.state.AppStateHolder
@@ -79,6 +78,7 @@ fun TodoTab(
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
     var subtaskParent by remember { mutableStateOf<Todo?>(null) }
     var editing by remember { mutableStateOf<Todo?>(null) }
+    var actionsFor by remember { mutableStateOf<Todo?>(null) }
     val layoutDirection = LocalLayoutDirection.current
 
     Column(
@@ -121,6 +121,7 @@ fun TodoTab(
                 }
             }
             items(flatten(active, collapsed), key = { "todo-${it.first.todo.id}" }) { (node, depth) ->
+                val shownDue = state.nextTodoOccurrence(node.todo)
                 TodoCard(
                     node = node,
                     depth = depth,
@@ -128,9 +129,23 @@ fun TodoTab(
                     onToggleCollapse = { collapsed[node.todo.id] = !(collapsed[node.todo.id] ?: false) },
                     today = today,
                     strings = strings,
-                    onToggle = { state.setTodoDone(node.todo.id, true) },
+                    shownDue = shownDue,
+                    onToggle = {
+                        // Checking a series completes this occurrence only; the master keeps its
+                        // rule and moves its projection to the next date.
+                        if (node.todo.repeat != null) {
+                            state.completeTodoOccurrence(node.todo.id, shownDue ?: today)
+                        } else {
+                            state.setTodoDone(node.todo.id, true)
+                        }
+                    },
                     onAddSubtask = { subtaskParent = node.todo },
                     onEdit = { editing = node.todo },
+                    onActions = if (node.todo.repeat != null) {
+                        { actionsFor = node.todo }
+                    } else {
+                        null
+                    },
                     onDelete = { state.deleteTodo(node.todo.id) },
                 )
             }
@@ -166,9 +181,15 @@ fun TodoTab(
                             onToggleCollapse = { collapsed[node.todo.id] = !(collapsed[node.todo.id] ?: false) },
                             today = today,
                             strings = strings,
+                            shownDue = state.nextTodoOccurrence(node.todo),
                             onToggle = { state.setTodoDone(node.todo.id, false) },
                             onAddSubtask = { subtaskParent = node.todo },
                             onEdit = { editing = node.todo },
+                            onActions = if (node.todo.repeat != null) {
+                                { actionsFor = node.todo }
+                            } else {
+                                null
+                            },
                             onDelete = { state.deleteTodo(node.todo.id) },
                         )
                     }
@@ -202,6 +223,22 @@ fun TodoTab(
             defaultCalendarId = state.newRecordCalendarId,
         )
     }
+
+    actionsFor?.let { todo ->
+        TodoActionsDialog(
+            todo = todo,
+            strings = strings,
+            onDismiss = { actionsFor = null },
+            onCompleteSeries = {
+                state.completeTodoSeries(todo.id)
+                actionsFor = null
+            },
+            onStopRecurrence = {
+                state.stopTodoRecurrence(todo.id)
+                actionsFor = null
+            },
+        )
+    }
 }
 
 /** Depth-first rows of the forest, children dropped while their parent is collapsed. */
@@ -223,9 +260,13 @@ private fun TodoCard(
     onToggleCollapse: () -> Unit,
     today: LocalDate,
     strings: Strings,
+    /** Date the card shows: the next occurrence of a series, or the stored due of a one-off todo. */
+    shownDue: LocalDate?,
     onToggle: () -> Unit,
     onAddSubtask: () -> Unit,
     onEdit: () -> Unit,
+    /** Opens the series actions; null for a one-off todo. */
+    onActions: (() -> Unit)?,
     onDelete: () -> Unit,
 ) {
     val todo = node.todo
@@ -269,19 +310,14 @@ private fun TodoCard(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (todo.dueDay != null || todo.repeat != null) {
+            if (shownDue != null || todo.repeat != null) {
                 Spacer(Modifier.height(3.dp))
                 // A series is shown under its next occurrence; an ended one falls back to the
                 // stored due date.
-                val shown = if (todo.repeat != null) {
-                    todo.nextOccurrenceDate(today)
-                } else {
-                    todo.dueDay
-                }
-                if (shown != null) {
+                if (shownDue != null) {
                     val overdue = isOverdue(todo, today)
                     Text(
-                        text = dueText(strings, shown, today),
+                        text = dueText(strings, shownDue, today),
                         style = MiuixTheme.textStyles.footnote2,
                         fontSize = 11.sp,
                         color = if (overdue) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary,
@@ -346,6 +382,16 @@ private fun TodoCard(
                 tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.size(18.dp),
             )
+        }
+        onActions?.let { openActions ->
+            IconButton(onClick = openActions, backgroundColor = Color.Transparent) {
+                Icon(
+                    imageVector = AppIcons.More,
+                    contentDescription = strings.todoActions,
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
         IconButton(onClick = onDelete, backgroundColor = Color.Transparent) {
             Icon(

@@ -2,13 +2,18 @@ package com.crko
 
 import com.crko.domain.CancelledIcsRecord
 import com.crko.domain.IcsImport
+import com.crko.domain.IcsTimeValue
 import com.crko.domain.Journal
+import com.crko.domain.RepeatFrequency
+import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
+import com.crko.domain.TodoStatus
 import com.crko.domain.gatedCancellations
 import com.crko.migration.legacyEvent
 import com.crko.domain.mergeEvents
 import com.crko.domain.mergeJournals
 import com.crko.domain.mergeTodos
+import kotlinx.datetime.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -205,5 +210,48 @@ class CalendarMergeTest {
         assertEquals(1, journals.changed)
         assertEquals("journal-id", journals.items.single().id)
         assertEquals("New note", journals.items.single().title)
+    }
+
+    @Test
+    fun todoInstancesKeepTheirSlotWhenTheyShareTheMasterUid() {
+        val master = Todo(
+            id = "todo-id",
+            title = "Series",
+            icsUid = "t-series",
+            due = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
+            repeat = RepeatRule(RepeatFrequency.Daily),
+        )
+        val instance = Todo(
+            id = "",
+            title = "Series",
+            icsUid = "t-series",
+            due = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
+            recurrenceId = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
+            status = TodoStatus.Completed,
+            sequence = 2,
+            dtStamp = "2026-10-06T00:00:00Z",
+        )
+        val merged = mergeTodos(
+            base = listOf(master),
+            incoming = listOf(master.copy(id = ""), instance),
+            source = null,
+            removeVanished = false,
+            idProvider = newIds(),
+        )
+        assertEquals(2, merged.items.size)
+        assertEquals("todo-id", merged.items.first { it.recurrenceId == null }.id)
+        val storedInstance = merged.items.first { it.recurrenceId != null }
+        assertEquals("new-0", storedInstance.id)
+
+        // A re-import updates that instance in place instead of adding a second one.
+        val again = mergeTodos(
+            base = merged.items,
+            incoming = listOf(instance.copy(sequence = 3, dtStamp = "2026-10-07T00:00:00Z")),
+            source = null,
+            removeVanished = false,
+            idProvider = newIds(),
+        )
+        assertEquals(2, again.items.size)
+        assertTrue(again.items.first { it.recurrenceId != null }.sequence == 3)
     }
 }

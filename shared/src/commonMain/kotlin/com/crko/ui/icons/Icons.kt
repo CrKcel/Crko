@@ -72,6 +72,10 @@ object AppIcons {
         icon("Expand", "M12 15.6 5.6 9.2l1.4-1.4L12 12.8l5-5 1.4 1.4z")
     }
 
+    val More: ImageVector by lazy {
+        icon("More", "M5 10h3v4H5zM10.5 10h3v4h-3zM16 10h3v4h-3z")
+    }
+
     val Delete: ImageVector by lazy {
         icon(
             "Delete",

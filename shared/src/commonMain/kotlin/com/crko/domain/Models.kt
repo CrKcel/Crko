@@ -493,12 +493,22 @@ data class Todo(
     /** Occurrence instances the series skips, from `EXDATE`; typed, so a timed one keeps its clock. */
     @Serializable(with = TodoExdatesSerializer::class)
     val excludedDates: List<IcsTimeValue> = emptyList(),
+    /**
+     * `RECURRENCE-ID` of an occurrence instance: the series slot this record stands for, in the
+     * master's value type. Null on the master record, which keeps its `RRULE`; an instance shares
+     * the master's `UID` and never carries a rule of its own.
+     */
+    val recurrenceId: IcsTimeValue? = null,
     /** Storage provenance, separate from the RFC properties. */
     override val local: LocalRecordMeta = LocalRecordMeta(),
 ) : CalendarComponent {
     /** Completion state derived from [status]; a cancelled todo counts as done like before. */
     val done: Boolean
         get() = status == TodoStatus.Completed || status == TodoStatus.Cancelled
+
+    /** Whether this record is one occurrence of a series instead of the series master. */
+    val isOccurrence: Boolean
+        get() = recurrenceId != null
 
     /** Display date of [completed] in the device zone, for the completion statistics. */
     val completedAt: String?

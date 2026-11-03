@@ -457,6 +457,22 @@ class AppStateHolder(
 
     fun setTodoDone(id: String, done: Boolean) = todoService.setTodoDone(id, done)
 
+    /** Display date the todo lists show for [todo]: the next occurrence, skipping completed slots. */
+    fun nextTodoOccurrence(todo: Todo): LocalDate? = todoService.nextOccurrence(todo)
+
+    /**
+     * Completes the occurrence of a repeating todo shown on [date]. The series keeps its rule and
+     * projects its next occurrence; the completed slot becomes an instance of the same `UID`.
+     */
+    fun completeTodoOccurrence(id: String, date: LocalDate): WriteResult =
+        todoService.completeOccurrence(id, date)
+
+    /** Completes a whole series; no further occurrence is projected. */
+    fun completeTodoSeries(id: String): WriteResult = todoService.completeSeries(id)
+
+    /** Clears the recurrence rule of [id] while keeping the record itself. */
+    fun stopTodoRecurrence(id: String): WriteResult = todoService.stopRecurrence(id)
+
     fun deleteTodo(id: String) = todoService.deleteTodo(id)
 
     // ----- journals (delegated to JournalService) -----

@@ -2,9 +2,12 @@ package com.crko
 
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.RelatedTo
+import com.crko.domain.Todo
 import com.crko.domain.TodoStatus
 import com.crko.domain.exportCalendar
 import com.crko.domain.importCalendar
+import com.crko.domain.nextOccurrenceDate
+import com.crko.domain.occursOn
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -139,5 +142,132 @@ class IcsTodoJournalTest : IcsTestBase() {
         assertTrue(exported.contains("EXDATE;TZID=Europe/Berlin:20261112T170000\r\n"), exported)
         val back = importCalendar(exported, utc, "Untitled").todos.single()
         assertEquals(todo.excludedDates, back.excludedDates)
+    }
+
+    @Test
+    fun vtodoImportKeepsMasterAndCompletionInstanceUnderOneUid() {
+        val text = calendar(
+            """
+            BEGIN:VTODO
+            UID:weekly-todo
+            SUMMARY:Water plants
+            DUE;VALUE=DATE:20261102
+            RRULE:FREQ=WEEKLY
+            END:VTODO
+            BEGIN:VTODO
+            UID:weekly-todo
+            RECURRENCE-ID;VALUE=DATE:20261102
+            SUMMARY:Water plants
+            DUE;VALUE=DATE:20261102
+            STATUS:COMPLETED
+            PERCENT-COMPLETE:100
+            COMPLETED:20261102T120000Z
+            END:VTODO
+            """,
+        )
+        val todos = importCalendar(text, utc, "Untitled").todos
+        assertEquals(2, todos.size)
+        val master = todos.single { it.recurrenceId == null }
+        val instance = todos.single { it.recurrenceId != null }
+        assertEquals("weekly-todo", master.icsUid)
+        assertEquals(master.icsUid, instance.icsUid)
+        assertEquals(IcsTimeValue.Date(LocalDate(2026, 11, 2)), instance.recurrenceId)
+        assertTrue(instance.done)
+        assertEquals(TodoStatus.Completed, instance.status)
+        // The master keeps its rule; the completed slot is skipped by its projection.
+        assertTrue(master.repeat != null)
+        assertFalse(master.occursOn(LocalDate(2026, 11, 2), listOf(instance)))
+        assertEquals(
+            LocalDate(2026, 11, 9),
+            master.nextOccurrenceDate(LocalDate(2026, 11, 2), listOf(instance)),
+        )
+    }
+
+    @Test
+    fun vtodoCompletionInstanceRoundTripsWithItsSlot() {
+        val text = calendar(
+            """
+            BEGIN:VTODO
+            UID:round-trip-todo
+            SUMMARY:Invoice
+            DUE;VALUE=DATE:20261102
+            RRULE:FREQ=WEEKLY
+            END:VTODO
+            BEGIN:VTODO
+            UID:round-trip-todo
+            RECURRENCE-ID;VALUE=DATE:20261102
+            SUMMARY:Invoice
+            DUE;VALUE=DATE:20261102
+            STATUS:COMPLETED
+            PERCENT-COMPLETE:100
+            COMPLETED:20261102T120000Z
+            END:VTODO
+            """,
+        )
+        val todos = importCalendar(text, utc, "Untitled").todos
+        val instance = todos.single { it.recurrenceId != null }
+
+        val exported = exportCalendar(events = emptyList(), todos = todos, now = now)
+        assertTrue(exported.contains("RECURRENCE-ID;VALUE=DATE:20261102\r\n"), exported)
+        assertTrue(exported.contains("COMPLETED:20261102T120000Z\r\n"), exported)
+        // Master and instance share the UID exactly once each.
+        assertEquals(2, Regex("UID:round-trip-todo\r\n").findAll(exported).count(), exported)
+
+        val back = importCalendar(exported, utc, "Untitled").todos
+        assertEquals(2, back.size)
+        val backInstance = back.single { it.recurrenceId != null }
+        assertEquals(instance.recurrenceId, backInstance.recurrenceId)
+        assertEquals(instance.completed, backInstance.completed)
+        assertEquals(instance.status, backInstance.status)
+        assertEquals(instance.percentComplete, backInstance.percentComplete)
+        assertEquals("round-trip-todo", backInstance.icsUid)
+    }
+
+    @Test
+    fun aTimedInstanceSlotAlignsWithTheZonedMaster() {
+        val text = calendar(
+            """
+            BEGIN:VTODO
+            UID:zoned-todo
+            SUMMARY:Report
+            DUE;TZID=Europe/Berlin:20261105T170000
+            RRULE:FREQ=WEEKLY
+            END:VTODO
+            BEGIN:VTODO
+            UID:zoned-todo
+            RECURRENCE-ID:20261112T160000Z
+            SUMMARY:Report
+            DUE;TZID=Europe/Berlin:20261112T170000
+            STATUS:COMPLETED
+            COMPLETED:20261112T160000Z
+            END:VTODO
+            """,
+        )
+        val todos = importCalendar(text, utc, "Untitled").todos
+        val instance = todos.single { it.recurrenceId != null }
+        // A UTC slot inside a TZID series is re-expressed in the master's own value type.
+        assertEquals(
+            IcsTimeValue.Zoned(LocalDateTime(2026, 11, 12, 17, 0), "Europe/Berlin"),
+            instance.recurrenceId,
+        )
+
+        val exported = exportCalendar(events = emptyList(), todos = todos, now = now)
+        assertTrue(exported.contains("RECURRENCE-ID;TZID=Europe/Berlin:20261112T170000\r\n"), exported)
+    }
+
+    @Test
+    fun anInstanceWithoutItsMasterExportsAsAPlainTodo() {
+        val orphan = Todo(
+            id = "orphan",
+            title = "Orphan",
+            icsUid = "gone-todo",
+            due = IcsTimeValue.Date(LocalDate(2026, 11, 2)),
+            recurrenceId = IcsTimeValue.Date(LocalDate(2026, 11, 2)),
+            status = TodoStatus.Completed,
+            percentComplete = 100,
+        )
+        val exported = exportCalendar(events = emptyList(), todos = listOf(orphan), now = now)
+        assertTrue(exported.contains("BEGIN:VTODO\r\n"), exported)
+        assertFalse(exported.contains("RECURRENCE-ID"), exported)
     }
 }

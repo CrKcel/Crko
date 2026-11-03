@@ -11,6 +11,9 @@ import com.crko.domain.OrdinalWeekday
 import com.crko.domain.PersistedSettings
 import com.crko.domain.RecurrenceDate
 import com.crko.domain.RepeatFrequency
+import com.crko.domain.RepeatRule
+import com.crko.domain.Todo
+import com.crko.domain.TodoStatus
 import com.crko.domain.exportCalendar
 import com.crko.domain.instantOrNull
 import com.crko.domain.isZeroDuration
@@ -267,6 +270,46 @@ class StorageTest {
         val encoded = AppJson.encodeToString(AppState.serializer(), decoded.state)
         val redecoded = decodeStateWithReport(encoded)
         assertEquals(decoded.state, redecoded.state)
+    }
+
+    @Test
+    fun aTodoPayloadWrittenBeforeRecurrenceIdStillDecodes() {
+        // Payloads written before F1.3 carry no `recurrenceId`; the field must default to a master
+        // record instead of making the whole todo undecodable.
+        val payload = """{"schemaVersion":6,"calendars":[{"id":"local","name":"Crko","todos":[""" +
+            """{"id":"t1","title":"Report","due":"2026-10-06","repeat":{"frequency":"Daily"}}]}]}"""
+        val decoded = decodeStateWithReport(payload)
+        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
+        val todo = decoded.state.calendars.single().todos.single()
+        assertNull(todo.recurrenceId)
+        assertTrue(!todo.isOccurrence)
+    }
+
+    @Test
+    fun completionInstancesRoundTripThroughThePayload() {
+        val slot = IcsTimeValue.Date(LocalDate(2026, 10, 5))
+        val master = Todo(
+            id = "master",
+            title = "Daily",
+            due = slot,
+            repeat = RepeatRule(RepeatFrequency.Daily),
+        )
+        val instance = Todo(
+            id = "instance",
+            title = "Daily",
+            due = slot,
+            icsUid = "master@crko",
+            recurrenceId = slot,
+            status = TodoStatus.Completed,
+            percentComplete = 100,
+            sequence = 1,
+            completed = Instant.parse("2026-10-05T09:00:00Z"),
+        )
+        val state = AppState(calendars = listOf(Calendar.local().copy(todos = listOf(master, instance))))
+        val encoded = AppJson.encodeToString(AppState.serializer(), state)
+        val decoded = decodeStateWithReport(encoded)
+        assertTrue(decoded.damage.isEmpty, decoded.damage.toString())
+        assertEquals(state.calendars.single().todos, decoded.state.calendars.single().todos)
     }
 
     @Test
