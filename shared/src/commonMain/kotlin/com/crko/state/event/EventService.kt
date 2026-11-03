@@ -6,8 +6,6 @@ import com.crko.domain.Event
 import com.crko.domain.boundedBefore
 import com.crko.domain.daysTo
 import com.crko.domain.movedByWallDays
-import com.crko.domain.occurrenceStartOn
-import com.crko.domain.occursOn
 import com.crko.domain.plusDays
 import com.crko.domain.plusWallDays
 import com.crko.domain.recurrenceSlotOn
@@ -26,7 +24,8 @@ import kotlin.time.Instant
 /**
  * Event mutations, including the three edit scopes of a repeating series. Validation lives in
  * [EventNormalizer]; persistence, reminder scheduling and messages go through [StateAccess] and the
- * injected permission callback, so the facade only delegates.
+ * injected permission callback, so the facade only delegates. Deletion lives in [EventDeletion]
+ * because it also has to keep the undo snapshot.
  */
 internal class EventService(
     private val access: StateAccess,
@@ -282,117 +281,6 @@ internal class EventService(
         } + newSeries
         access.persist(state.replacingCalendar(calendarIndex) { it.copy(events = events) })
         return WriteResult.Success
-    }
-
-    /** Removes an event by id, without touching the rest of a series. */
-    fun deleteEvent(id: String?) {
-        if (id == null) return
-        val index = calendarIndexContaining { calendar -> calendar.events.any { it.id == id } } ?: return
-        access.persist(state.replacingCalendar(index) { calendar ->
-            calendar.copy(events = calendar.events.filterNot { it.id == id })
-        })
-    }
-
-    /**
-     * Deletes [event] using [scope]. For a repeating series this can skip one occurrence, cut the
-     * series at an occurrence, or remove the series together with all of its exceptions.
-     */
-    fun deleteEvent(
-        event: Event,
-        occurrenceDate: LocalDate? = null,
-        scope: EditScope = EditScope.AllEvents,
-    ) {
-        val storedCalendarIndex = calendarIndexContaining { calendar ->
-            calendar.events.any { it.id == event.id }
-        } ?: targetCalendarIndex
-        val storedEvents = state.calendars[storedCalendarIndex].events
-        val stored = storedEvents.firstOrNull { it.id == event.id } ?: event
-        // An exception's slot is its RECURRENCE-ID even when the record was moved to another day;
-        // for a series the opened date has to resolve to the start of the occurrence covering it,
-        // so deleting a multi-day occurrence from its second day still hits the right slot.
-        val occurrence = stored.recurrenceId?.wallDate
-            ?: occurrenceDate?.let { stored.occurrenceStartOn(it) ?: it }
-            ?: stored.day
-        val storedSlot = stored.recurrenceId
-        val occurrenceSlot = storedSlot ?: stored.recurrenceSlotOn(occurrence)
-
-        // An exception is removed on its own; the master only gains its slot as an exclusion.
-        if (storedSlot != null) {
-            val master = storedEvents.firstOrNull {
-                it.id != stored.id && it.icsUid == stored.icsUid && it.recurrenceId == null
-            }
-            val updated = storedEvents.filterNot { it.id == stored.id }.map { current ->
-                if (master != null && current.id == master.id) {
-                    current.copy(recurrence = current.recurrence.withExclusion(storedSlot))
-                } else {
-                    current
-                }
-            }
-            access.persist(state.replacingCalendar(storedCalendarIndex) { it.copy(events = updated) })
-            return
-        }
-
-        // A one-off event is removed as is.
-        if (stored.recurrence == null) {
-            deleteEvent(stored.id)
-            return
-        }
-
-        val seriesUid = stored.uid
-        val belongsToSeries: (Event) -> Boolean = { current ->
-            seriesUid != null && current.icsUid == seriesUid && current.recurrenceId != null
-        }
-        val updated = when (scope) {
-            EditScope.ThisEvent -> storedEvents
-                .filterNot { current -> belongsToSeries(current) && current.recurrenceId == occurrenceSlot }
-                .map { current ->
-                    if (current.id == stored.id) {
-                        current.copy(recurrence = current.recurrence.withExclusion(occurrenceSlot))
-                    } else {
-                        current
-                    }
-                }
-            EditScope.ThisAndFuture -> {
-                if (occurrence <= stored.day) {
-                    storedEvents.filterNot { it.id == stored.id || belongsToSeries(it) }
-                } else {
-                    storedEvents.mapNotNull { current ->
-                        when {
-                            current.id == stored.id -> current.copy(
-                                recurrence = current.recurrence?.boundedBefore(occurrence)?.first,
-                            )
-                            belongsToSeries(current) && current.recurrenceId!!.wallDate >= occurrence -> null
-                            else -> current
-                        }
-                    }
-                }
-            }
-            EditScope.AllEvents -> storedEvents.filterNot { it.id == stored.id || belongsToSeries(it) }
-        }
-        access.persist(state.replacingCalendar(storedCalendarIndex) { it.copy(events = updated) })
-    }
-
-    /**
-     * Clears a single day: one-off events are removed while repeating events only skip that date,
-     * so clearing today never wipes a whole series.
-     */
-    fun deleteEventsOn(date: LocalDate) {
-        val calendars = state.calendars.map { calendar ->
-            calendar.copy(
-                events = calendar.events.mapNotNull { event ->
-                    when {
-                        !event.occursOn(date) -> event
-                        event.recurrenceId != null -> null
-                        event.recurrence == null -> null
-                        else -> {
-                            val occurrence = event.occurrenceStartOn(date) ?: date
-                            event.copy(recurrence = event.recurrence.withExclusion(event.recurrenceSlotOn(occurrence)))
-                        }
-                    }
-                },
-            )
-        }
-        access.persist(state.copy(calendars = calendars))
     }
 }
 

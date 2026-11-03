@@ -41,6 +41,7 @@ import com.crko.state.`import`.AttachmentMaterializer
 import com.crko.state.`import`.ImportService
 import com.crko.state.calendar.CalendarDeleteResult
 import com.crko.state.calendar.CalendarService
+import com.crko.state.event.EventDeletion
 import com.crko.state.event.EventService
 import com.crko.state.journal.JournalService
 import com.crko.state.persistence.StateRepository
@@ -71,7 +72,13 @@ enum class EditScope { ThisEvent, ThisAndFuture, AllEvents }
 /** User-visible notifications; localized at display time so they follow language switches. */
 sealed interface AppMessage {
     data object Saved : AppMessage
-    data object Deleted : AppMessage
+    /** A delete happened; [undoable] is true when its records wait in the in-memory undo snapshot. */
+    data class Deleted(val undoable: Boolean) : AppMessage
+
+    /** The most recent delete was put back into its calendar. */
+    data object DeleteUndone : AppMessage
+    /** Undo found nothing to restore, or a record with one of the ids exists again. */
+    data object DeleteUndoFailed : AppMessage
     data object TodoAdded : AppMessage
     data class EventsImported(
         val events: Int,
@@ -200,6 +207,12 @@ class AppStateHolder(
 
     private val calendarService = CalendarService(access = stateAccess, idProvider = idProvider)
 
+    /**
+     * Snapshot of the most recent delete. Deliberately not part of [AppState]: the undo stack is not
+     * persisted, so it is empty again after a process restart.
+     */
+    private val deleteUndo = DeleteUndoStore()
+
     private val importService = ImportService(
         access = stateAccess,
         attachments = attachmentMaterializer,
@@ -213,6 +226,8 @@ class AppStateHolder(
         idProvider = idProvider,
         ensureReminderPermission = ::ensureReminderPermission,
     )
+
+    private val eventDeletion = EventDeletion(access = stateAccess, undo = deleteUndo)
 
     private val subscriptionSync = SubscriptionSyncService(
         access = stateAccess,
@@ -231,12 +246,14 @@ class AppStateHolder(
         clock = clock,
         idProvider = idProvider,
         today = { today },
+        undo = deleteUndo,
     )
 
     private val journalService = JournalService(
         access = stateAccess,
         clock = clock,
         idProvider = idProvider,
+        undo = deleteUndo,
     )
 
     private val statsService = StatsService(access = stateAccess, today = { today })
@@ -329,7 +346,7 @@ class AppStateHolder(
     ): WriteResult = eventService.saveEvent(event, occurrenceDate, scope, calendarId)
 
     /** Removes an event by id, without touching the rest of a series. */
-    fun deleteEvent(id: String?) = eventService.deleteEvent(id)
+    fun deleteEvent(id: String?) = reportDelete(eventDeletion.deleteEvent(id))
 
     /**
      * Deletes [event] using [scope]. For a repeating series this can skip one occurrence, cut the
@@ -339,13 +356,13 @@ class AppStateHolder(
         event: Event,
         occurrenceDate: LocalDate? = null,
         scope: EditScope = EditScope.AllEvents,
-    ) = eventService.deleteEvent(event, occurrenceDate, scope)
+    ) = reportDelete(eventDeletion.deleteEvent(event, occurrenceDate, scope))
 
     /**
      * Clears a single day: one-off events are removed while repeating events only skip that date,
-     * so clearing today never wipes a whole series.
+     * so clearing today never wipes a whole series. Clearing a day keeps no undo target.
      */
-    fun deleteEventsOn(date: LocalDate) = eventService.deleteEventsOn(date)
+    fun deleteEventsOn(date: LocalDate) = eventDeletion.deleteEventsOn(date)
 
     /** Merges events parsed from an ICS file through the import service. */
     fun importEvents(events: List<Event>): Int = importService.importEvents(events)
@@ -473,7 +490,7 @@ class AppStateHolder(
     /** Clears the recurrence rule of [id] while keeping the record itself. */
     fun stopTodoRecurrence(id: String): WriteResult = todoService.stopRecurrence(id)
 
-    fun deleteTodo(id: String) = todoService.deleteTodo(id)
+    fun deleteTodo(id: String) = reportDelete(todoService.deleteTodo(id))
 
     // ----- journals (delegated to JournalService) -----
 
@@ -485,7 +502,36 @@ class AppStateHolder(
 
     fun updateJournal(journal: Journal): WriteResult = journalService.updateJournal(journal)
 
-    fun deleteJournal(id: String) = journalService.deleteJournal(id)
+    fun deleteJournal(id: String) = reportDelete(journalService.deleteJournal(id))
+
+    // ----- undo -----
+
+    /**
+     * Puts the records removed by the most recent delete back into their original calendar and
+     * positions. The write goes through the repository, so reminders are rescheduled for the
+     * restored records. A record whose id exists again is never overwritten: the restore fails and
+     * the snapshot stays available for another attempt. Nothing is restored when the snapshot's
+     * calendar has been deleted since. The snapshot is memory only, so after a process restart
+     * there is nothing to undo.
+     */
+    fun undoLastDelete(): UndoResult {
+        val snapshot = deleteUndo.last ?: return UndoResult.NothingToUndo
+        return when (val restored = snapshot.restore(appState)) {
+            is DeleteRestore.Restored -> {
+                deleteUndo.clear()
+                persist(restored.state)
+                UndoResult.Success
+            }
+            DeleteRestore.Conflict, DeleteRestore.CalendarMissing -> UndoResult.Unavailable
+        }
+    }
+
+    /** Announces a delete; only removed records leave something for [undoLastDelete] to restore. */
+    private fun reportDelete(outcome: DeleteOutcome) = when (outcome) {
+        DeleteOutcome.Nothing -> Unit
+        DeleteOutcome.Removed -> notify(AppMessage.Deleted(undoable = true))
+        DeleteOutcome.Changed -> notify(AppMessage.Deleted(undoable = false))
+    }
 
     // ----- subscriptions -----
 

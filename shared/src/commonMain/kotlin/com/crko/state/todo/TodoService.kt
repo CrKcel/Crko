@@ -17,6 +17,10 @@ import com.crko.domain.targetCalendarIndex
 import com.crko.domain.toIcsPriority
 import com.crko.domain.todoForest
 import com.crko.domain.todoPriorityRank
+import com.crko.state.DeleteOutcome
+import com.crko.state.DeleteUndo
+import com.crko.state.DeleteUndoStore
+import com.crko.state.PlacedRecord
 import com.crko.state.StateAccess
 import com.crko.state.WriteResult
 import kotlinx.datetime.LocalDate
@@ -32,6 +36,7 @@ internal class TodoService(
     private val clock: Clock,
     private val idProvider: () -> String,
     private val today: () -> LocalDate,
+    private val undo: DeleteUndoStore,
 ) {
     private val state: AppState get() = access.state
 
@@ -265,11 +270,32 @@ internal class TodoService(
         )
     }
 
-    fun deleteTodo(id: String) {
-        val index = calendarIndexContaining { calendar -> calendar.todos.any { it.id == id } } ?: return
-        access.persist(state.replacingCalendar(index) { calendar ->
-            calendar.copy(todos = calendar.todos.filterNot { it.id == id })
-        })
+    /**
+     * Removes [id] and keeps what it removed as the undo target. A repeating master also takes its
+     * completed occurrence instances with it: they share its `UID` and would otherwise linger
+     * without a series projecting them. Every other record, including a sub-task, is removed alone.
+     */
+    fun deleteTodo(id: String): DeleteOutcome {
+        val index = calendarIndexContaining { calendar -> calendar.todos.any { it.id == id } }
+            ?: return DeleteOutcome.Nothing
+        val calendar = state.calendars[index]
+        val master = calendar.todos.first { it.id == id }
+        val seriesUid = master.effectiveUid
+        val hasInstances = !master.isOccurrence &&
+            calendar.todos.any { it.isOccurrence && it.id != id && it.effectiveUid == seriesUid }
+        val removed = calendar.todos.withIndex()
+            .filter { (_, todo) ->
+                todo.id == id || (hasInstances && todo.isOccurrence && todo.effectiveUid == seriesUid)
+            }
+            .map { PlacedRecord(it.value, it.index) }
+        val ids = removed.mapTo(mutableSetOf()) { it.record.id }
+        undo.record(DeleteUndo.Todos(calendar.id, removed))
+        access.persist(
+            state.replacingCalendar(index) { current ->
+                current.copy(todos = current.todos.filterNot { it.id in ids })
+            },
+        )
+        return DeleteOutcome.Removed
     }
 
     // ----- recurring completion -----

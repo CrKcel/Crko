@@ -10,13 +10,19 @@ import com.crko.domain.IcsWarningDetail
 import com.crko.i18n.Strings
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
+import com.crko.state.UndoResult
 import kotlinx.coroutines.flow.collectLatest
+import top.yukonga.miuix.kmp.basic.SnackbarDuration
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
+import top.yukonga.miuix.kmp.basic.SnackbarResult
 
 /**
  * Snackbar queue for the messages [AppStateHolder] publishes. The collector lives above the screens
  * and reads the latest strings on every message, so a language switch made after the first message
  * is picked up without restarting it.
+ *
+ * A delete that left records in the undo snapshot offers [Strings.undo] as its action; performing it
+ * restores those records and reports the outcome as the next message.
  */
 @Composable
 internal fun rememberMessagePresenter(state: AppStateHolder): SnackbarHostState {
@@ -24,16 +30,39 @@ internal fun rememberMessagePresenter(state: AppStateHolder): SnackbarHostState 
     val currentStrings by rememberUpdatedState(state.strings)
     LaunchedEffect(Unit) {
         state.messages.collectLatest { message ->
-            snackbar.showSnackbar(messageText(currentStrings, message))
+            val action = actionText(currentStrings, message)
+            val result = snackbar.showSnackbar(
+                message = messageText(currentStrings, message),
+                actionLabel = action,
+                // An undo the user cannot reach is worse than no undo, so keep it up longer.
+                duration = if (action == null) SnackbarDuration.Short else SnackbarDuration.Long,
+            )
+            if (result == SnackbarResult.ActionPerformed && message is AppMessage.Deleted) {
+                state.notify(
+                    if (state.undoLastDelete() == UndoResult.Success) {
+                        AppMessage.DeleteUndone
+                    } else {
+                        AppMessage.DeleteUndoFailed
+                    },
+                )
+            }
         }
     }
     return snackbar
 }
 
+/** Snackbar action for one app message, or null when the message has nothing to act on. */
+internal fun actionText(strings: Strings, message: AppMessage): String? = when {
+    message is AppMessage.Deleted && message.undoable -> strings.undo
+    else -> null
+}
+
 /** Localized text for one app message. */
 internal fun messageText(strings: Strings, message: AppMessage): String = when (message) {
     AppMessage.Saved -> strings.saved
-    AppMessage.Deleted -> strings.deleted
+    is AppMessage.Deleted -> strings.deleted
+    AppMessage.DeleteUndone -> strings.deleteUndone
+    AppMessage.DeleteUndoFailed -> strings.deleteUndoFailed
     AppMessage.TodoAdded -> strings.todoAdded
     is AppMessage.EventsImported -> importSummaryText(
         strings = strings,

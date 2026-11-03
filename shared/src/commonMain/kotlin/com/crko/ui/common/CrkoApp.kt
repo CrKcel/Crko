@@ -180,12 +180,12 @@ fun CrkoApp(state: AppStateHolder) {
             saved
         },
         onDelete = { event, scope ->
+            // The state layer announces the delete itself and offers the undo action.
             state.deleteEvent(
                 event,
                 occurrenceDate = eventEditor?.occurrenceDate,
                 scope = scope,
             )
-            state.notify(AppMessage.Deleted)
         },
     )
 

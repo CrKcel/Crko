@@ -59,6 +59,10 @@ interface Strings {
     val done: String
     val saved: String
     val deleted: String
+    /** Snackbar action that restores the most recent delete. */
+    val undo: String
+    val deleteUndone: String
+    val deleteUndoFailed: String
     val todoAdded: String
     val delete: String
     val startTime: String
@@ -290,6 +294,9 @@ object ZhStrings : Strings {
     override val done = "完成"
     override val saved = "已保存"
     override val deleted = "已删除"
+    override val undo = "撤销"
+    override val deleteUndone = "已撤销删除"
+    override val deleteUndoFailed = "无法撤销：记录已存在或所在日历已删除"
     override val todoAdded = "已添加待办"
     override val delete = "删除"
     override val startTime = "开始"

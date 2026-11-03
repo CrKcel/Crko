@@ -136,7 +136,8 @@ internal fun CalendarsSection(
             onDismiss = { deleting = null },
             onConfirm = {
                 if (state.deleteCalendar(calendar.id) == CalendarDeleteResult.Success) {
-                    state.notify(AppMessage.Deleted)
+                    // Deleting a calendar drops its records with it, so there is no record undo.
+                    state.notify(AppMessage.Deleted(undoable = false))
                 }
                 deleting = null
             },
