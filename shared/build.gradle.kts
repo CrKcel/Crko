@@ -57,7 +57,6 @@ kotlin {
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.activity.compose)
             implementation(libs.compose.uiToolingPreview)
-            implementation(libs.compose.uiTooling)
             implementation(libs.sqldelight.android.driver)
         }
         iosMain.dependencies {
@@ -90,10 +89,6 @@ kotlin {
             implementation(libs.kotlinx.coroutines.test)
         }
     }
-}
-
-dependencies {
-    androidRuntimeClasspath(libs.compose.uiTooling)
 }
 
 /**

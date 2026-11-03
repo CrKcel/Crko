@@ -19,3 +19,21 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# kotlinx.serialization looks serializers up through the generated companion, so keep the
+# annotation metadata and serializer entry points when R8 obfuscates the app.
+-keepattributes *Annotation*, InnerClasses
+-dontnote kotlinx.serialization.**
+-keepclassmembers class kotlinx.serialization.json.** {
+    *** Companion;
+}
+-keepclasseswithmembers class kotlinx.serialization.json.** {
+    kotlinx.serialization.KSerializer serializer(...);
+}
+-keep,includedescriptorclasses class com.crko.**$$serializer { *; }
+-keepclassmembers class com.crko.** {
+    *** Companion;
+}
+-keepclasseswithmembers class com.crko.** {
+    kotlinx.serialization.KSerializer serializer(...);
+}
