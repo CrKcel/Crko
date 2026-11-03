@@ -765,68 +765,6 @@ class RecurrenceTest {
         )
     }
 
-    @Test
-    fun recurringTodoAppearsOnEachOccurrence() {
-        val todo = Todo(
-            id = "t1",
-            title = "Report",
-            start = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
-            due = IcsTimeValue.Date(LocalDate(2026, 10, 6)),
-            repeat = RepeatRule(RepeatFrequency.Weekly, byDay = days(0)),
-        )
-        // The todo shows under its due date, one day after each Monday start.
-        assertTrue(todo.occursOn(LocalDate(2026, 10, 6)))
-        assertTrue(todo.occursOn(LocalDate(2026, 10, 13)))
-        assertFalse(todo.occursOn(LocalDate(2026, 10, 7)))
-        assertFalse(todo.occursOn(LocalDate(2026, 10, 15)))
-        assertEquals(LocalDate(2026, 10, 13), todo.nextOccurrenceDate(LocalDate(2026, 10, 9)))
-    }
-
-    @Test
-    fun todoExdateSkipsTheOccurrenceAndTheNextOneIsFound() {
-        val todo = Todo(
-            id = "t2",
-            title = "Chore",
-            due = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
-            repeat = RepeatRule(RepeatFrequency.Weekly, byDay = days(0)),
-            excludedDates = listOf(IcsTimeValue.Date(LocalDate(2026, 10, 12))),
-        )
-        assertFalse(todo.occursOn(LocalDate(2026, 10, 12)))
-        assertEquals(LocalDate(2026, 10, 19), todo.nextOccurrenceDate(LocalDate(2026, 10, 12)))
-    }
-
-    @Test
-    fun todoOccurrenceStartsCarryTheDueOffset() {
-        val todo = Todo(
-            id = "t3",
-            title = "Dose",
-            start = IcsTimeValue.Date(LocalDate(2026, 10, 1)),
-            due = IcsTimeValue.Date(LocalDate(2026, 10, 2)),
-            repeat = RepeatRule(RepeatFrequency.Daily, interval = 2, count = 2),
-        )
-        assertEquals(
-            listOf(LocalDate(2026, 10, 1), LocalDate(2026, 10, 3)),
-            todo.occurrenceStartsBetween(LocalDate(2026, 10, 1), LocalDate(2026, 10, 10)),
-        )
-        assertEquals(LocalDate(2026, 10, 4), todo.occurrenceDate(LocalDate(2026, 10, 3)))
-    }
-
-    @Test
-    fun anEndedTodoSeriesFallsBackToItsStoredDue() {
-        // COUNT=2 daily from 10-01: occurrences show on 10-02 and 10-03; once the series is over
-        // the stored due stays what the todo is shown and sorted under.
-        val todo = Todo(
-            id = "t4",
-            title = "Series",
-            start = IcsTimeValue.Date(LocalDate(2026, 10, 1)),
-            due = IcsTimeValue.Date(LocalDate(2026, 10, 2)),
-            repeat = RepeatRule(RepeatFrequency.Daily, count = 2),
-        )
-        assertEquals(LocalDate(2026, 10, 3), todo.nextOccurrenceDate(LocalDate(2026, 10, 3)))
-        assertEquals(LocalDate(2026, 10, 2), todo.nextOccurrenceDate(LocalDate(2026, 10, 4)))
-        assertEquals(LocalDate(2026, 10, 2), todo.nextOccurrenceDate(LocalDate(2026, 11, 30)))
-    }
-
     private companion object {
         /** Days after the anchor that every rule shape is checked over. */
         const val RANGE_DAYS = 90

@@ -185,8 +185,8 @@ val verifyDomainModel = tasks.register("verifyDomainModel") {
 /**
  * Package-level dependency guard. Each package may only import the packages listed as allowed in
  * `docs/TODO`; the guard scans every Kotlin file under the shared source sets, so platform-specific
- * code cannot slip across the same boundaries. `knownViolations` mirrors the cleanup list in
- * `docs/TODO` section 13 and must shrink to empty as A2/A3/A4 land.
+ * code cannot slip across the same boundaries. `knownViolations` is the cleanup list from
+ * `docs/TODO` section 13; it is empty now that A2/A3/A4 and C1-C4 have landed.
  */
 val verifyArchitecture = tasks.register("verifyArchitecture") {
     group = "verification"
@@ -240,8 +240,8 @@ val verifyArchitecture = tasks.register("verifyArchitecture") {
 }
 
 /**
- * File-size guard for `commonMain`. Existing oversized files are allowlisted until their split
- * tasks (B1–B5, C1–C4, D1–D2) land; new files are held to the 800-line budget immediately.
+ * File-size guard for `commonMain`. Every file is held to the 800-line budget; the allowlist is
+ * empty after the B1–B5, C1–C4 and D1–D2 splits landed.
  */
 val verifyFileSizes = tasks.register("verifyFileSizes") {
     group = "verification"
@@ -251,9 +251,7 @@ val verifyFileSizes = tasks.register("verifyFileSizes") {
 
     doLast {
         val maxLines = 800
-        val knownOversize = setOf(
-            "domain/Recurrence.kt",
-        )
+        val knownOversize = setOf<String>()
         val violations = mutableListOf<String>()
         commonMain.asFile.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }

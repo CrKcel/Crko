@@ -32,14 +32,18 @@ cd iosApp && xcodebuild -project iosApp.xcodeproj -scheme iosApp \
 
 ```
 shared/src/commonMain/kotlin/com/crko/
-  domain/     数据模型与日期计算（纯 Kotlin，可在 commonTest 中测试）
+  domain/     纯 Kotlin：模型、重复规则（RecurrenceMatching / RecurrenceIndex / TodoRecurrence）、ICS 编解码
   migration/  旧版持久化 DTO 与迁移转换（只被 storage 与迁移测试依赖）
-  storage/    持久化接口与平台声明（expect）
+  storage/    持久化接口、平台声明（expect）与文本解码（CalendarTextReader）
   sync/       订阅抓取与 CalDAV 协议实现
-  state/      AppStateHolder：日程、待办、设置的状态与写入校验
+  state/      AppStateHolder 门面 + event/todo/journal/import/settings/persistence 服务
   i18n/       中英文文案
-  ui/         主题、组件、日程/待办/更多三个页面
+  ui/         主题、组件、日程/待办/更多三个页面；ui/transfer 只编排导入导出
+shared/src/commonTest/kotlin/com/crko/
+  Ics*Test.kt 读写、时区、附件、往返与重复实例按场景拆分；StateHolder 相关测试按服务拆分
 ```
+
+依赖方向按层单向：`domain` 不依赖任何其他包；`migration` 只依赖 `domain`；`storage` 依赖 `domain` / `migration`；`sync` 依赖 `domain` / `storage`；`state` 依赖 `domain` / `migration` / `storage` / `sync` / `i18n`；`ui` 依赖 `domain` / `i18n` / `state`，不直接依赖 `storage` / `sync`。`com.crko.dev` 只允许组合根 `App.kt` 与测试引用。`state` 对 `i18n` 只用于用户可见文案。
 
 ## 数据模型
 
@@ -47,6 +51,7 @@ shared/src/commonMain/kotlin/com/crko/
 
 - `DTSTART` / `DTEND` / `DUE` / `COMPLETED` / `RECURRENCE-ID` 使用 `IcsTimeValue`（`Date`、`Floating`、`Zoned`、`Utc`）。结束时间排他；没有结束表示零时长定时事件；全天由 `Date` 推导，不再单独存储。
 - 重复集合是 `Recurrence`（`RRULE` + `RDATE` + `EXDATE`）。主事件与例外共享同一个 `UID`，通过 `RECURRENCE-ID` 区分；`RDATE;VALUE=PERIOD` 保留每次实例长度。
+- 重复规则实现按职责拆在同包：`Recurrence.kt`（`OccurrenceTime`、实例时间与时间片段、集合裁剪/平移）、`RecurrenceMatching.kt`（`BY*` 匹配、日/周/月/年候选与 `BYSETPOS`）、`RecurrenceIndex.kt`（`COUNT` 索引与序数）、`TodoRecurrence.kt`（`Todo` 系列锚点、`occursOn`、`nextOccurrenceDate`）；跨文件符号只放宽到 `internal`。
 - `AppState.calendars` 是持久化主结构：每个 `Calendar` 持有自己的事件、待办、日志、日历级属性与未知 `VTIMEZONE` 定义；`AppState.events` / `todos` / `journals` 只是跨日历的只读投影。相同的 `UID` 可以同时存在于不同日历而互不覆盖。
 - `VTIMEZONE` 属于 `Calendar`，事件只保存 `TZID`；未解析的未知时区由所属日历的定义兜底。
 - 设备时区只通过 `day` / `endDay` / `localStart` / `localEnd` / `occursOn` / `timeRangeOn` 等展示投影参与界面，不写回持久化模型。
@@ -61,7 +66,14 @@ shared/src/commonMain/kotlin/com/crko/
 
 检查：旧 `Event` / `Todo` 字段名是否以属性声明形式重新出现在 `domain` 或 `state` 的任意非迁移文件中（不只 `Models.kt`，也含 `Event.date` 与 `RepeatRule.weekdays` / `rDates`）、合成 UID 标记（`#override-` / `#future-` / `#prior-`）或 `sub:` 身份前缀是否回到 `migration` 包之外、ICS 与 iTIP 导入导出路径（`Ics*.kt` / `Itip.kt`）是否重新读取设备时区。
 
-`verifyArchitecture` 按包路径检查跨层 import（`domain` 不得依赖 `storage/sync/state/ui/i18n/dev/migration`，`storage` 不得依赖 `sync/state/ui/i18n/dev`，`ui` 不得依赖 `storage/sync/dev` 等）；`verifyFileSizes` 要求 `commonMain` 单个 Kotlin 文件不超过 800 行。三个任务都已挂到 `:shared:check`，CI 在单元测试前显式执行。
+`verifyArchitecture` 按包路径检查跨层 import（`domain` 不得依赖 `storage/sync/state/ui/i18n/dev/migration`，`storage` 不得依赖 `sync/state/ui/i18n/dev`，`ui` 不得依赖 `storage/sync/dev` 等）；`verifyFileSizes` 要求 `commonMain` 单个 Kotlin 文件不超过 800 行。两个守卫的 allowlist 均已清空，新增违规只能改代码、不能加豁免。三个任务都已挂到 `:shared:check`，CI 在单元测试前显式执行。
+
+提交前另需本地通过（iOS 编译尚未加入 CI）：
+
+```bash
+./gradlew :shared:testAndroidHostTest :androidApp:assembleDebug
+./gradlew :shared:compileKotlinIosSimulatorArm64
+```
 
 约定：
 
