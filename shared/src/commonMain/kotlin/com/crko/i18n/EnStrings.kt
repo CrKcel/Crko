@@ -115,7 +115,10 @@ object EnStrings : Strings {
 
     override val todos = "Todo"
     override val todoNew = "New todo"
+    override val todoEdit = "Edit todo"
     override val todoTitleField = "What needs doing"
+    override val startDate = "Start date"
+    override val progress = "Progress"
     override val priority = "Priority"
     override val priorityHigh = "High"
     override val priorityNormal = "Medium"

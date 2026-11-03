@@ -28,9 +28,9 @@ import androidx.compose.ui.unit.sp
 import com.crko.domain.Calendar
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
-import com.crko.domain.effectiveUid
 import com.crko.domain.plusDays
 import com.crko.i18n.Strings
+import com.crko.state.todo.TodoDraft
 import com.crko.ui.components.CalendarChips
 import com.crko.ui.schedule.DatePickerDialog
 import com.crko.ui.schedule.priorityColor
@@ -42,31 +42,59 @@ import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+/** Which date the shared month picker is editing when the dialog is open. */
+private enum class TodoDateField { Start, Due }
+
+/** Completion percentages offered as one-tap chips. */
+private val PercentSteps = listOf(0, 25, 50, 75, 100)
+
+/**
+ * One dialog for both creating and editing a todo. In edit mode [initial] prefills every field; a
+ * subtask reuses the same layout with [parent] naming its parent. [onSave] receives the draft and
+ * the calendar picked for a new top-level todo.
+ */
 @Composable
 internal fun TodoEditorDialog(
     show: Boolean,
     strings: Strings,
     today: LocalDate,
     onDismiss: () -> Unit,
-    onSave: (String, TodoPriority, LocalDate?, String?, String?) -> Boolean,
+    onSave: (TodoDraft, String?) -> Boolean,
+    /** Existing todo to edit; null creates a new one. */
+    initial: Todo? = null,
     /** Parent of the subtask being created; null creates a top-level todo. */
     parent: Todo? = null,
     calendars: List<Calendar> = emptyList(),
     defaultCalendarId: String? = null,
 ) {
     if (!show) return
-    // Keyed on [show]: the fields start blank on every open instead of keeping the last session's
-    // input while the closed dialog's slots stay in the composition.
-    var title by remember(show) { mutableStateOf("") }
-    var priority by remember(show) { mutableStateOf(TodoPriority.Normal) }
-    var due by remember(show) { mutableStateOf<LocalDate?>(null) }
-    var calendarId by remember(show) { mutableStateOf(defaultCalendarId) }
-    var showDatePicker by remember(show) { mutableStateOf(false) }
+    // Keyed on the record, the parent and [show]: editing another todo starts from its content and a
+    // reopened dialog starts blank instead of keeping the last session's input.
+    var title by remember(initial, parent, show) { mutableStateOf(initial?.title ?: "") }
+    var note by remember(initial, parent, show) { mutableStateOf(initial?.note ?: "") }
+    var location by remember(initial, parent, show) { mutableStateOf(initial?.location ?: "") }
+    var priority by remember(initial, parent, show) {
+        mutableStateOf(initial?.priorityLevel ?: TodoPriority.Normal)
+    }
+    var start by remember(initial, parent, show) { mutableStateOf(initial?.startDay) }
+    var due by remember(initial, parent, show) { mutableStateOf(initial?.dueDay) }
+    var percent by remember(initial, parent, show) { mutableStateOf(initial?.percentComplete ?: 0) }
+    var categoriesText by remember(initial, parent, show) {
+        mutableStateOf(initial?.categories?.joinToString(", ").orEmpty())
+    }
+    var calendarId by remember(initial, parent, show) { mutableStateOf(defaultCalendarId) }
+    var picking by remember(initial, parent, show) { mutableStateOf<TodoDateField?>(null) }
+
+    val dialogTitle = when {
+        initial != null -> strings.todoEdit
+        parent != null -> strings.subtaskOf(parent.title)
+        else -> strings.todoNew
+    }
 
     WindowDialog(
         show = true,
         onDismissRequest = onDismiss,
-        title = parent?.let { strings.subtaskOf(it.title) } ?: strings.todoNew,
+        title = dialogTitle,
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             TextField(
@@ -77,14 +105,9 @@ internal fun TodoEditorDialog(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (parent == null && calendars.size > 1) {
+            if (initial == null && parent == null && calendars.size > 1) {
                 Spacer(Modifier.height(12.dp))
-                Text(
-                    text = strings.calendar,
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
-                Spacer(Modifier.height(6.dp))
+                SectionCaption(strings.calendar)
                 CalendarChips(
                     calendars = calendars,
                     selectedId = calendarId,
@@ -99,42 +122,75 @@ internal fun TodoEditorDialog(
                 PriorityChip(strings.priorityLow, TodoPriority.Low, priority) { priority = it }
             }
             Spacer(Modifier.height(16.dp))
+            SectionCaption(strings.startDate)
+            DateRow(
+                strings = strings,
+                today = today,
+                selected = start,
+                onSelect = { start = it },
+                onCustom = { picking = TodoDateField.Start },
+            )
+            Spacer(Modifier.height(16.dp))
             SectionCaption(strings.dueDate)
-            val tomorrow = today.plusDays(1)
-            // A due date that is neither of the shortcuts is shown on the custom chip itself.
-            val customDue = due?.takeIf { it != today && it != tomorrow }
+            DateRow(
+                strings = strings,
+                today = today,
+                selected = due,
+                onSelect = { due = it },
+                onCustom = { picking = TodoDateField.Due },
+            )
+            Spacer(Modifier.height(16.dp))
+            SectionCaption(strings.progress)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                DateChip(
-                    text = strings.today,
-                    selected = due == today,
-                    onClick = { due = if (due == today) null else today },
-                    modifier = Modifier.weight(1f),
-                )
-                DateChip(
-                    text = strings.tomorrow,
-                    selected = due == tomorrow,
-                    onClick = { due = if (due == tomorrow) null else tomorrow },
-                    modifier = Modifier.weight(1f),
-                )
-                DateChip(
-                    text = customDue?.let(strings::dayMonth) ?: strings.customDate,
-                    selected = customDue != null,
-                    onClick = { showDatePicker = true },
-                    modifier = Modifier.weight(1f),
-                )
-                DateChip(
-                    text = strings.clear,
-                    selected = due == null,
-                    onClick = { due = null },
-                    modifier = Modifier.weight(1f),
-                )
+                PercentSteps.forEach { step ->
+                    PercentChip(step, percent, { percent = it }, Modifier.weight(1f))
+                }
             }
+            Spacer(Modifier.height(16.dp))
+            TextField(
+                value = note,
+                onValueChange = { note = it },
+                label = strings.noteField,
+                useLabelAsPlaceholder = true,
+                minLines = 3,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            TextField(
+                value = location,
+                onValueChange = { location = it },
+                label = strings.locationField,
+                useLabelAsPlaceholder = true,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            TextField(
+                value = categoriesText,
+                onValueChange = { categoriesText = it },
+                label = strings.categoriesField,
+                useLabelAsPlaceholder = true,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = {
-                    if (onSave(title, priority, due, parent?.effectiveUid, if (parent == null) calendarId else null)) {
-                        onDismiss()
-                    }
+                    val draft = TodoDraft(
+                        title = title,
+                        note = note,
+                        location = location,
+                        start = start,
+                        due = due,
+                        priority = priority,
+                        percentComplete = percent,
+                        categories = categoriesText
+                            .split(',', '，')
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() },
+                    )
+                    val pickedCalendar = if (initial == null && parent == null) calendarId else null
+                    if (onSave(draft, pickedCalendar)) onDismiss()
                 },
                 enabled = title.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
@@ -145,15 +201,16 @@ internal fun TodoEditorDialog(
         }
     }
 
-    if (showDatePicker) {
+    picking?.let { field ->
+        val current = if (field == TodoDateField.Start) start else due
         DatePickerDialog(
-            initial = due ?: today,
+            initial = current ?: today,
             today = today,
             strings = strings,
-            onDismiss = { showDatePicker = false },
-            onConfirm = {
-                due = it
-                showDatePicker = false
+            onDismiss = { picking = null },
+            onConfirm = { picked ->
+                if (field == TodoDateField.Start) start = picked else due = picked
+                picking = null
             },
         )
     }
@@ -168,6 +225,45 @@ private fun SectionCaption(text: String) {
         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
     )
+}
+
+@Composable
+private fun DateRow(
+    strings: Strings,
+    today: LocalDate,
+    selected: LocalDate?,
+    onSelect: (LocalDate?) -> Unit,
+    onCustom: () -> Unit,
+) {
+    val tomorrow = today.plusDays(1)
+    // A date that is neither shortcut is shown on the custom chip itself.
+    val custom = selected?.takeIf { it != today && it != tomorrow }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        DateChip(
+            text = strings.today,
+            selected = selected == today,
+            onClick = { onSelect(if (selected == today) null else today) },
+            modifier = Modifier.weight(1f),
+        )
+        DateChip(
+            text = strings.tomorrow,
+            selected = selected == tomorrow,
+            onClick = { onSelect(if (selected == tomorrow) null else tomorrow) },
+            modifier = Modifier.weight(1f),
+        )
+        DateChip(
+            text = custom?.let(strings::dayMonth) ?: strings.customDate,
+            selected = custom != null,
+            onClick = onCustom,
+            modifier = Modifier.weight(1f),
+        )
+        DateChip(
+            text = strings.clear,
+            selected = selected == null,
+            onClick = { onSelect(null) },
+            modifier = Modifier.weight(1f),
+        )
+    }
 }
 
 @Composable
@@ -194,6 +290,16 @@ private fun PriorityChip(
             color = if (selected) accent else MiuixTheme.colorScheme.onSurface,
         )
     }
+}
+
+@Composable
+private fun PercentChip(value: Int, current: Int, onSelect: (Int) -> Unit, modifier: Modifier) {
+    DateChip(
+        text = "$value%",
+        selected = value == current,
+        onClick = { onSelect(value) },
+        modifier = modifier,
+    )
 }
 
 @Composable

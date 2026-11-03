@@ -8,6 +8,7 @@ import com.crko.domain.Todo
 import com.crko.domain.TodoNode
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
+import com.crko.domain.displayDate
 import com.crko.domain.effectiveUid
 import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.targetCalendarIndex
@@ -17,6 +18,7 @@ import com.crko.domain.todoPriorityRank
 import com.crko.state.StateAccess
 import com.crko.state.WriteResult
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.TimeZone
 import kotlin.time.Clock
 
 /**
@@ -112,17 +114,34 @@ internal class TodoService(
         due: LocalDate?,
         parentUid: String? = null,
         calendarId: String? = null,
+    ): WriteResult = addTodo(
+        TodoDraft(title = title, due = due, priority = priority),
+        parentUid = parentUid,
+        calendarId = calendarId,
+    )
+
+    fun addTodo(
+        draft: TodoDraft,
+        parentUid: String? = null,
+        calendarId: String? = null,
     ): WriteResult {
-        if (title.isBlank()) return WriteResult.EmptyTitle
+        if (draft.title.isBlank()) return WriteResult.EmptyTitle
         val now = clock.now()
+        val percent = draft.percentComplete.coerceIn(0, 100)
         val todo = Todo(
             id = idProvider(),
-            title = title.trim(),
-            priority = priority.toIcsPriority(),
-            due = due?.let(IcsTimeValue::Date),
+            title = draft.title.trim(),
+            start = draft.start?.let(IcsTimeValue::Date),
+            due = draft.due?.let(IcsTimeValue::Date),
+            priority = draft.priority.toIcsPriority(),
             createdAt = now.toEpochMilliseconds(),
+            note = draft.note,
+            location = draft.location.trim(),
+            categories = draft.categories,
             lastModified = now.toString(),
             dtStamp = now.toString(),
+            status = statusForPercent(percent, current = TodoStatus.NeedsAction, done = false),
+            percentComplete = percent,
             relatedTo = parentUid?.let { listOf(RelatedTo.parent(it)) } ?: emptyList(),
         )
         // A subtask stays next to its parent; a top-level todo goes where the editor points.
@@ -138,6 +157,68 @@ internal class TodoService(
             },
         )
         return WriteResult.Success
+    }
+
+    /**
+     * Applies the editor draft to [id]. Only the draft's own fields change: the `UID`, creation time,
+     * `RELATED-TO` links, attachments and recurrence set stay as stored. The revision counter and
+     * modification timestamps advance so a later export/sync carries the edit.
+     */
+    fun updateTodo(id: String, draft: TodoDraft): WriteResult {
+        if (draft.title.isBlank()) return WriteResult.EmptyTitle
+        val index = calendarIndexContaining { calendar -> calendar.todos.any { it.id == id } }
+            ?: return WriteResult.Success
+        val now = clock.now()
+        val percent = draft.percentComplete.coerceIn(0, 100)
+        access.persist(
+            state.replacingCalendar(index) { calendar ->
+                calendar.copy(
+                    todos = calendar.todos.map { todo ->
+                        if (todo.id != id) {
+                            todo
+                        } else {
+                            todo.copy(
+                                title = draft.title.trim(),
+                                note = draft.note,
+                                location = draft.location.trim(),
+                                start = editedDateValue(todo.start, draft.start),
+                                due = editedDateValue(todo.due, draft.due),
+                                priority = draft.priority.toIcsPriority(),
+                                percentComplete = percent,
+                                status = statusForPercent(percent, current = todo.status, done = todo.done),
+                                categories = draft.categories,
+                                lastModified = now.toString(),
+                                dtStamp = now.toString(),
+                                sequence = todo.sequence + 1,
+                            )
+                        }
+                    },
+                )
+            },
+        )
+        return WriteResult.Success
+    }
+
+    /**
+     * Editor date choice as a stored value. Picking the day the record already shows keeps the
+     * imported value (its time of day and `TZID`); any other day becomes a date-only value, and
+     * clearing the field removes it.
+     */
+    private fun editedDateValue(original: IcsTimeValue?, picked: LocalDate?): IcsTimeValue? = when {
+        picked == null -> null
+        original != null && original.displayDate(TimeZone.currentSystemDefault()) == picked -> original
+        else -> IcsTimeValue.Date(picked)
+    }
+
+    /**
+     * A percent between 1 and 99 means the work has started; zero on a pending todo returns it to
+     * `NEEDS-ACTION`. Completion and cancellation keep their status and go through `setTodoDone`.
+     */
+    private fun statusForPercent(percent: Int, current: TodoStatus, done: Boolean): TodoStatus = when {
+        done -> current
+        percent in 1..99 -> TodoStatus.InProcess
+        percent == 0 -> TodoStatus.NeedsAction
+        else -> current
     }
 
     fun setTodoDone(id: String, done: Boolean) {

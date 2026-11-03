@@ -126,7 +126,10 @@ interface Strings {
 
     val todos: String
     val todoNew: String
+    val todoEdit: String
     val todoTitleField: String
+    val startDate: String
+    val progress: String
     val priority: String
     val priorityHigh: String
     val priorityNormal: String
@@ -348,7 +351,10 @@ object ZhStrings : Strings {
 
     override val todos = "待办"
     override val todoNew = "新建待办"
+    override val todoEdit = "编辑待办"
     override val todoTitleField = "要做的事"
+    override val startDate = "开始日期"
+    override val progress = "完成度"
     override val priority = "优先级"
     override val priorityHigh = "高"
     override val priorityNormal = "中"

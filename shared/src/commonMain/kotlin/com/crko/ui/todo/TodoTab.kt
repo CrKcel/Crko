@@ -3,6 +3,7 @@ package com.crko.ui.todo
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ import com.crko.domain.Todo
 import com.crko.domain.TodoNode
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
+import com.crko.domain.effectiveUid
 import com.crko.domain.nextOccurrenceDate
 import com.crko.i18n.Strings
 import com.crko.i18n.todoPriorityLabel
@@ -76,6 +78,7 @@ fun TodoTab(
     // Expansion is keyed by parent id; a missing entry means expanded, so new subtasks show up.
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
     var subtaskParent by remember { mutableStateOf<Todo?>(null) }
+    var editing by remember { mutableStateOf<Todo?>(null) }
     val layoutDirection = LocalLayoutDirection.current
 
     Column(
@@ -127,6 +130,7 @@ fun TodoTab(
                     strings = strings,
                     onToggle = { state.setTodoDone(node.todo.id, true) },
                     onAddSubtask = { subtaskParent = node.todo },
+                    onEdit = { editing = node.todo },
                     onDelete = { state.deleteTodo(node.todo.id) },
                 )
             }
@@ -164,6 +168,7 @@ fun TodoTab(
                             strings = strings,
                             onToggle = { state.setTodoDone(node.todo.id, false) },
                             onAddSubtask = { subtaskParent = node.todo },
+                            onEdit = { editing = node.todo },
                             onDelete = { state.deleteTodo(node.todo.id) },
                         )
                     }
@@ -177,13 +182,26 @@ fun TodoTab(
         strings = strings,
         today = today,
         onDismiss = { subtaskParent = null },
-        onSave = { title, priority, due, parentUid, calendarId ->
-            state.addTodo(title, priority, due, parentUid, calendarId) == WriteResult.Success
+        onSave = { draft, _ ->
+            state.addTodo(draft, parentUid = subtaskParent?.effectiveUid) == WriteResult.Success
         },
         parent = subtaskParent,
         calendars = state.localCalendars,
         defaultCalendarId = state.newRecordCalendarId,
     )
+
+    editing?.let { todo ->
+        TodoEditorDialog(
+            show = true,
+            strings = strings,
+            today = today,
+            onDismiss = { editing = null },
+            onSave = { draft, _ -> state.updateTodo(todo.id, draft) == WriteResult.Success },
+            initial = todo,
+            calendars = state.localCalendars,
+            defaultCalendarId = state.newRecordCalendarId,
+        )
+    }
 }
 
 /** Depth-first rows of the forest, children dropped while their parent is collapsed. */
@@ -207,6 +225,7 @@ private fun TodoCard(
     strings: Strings,
     onToggle: () -> Unit,
     onAddSubtask: () -> Unit,
+    onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val todo = node.todo
@@ -216,7 +235,8 @@ private fun TodoCard(
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(MiuixTheme.colorScheme.surfaceContainer)
-            .clickable { onToggle() }
+            // Tapping the row toggles completion; long-pressing opens the editor.
+            .combinedClickable(onClick = onToggle, onLongClick = onEdit)
             .padding(start = 12.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -235,6 +255,8 @@ private fun TodoCard(
                 textDecoration = if (todo.done) TextDecoration.LineThrough else TextDecoration.None,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
+                // The row toggle stays on the background; tapping the title opens the editor.
+                modifier = Modifier.clickable(onClick = onEdit),
             )
             if (todo.note.isNotBlank()) {
                 Spacer(Modifier.height(3.dp))

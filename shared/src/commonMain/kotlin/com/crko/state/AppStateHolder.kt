@@ -47,6 +47,7 @@ import com.crko.state.persistence.StateRepository
 import com.crko.state.settings.SettingsController
 import com.crko.state.stats.StatsService
 import com.crko.state.subscription.SubscriptionSyncService
+import com.crko.state.todo.TodoDraft
 import com.crko.state.todo.TodoService
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
@@ -443,6 +444,16 @@ class AppStateHolder(
         parentUid: String? = null,
         calendarId: String? = null,
     ): WriteResult = todoService.addTodo(title, priority, due, parentUid, calendarId)
+
+    /** Adds a todo from the editor draft; [parentUid] keeps a subtask next to its parent. */
+    fun addTodo(
+        draft: TodoDraft,
+        parentUid: String? = null,
+        calendarId: String? = null,
+    ): WriteResult = todoService.addTodo(draft, parentUid, calendarId)
+
+    /** Applies the editor draft to an existing todo, keeping its `UID`, links and recurrence. */
+    fun updateTodo(id: String, draft: TodoDraft): WriteResult = todoService.updateTodo(id, draft)
 
     fun setTodoDone(id: String, done: Boolean) = todoService.setTodoDone(id, done)
 
