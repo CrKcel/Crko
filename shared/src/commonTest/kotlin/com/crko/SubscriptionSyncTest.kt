@@ -329,6 +329,33 @@ class SubscriptionSyncTest {
     }
 
     @Test
+    fun aSyncAlreadyRunningIsNotStartedAgain() = runTest {
+        var calls = 0
+        val http = FakeHttp {
+            calls++
+            HttpResponse(200, emptyMap(), icsOf("a@x" to "One").encodeToByteArray())
+        }
+        val scope = TestScope(StandardTestDispatcher(testScheduler))
+        val f = AppStateHolder(
+            scope = scope,
+            initialSystemLocale = "en-US",
+            idProvider = { "id-0" },
+            storage = SyncStorage(),
+            subscriptionHttp = http,
+            parseDispatcher = scope.coroutineContext[ContinuationInterceptor] as kotlinx.coroutines.CoroutineDispatcher,
+        )
+        val subscription = assertNotNull(f.addSubscription("Feed", "https://example.com/cal.ics"))
+        f.syncSubscription(subscription.id)
+        assertTrue(f.isSyncing(subscription.id))
+        // The second call arrives while the first is still in flight, so it must not start a
+        // second fetch or leave the first subscription stuck in the active set.
+        f.syncSubscription(subscription.id)
+        scope.advanceUntilIdle()
+        assertEquals(1, calls)
+        assertTrue(f.isSyncing(subscription.id).not())
+    }
+
+    @Test
     fun subscriptionsDueHonorsTheRefreshInterval() {
         val storage = SyncStorage()
         val overdue = CalendarSubscription("overdue", "Overdue", "https://x/a.ics", refreshMinutes = 15, lastSync = "2026-01-01T00:00:00Z")

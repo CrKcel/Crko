@@ -20,6 +20,8 @@ import com.crko.storage.systemLocaleTag
 import com.crko.ui.common.CrkoApp
 import com.crko.ui.theme.CrkoTheme
 import com.crko.ui.theme.PlatformCapabilities
+import kotlinx.coroutines.delay
+import kotlin.time.Duration.Companion.seconds
 
 /** Storage wired by the composition root; only debug builds seed sample content on first launch. */
 private fun appStorage(): StateStorage = FileStateStorage(
@@ -54,6 +56,16 @@ fun App(
 
     LaunchedEffect(systemLocale) {
         state.systemLocale = systemLocale
+    }
+
+    // Subscriptions publish their own refresh interval; one launch-time check only covers the
+    // moment the app opens, so the due set is polled while the app stays open. The policy lives
+    // here in the composition root instead of the UI shell.
+    LaunchedEffect(state) {
+        while (true) {
+            state.syncDueSubscriptions()
+            delay(60.seconds)
+        }
     }
 
     CrkoTheme(
