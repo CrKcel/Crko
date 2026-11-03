@@ -1,21 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <rect width="1024" height="1024" fill="#FFFFFF"/>
-  <g stroke="#5EDBEA" stroke-width="46" stroke-linecap="round">
-    <line x1="512" y1="216" x2="512" y2="140"/>
-    <line x1="660" y1="255.7" x2="698" y2="189.8"/>
-    <line x1="768.3" y1="364" x2="834.2" y2="326"/>
-    <line x1="808" y1="512" x2="884" y2="512"/>
-    <line x1="768.3" y1="660" x2="834.2" y2="698"/>
-    <line x1="660" y1="768.3" x2="698" y2="834.2"/>
-    <line x1="512" y1="808" x2="512" y2="884"/>
-    <line x1="364" y1="768.3" x2="326" y2="834.2"/>
-    <line x1="255.7" y1="660" x2="189.8" y2="698"/>
-    <line x1="216" y1="512" x2="140" y2="512"/>
-    <line x1="255.7" y1="364" x2="189.8" y2="326"/>
-    <line x1="364" y1="255.7" x2="326" y2="189.8"/>
-  </g>
-  <g stroke="#24C1D4" stroke-width="46" stroke-linecap="round">
-    <line x1="448.7" y1="606.1" x2="337.2" y2="481"/>
-    <line x1="448.7" y1="606.1" x2="663.4" y2="384.2"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Crko 图标">
+  <defs>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#A9F5FF"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="#3B6CF5"/>
+  <path d="M757.746 339.927 A300 300 0 1 0 757.746 684.073"
+        fill="none" stroke="url(#ring)" stroke-width="88" stroke-linecap="round"/>
+  <circle cx="757.746" cy="684.073" r="30" fill="#FFD36A"/>
+  <path d="M390 536 L492 640 L664 432"
+        fill="none" stroke="#FFFFFF" stroke-width="84"
+        stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
