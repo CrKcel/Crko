@@ -70,8 +70,8 @@ fun TodoTab(
     val active = state.activeTodoForest()
     val completed = state.completedTodoForest()
     // Section counts stay flat, so a subtask is counted even while nested under its parent.
-    val activeCount = state.appState.todos.count { !it.done }
-    val completedCount = state.appState.todos.count { it.done }
+    val activeCount = state.appState.visibleTodos.count { !it.done }
+    val completedCount = state.appState.visibleTodos.count { it.done }
     var completedExpanded by rememberSaveable { mutableStateOf(false) }
     // Expansion is keyed by parent id; a missing entry means expanded, so new subtasks show up.
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
@@ -177,10 +177,12 @@ fun TodoTab(
         strings = strings,
         today = today,
         onDismiss = { subtaskParent = null },
-        onSave = { title, priority, due, parentUid ->
-            state.addTodo(title, priority, due, parentUid) == WriteResult.Success
+        onSave = { title, priority, due, parentUid, calendarId ->
+            state.addTodo(title, priority, due, parentUid, calendarId) == WriteResult.Success
         },
         parent = subtaskParent,
+        calendars = state.localCalendars,
+        defaultCalendarId = state.newRecordCalendarId,
     )
 }
 

@@ -585,6 +585,9 @@ const val LocalCalendarId = "local"
 /** Display name of the local calendar before the user or an imported file names it. */
 const val DefaultLocalCalendarName = "Crko"
 
+/** Colour of a calendar that never picked one; matches the default custom seed colour. */
+const val DefaultCalendarColor = 0xFF3B6CF5
+
 /**
  * A raw `VTIMEZONE` definition for a `TZID` the platform does not know. Known IANA zones are stored
  * only as the `TZID` inside [IcsTimeValue.Zoned], so this list stays small and deduplicated.
@@ -638,6 +641,10 @@ data class CalendarSyncState(
 data class Calendar(
     val id: String,
     val name: String,
+    /** `0xAARRGGBB` accent; null keeps [DefaultCalendarColor] at the display layer. */
+    val colorArgb: Long? = null,
+    /** Hidden calendars keep their records and reminders; only the views leave them out. */
+    val visible: Boolean = true,
     /** iTIP `METHOD` of the last imported message, as its wire name. */
     val method: String? = null,
     /** Published `REFRESH-INTERVAL` / `X-PUBLISHED-TTL`, in minutes. */
@@ -673,6 +680,14 @@ data class AppState(
     val events: List<Event> get() = calendars.flatMap { it.events }
     val todos: List<Todo> get() = calendars.flatMap { it.todos }
     val journals: List<Journal> get() = calendars.flatMap { it.journals }
+
+    /** Calendars the user has not hidden. Mutations still address every calendar by id. */
+    val visibleCalendars: List<Calendar> get() = calendars.filter { it.visible }
+
+    /** Flattened projections of [visibleCalendars], for the schedule, todo and journal views. */
+    val visibleEvents: List<Event> get() = visibleCalendars.flatMap { it.events }
+    val visibleTodos: List<Todo> get() = visibleCalendars.flatMap { it.todos }
+    val visibleJournals: List<Journal> get() = visibleCalendars.flatMap { it.journals }
 
     /** Subscriptions as their UI-facing view; the sync bookkeeping stays inside each calendar. */
     val subscriptions: List<CalendarSubscription> get() = calendars.mapNotNull { it.subscription }

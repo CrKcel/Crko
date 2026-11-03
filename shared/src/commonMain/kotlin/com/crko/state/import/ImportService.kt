@@ -19,6 +19,7 @@ import com.crko.domain.mergeEvents
 import com.crko.domain.mergeJournals
 import com.crko.domain.mergeTodos
 import com.crko.domain.registerIcsTimeZones
+import com.crko.domain.targetCalendarIndex
 import com.crko.state.AppMessage
 import com.crko.state.ImportOutcome
 import com.crko.state.StateAccess
@@ -38,12 +39,16 @@ internal class ImportService(
     private val state: AppState get() = access.state
 
     /** Index of the calendar new local records go into; a payload always keeps at least one. */
-    private val localCalendarIndex: Int
-        get() = state.calendars.indexOfFirst { it.isLocal }.takeIf { it >= 0 } ?: 0
+    private val targetCalendarIndex: Int
+        get() = state.targetCalendarIndex(access.defaultCalendarId)
 
     /** Index of the calendar that owns the record selected by [contains]. */
     private fun calendarIndexContaining(contains: (Calendar) -> Boolean): Int? =
         state.calendars.indexOfFirst(contains).takeIf { it >= 0 }
+
+    /** A calendar explicitly chosen by the caller; null when it no longer exists. */
+    private fun requestedCalendarIndex(id: String?): Int? =
+        id?.let { calendarId -> state.calendars.indexOfFirst { it.id == calendarId }.takeIf { it >= 0 } }
 
     /** Replaces one calendar, leaving every other calendar's records untouched. */
     private fun AppState.replacingCalendar(index: Int, transform: (Calendar) -> Calendar): AppState {
@@ -58,7 +63,7 @@ internal class ImportService(
      * `SEQUENCE`/`DTSTAMP`, so re-importing an updated file does not keep stale copies.
      */
     fun importEvents(events: List<Event>): Int {
-        val index = localCalendarIndex
+        val index = targetCalendarIndex
         val merged = mergeEvents(
             base = state.calendars[index].events,
             incoming = events.map(attachments::materialize),
@@ -75,7 +80,7 @@ internal class ImportService(
 
     /** Merges todos from an ICS file, updating known UIDs newer than the stored copy. */
     fun importTodos(todos: List<Todo>): Int {
-        val index = localCalendarIndex
+        val index = targetCalendarIndex
         val merged = mergeTodos(
             base = state.calendars[index].todos,
             incoming = todos.map(attachments::materialize),
@@ -110,9 +115,7 @@ internal class ImportService(
         val hasCalendarMeta = import.calendarName != null || import.refreshMinutes != null ||
             import.timeZones.isNotEmpty()
         if (!hasContent && !hasCalendarMeta && source.isNullOrBlank()) return ImportOutcome()
-        val calendarIndex = calendarId
-            ?.let { id -> state.calendars.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
-            ?: localCalendarIndex
+        val calendarIndex = requestedCalendarIndex(calendarId) ?: targetCalendarIndex
         val baseCalendar = state.calendars[calendarIndex]
         // Registered under the calendar the records land in, so a file naming a TZID its own way
         // cannot redefine a same-named zone of another calendar.

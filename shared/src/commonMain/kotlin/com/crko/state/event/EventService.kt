@@ -12,6 +12,7 @@ import com.crko.domain.plusDays
 import com.crko.domain.plusWallDays
 import com.crko.domain.recurrenceSlotOn
 import com.crko.domain.shiftedByWallDays
+import com.crko.domain.targetCalendarIndex
 import com.crko.domain.wallDate
 import com.crko.domain.wallDateFor
 import com.crko.domain.withExclusion
@@ -36,12 +37,16 @@ internal class EventService(
     private val state: AppState get() = access.state
 
     /** Index of the calendar new local records go into; a payload always keeps at least one. */
-    private val localCalendarIndex: Int
-        get() = state.calendars.indexOfFirst { it.isLocal }.takeIf { it >= 0 } ?: 0
+    private val targetCalendarIndex: Int
+        get() = state.targetCalendarIndex(access.defaultCalendarId)
 
     /** Index of the calendar that owns the record selected by [contains]. */
     private fun calendarIndexContaining(contains: (Calendar) -> Boolean): Int? =
         state.calendars.indexOfFirst(contains).takeIf { it >= 0 }
+
+    /** A calendar explicitly chosen in the editor; null when it no longer exists. */
+    private fun requestedCalendarIndex(id: String?): Int? =
+        id?.let { calendarId -> state.calendars.indexOfFirst { it.id == calendarId }.takeIf { it >= 0 } }
 
     /** Replaces one calendar, leaving every other calendar's records untouched. */
     private fun AppState.replacingCalendar(index: Int, transform: (Calendar) -> Calendar): AppState {
@@ -53,12 +58,14 @@ internal class EventService(
 
     /**
      * Saves [event]. For a repeating event, [scope] decides whether the change applies to this
-     * occurrence, this and all later occurrences, or the whole series.
+     * occurrence, this and all later occurrences, or the whole series. [calendarId] picks the
+     * container of a new event; an edit stays in the calendar that already owns the record.
      */
     fun saveEvent(
         event: Event,
         occurrenceDate: LocalDate? = null,
         scope: EditScope = EditScope.AllEvents,
+        calendarId: String? = null,
     ): WriteResult {
         val normalized = EventNormalizer.normalize(event) ?: return EventNormalizer.validationError(event)
         // The editor leaves new records without an id; assigning it here keeps identifier creation
@@ -68,10 +75,11 @@ internal class EventService(
         val validated = identified
         val now = clock.now()
         if (validated.alarms.isNotEmpty()) ensureReminderPermission()
-        // An edit belongs to the calendar that owns the stored record; a new record goes local.
+        // An edit belongs to the calendar that owns the stored record; a new record goes to the
+        // calendar the editor chose, or to the default one.
         val calendarIndex = existing?.let { stored ->
             calendarIndexContaining { calendar -> calendar.events.any { it.id == stored.id } }
-        } ?: localCalendarIndex
+        } ?: requestedCalendarIndex(calendarId) ?: targetCalendarIndex
         val storedEvents = state.calendars[calendarIndex].events
         return when {
             scope == EditScope.ThisEvent && existing?.repeat != null -> {
@@ -296,7 +304,7 @@ internal class EventService(
     ) {
         val storedCalendarIndex = calendarIndexContaining { calendar ->
             calendar.events.any { it.id == event.id }
-        } ?: localCalendarIndex
+        } ?: targetCalendarIndex
         val storedEvents = state.calendars[storedCalendarIndex].events
         val stored = storedEvents.firstOrNull { it.id == event.id } ?: event
         // An exception's slot is its RECURRENCE-ID even when the record was moved to another day;

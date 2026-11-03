@@ -18,4 +18,6 @@ data class PersistedSettings(
     val keyColor: Long = 0xFF3B6CF5,
     val agendaView: String = "",
     val agendaScrollHour: Int = -1,
+    /** Calendar new records and imported files go into; null means the first local calendar. */
+    val defaultCalendarId: String? = null,
 )

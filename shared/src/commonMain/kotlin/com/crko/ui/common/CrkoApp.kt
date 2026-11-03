@@ -166,12 +166,15 @@ fun CrkoApp(state: AppStateHolder) {
         strings = strings,
         today = state.today,
         readAttachment = state::attachmentBytes,
+        calendars = state.localCalendars,
+        defaultCalendarId = state.newRecordCalendarId,
         onDismiss = { eventEditor = null },
-        onSave = { event, scope ->
+        onSave = { event, scope, calendarId ->
             val saved = state.saveEvent(
                 event,
                 occurrenceDate = eventEditor?.occurrenceDate,
                 scope = scope,
+                calendarId = calendarId,
             ) == WriteResult.Success
             if (saved) state.notify(AppMessage.Saved)
             saved
@@ -191,11 +194,13 @@ fun CrkoApp(state: AppStateHolder) {
         strings = strings,
         today = state.today,
         onDismiss = { showTodoEditor = false },
-        onSave = { title, priority, due, _ ->
-            val result = state.addTodo(title, priority, due)
+        onSave = { title, priority, due, _, calendarId ->
+            val result = state.addTodo(title, priority, due, calendarId = calendarId)
             if (result == WriteResult.Success) state.notify(AppMessage.TodoAdded)
             result == WriteResult.Success
         },
+        calendars = state.localCalendars,
+        defaultCalendarId = state.newRecordCalendarId,
     )
 
     SettingsSheet(

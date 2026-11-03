@@ -10,4 +10,8 @@ internal interface StateAccess {
     val state: AppState
     fun persist(next: AppState)
     fun notify(message: AppMessage)
+
+    /** Calendar new records go into; null falls back to the first local calendar. */
+    val defaultCalendarId: String?
+    fun setDefaultCalendarId(id: String?)
 }

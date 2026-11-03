@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.crko.domain.AppState
 import com.crko.domain.Attachment
+import com.crko.domain.Calendar
 import com.crko.domain.CalendarSubscription
 import com.crko.domain.Event
 import com.crko.domain.IcsImport
@@ -24,6 +25,7 @@ import com.crko.domain.occurringOn
 import com.crko.domain.icsTimeZoneConflicts
 import com.crko.domain.toCalendar
 import com.crko.domain.resolveSubscriptionUrl
+import com.crko.domain.targetCalendar
 import com.crko.domain.today
 import com.crko.i18n.AppLanguage
 import com.crko.i18n.Strings
@@ -37,6 +39,8 @@ import com.crko.storage.newId
 import com.crko.storage.systemLocaleTag
 import com.crko.state.`import`.AttachmentMaterializer
 import com.crko.state.`import`.ImportService
+import com.crko.state.calendar.CalendarDeleteResult
+import com.crko.state.calendar.CalendarService
 import com.crko.state.event.EventService
 import com.crko.state.journal.JournalService
 import com.crko.state.persistence.StateRepository
@@ -189,7 +193,11 @@ class AppStateHolder(
         override val state: AppState get() = appState
         override fun persist(next: AppState) = this@AppStateHolder.persist(next)
         override fun notify(message: AppMessage) = this@AppStateHolder.notify(message)
+        override val defaultCalendarId: String? get() = settingsController.settings.defaultCalendarId
+        override fun setDefaultCalendarId(id: String?) = settingsController.setDefaultCalendarId(id)
     }
+
+    private val calendarService = CalendarService(access = stateAccess, idProvider = idProvider)
 
     private val importService = ImportService(
         access = stateAccess,
@@ -274,20 +282,50 @@ class AppStateHolder(
 
     fun setAgendaView(view: String) = settingsController.setAgendaView(view)
 
+    // ----- calendars (delegated to CalendarService) -----
+
+    /** Calendars the user manages locally; subscriptions have their own section. */
+    val localCalendars: List<Calendar> get() = appState.calendars.filter { it.isLocal }
+
+    /**
+     * Calendar new local records and imported files go into. Null only when the payload has no
+     * calendar at all, which storage never produces.
+     */
+    val newRecordCalendarId: String? get() = appState.targetCalendar(settings.defaultCalendarId)?.id
+
+    /** Explicitly selected default, or null while the first local calendar is implied. */
+    val defaultCalendarId: String? get() = settings.defaultCalendarId
+
+    fun createLocalCalendar(name: String, color: Long?): Calendar? =
+        calendarService.createLocalCalendar(name, color)
+
+    fun renameCalendar(id: String, name: String): Boolean = calendarService.renameCalendar(id, name)
+
+    fun deleteCalendar(id: String): CalendarDeleteResult = calendarService.deleteCalendar(id)
+
+    fun setCalendarVisible(id: String, visible: Boolean): Boolean =
+        calendarService.setCalendarVisible(id, visible)
+
+    fun setCalendarColor(id: String, color: Long?): Boolean = calendarService.setCalendarColor(id, color)
+
+    fun setDefaultCalendar(id: String): Boolean = calendarService.setDefaultCalendar(id)
+
     // ----- events (delegated to EventService) -----
 
     /** Events that occur on a date, including occurrences of repeating events, ordered by start time. */
-    fun eventsOn(date: LocalDate): List<Event> = appState.events.occurringOn(date)
+    fun eventsOn(date: LocalDate): List<Event> = appState.visibleEvents.occurringOn(date)
 
     /**
      * Saves [event]. For a repeating event, [scope] decides whether the change applies to this
-     * occurrence, this and all later occurrences, or the whole series.
+     * occurrence, this and all later occurrences, or the whole series. [calendarId] picks the
+     * calendar of a new record.
      */
     fun saveEvent(
         event: Event,
         occurrenceDate: LocalDate? = null,
         scope: EditScope = EditScope.AllEvents,
-    ): WriteResult = eventService.saveEvent(event, occurrenceDate, scope)
+        calendarId: String? = null,
+    ): WriteResult = eventService.saveEvent(event, occurrenceDate, scope, calendarId)
 
     /** Removes an event by id, without touching the rest of a series. */
     fun deleteEvent(id: String?) = eventService.deleteEvent(id)
@@ -354,21 +392,29 @@ class AppStateHolder(
     suspend fun applyCalendarImport(import: IcsImport, source: String? = null): ImportOutcome =
         withContext(persistenceDispatcher) { importCalendar(import, source) }
 
-    /** The whole calendar as ICS text, encoded off the caller thread for export/share. */
-    suspend fun exportCalendarIcs(): String {
+    /**
+     * ICS text of one calendar, or of every calendar when [calendarId] is null. The all-calendar
+     * export keeps its existing metadata and zone merge; a single calendar exports exactly its own
+     * records and definitions.
+     */
+    suspend fun exportCalendarIcs(calendarId: String? = null): String {
         val current = appState
-        val events = current.events
-        val todos = current.todos
-        val journals = current.journals
-        val calendar = current.calendar
+        val selected = calendarId?.let { id -> current.calendars.firstOrNull { it.id == id } }
+        val metadata = current.calendar
+        val events = selected?.events ?: current.events
+        val todos = selected?.todos ?: current.todos
+        val journals = selected?.journals ?: current.journals
+        val calendarName = selected?.name ?: metadata.name ?: "Crko"
+        val refreshMinutes = selected?.refreshMinutes ?: metadata.refreshMinutes
+        val timeZones = selected?.timeZones ?: metadata.timeZones
         return withContext(persistenceDispatcher) {
             exportCalendar(
                 events,
                 todos,
-                calendarName = calendar.name ?: "Crko",
+                calendarName = calendarName,
                 journals = journals,
-                refreshMinutes = calendar.refreshMinutes,
-                timeZones = calendar.timeZones,
+                refreshMinutes = refreshMinutes,
+                timeZones = timeZones,
                 storedAttachment = ::readStoredAttachment,
             )
         }
@@ -390,8 +436,13 @@ class AppStateHolder(
     /** The same forest rooted at the completed top-level todos. */
     fun completedTodoForest(): List<TodoNode> = todoService.completedTodoForest()
 
-    fun addTodo(title: String, priority: TodoPriority, due: LocalDate?, parentUid: String? = null): WriteResult =
-        todoService.addTodo(title, priority, due, parentUid)
+    fun addTodo(
+        title: String,
+        priority: TodoPriority,
+        due: LocalDate?,
+        parentUid: String? = null,
+        calendarId: String? = null,
+    ): WriteResult = todoService.addTodo(title, priority, due, parentUid, calendarId)
 
     fun setTodoDone(id: String, done: Boolean) = todoService.setTodoDone(id, done)
 
@@ -402,8 +453,8 @@ class AppStateHolder(
     /** Journals sorted newest first; undated ones keep their import order at the end. */
     fun journalsSorted(): List<Journal> = journalService.journalsSorted()
 
-    fun addJournal(title: String, note: String, date: LocalDate?): WriteResult =
-        journalService.addJournal(title, note, date)
+    fun addJournal(title: String, note: String, date: LocalDate?, calendarId: String? = null): WriteResult =
+        journalService.addJournal(title, note, date, calendarId)
 
     fun updateJournal(journal: Journal): WriteResult = journalService.updateJournal(journal)
 

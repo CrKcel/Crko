@@ -85,7 +85,7 @@ fun ScheduleTab(
 
     val selected = remember(selectedName) { LocalDate.parse(selectedName) }
     val monthAnchor = remember(monthAnchorName) { LocalDate.parse(monthAnchorName) }
-    val events = state.appState.events
+    val events = state.appState.visibleEvents
     val hasEvents = remember(events) { { date: LocalDate -> events.any { it.occursOn(date) } } }
     val fold = rememberCalendarFold()
     // The calendar toggles from the header block without a ripple: the movement of the calendar

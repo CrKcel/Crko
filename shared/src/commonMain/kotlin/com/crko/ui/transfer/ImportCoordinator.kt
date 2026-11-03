@@ -83,10 +83,15 @@ internal class ImportCoordinator(
         }
     }
 
-    fun exportCalendar() {
-        val fileName = "crko-${state.today}.ics"
+    /** Exports every calendar, or only [calendarId] when one is given. */
+    fun exportCalendar(calendarId: String? = null) {
+        val fileName = if (calendarId == null) {
+            "crko-${state.today}.ics"
+        } else {
+            "crko-${calendarId.take(8)}-${state.today}.ics"
+        }
         scope.launch {
-            val content = state.exportCalendarIcs()
+            val content = state.exportCalendarIcs(calendarId)
             files.saveExport(
                 fileName = fileName,
                 content = content,

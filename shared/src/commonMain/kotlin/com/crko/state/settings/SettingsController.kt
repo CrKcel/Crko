@@ -68,4 +68,7 @@ internal class SettingsController(
     fun setDefaultHour(hour: Int) = updateSettings { it.copy(agendaScrollHour = hour.coerceIn(0, 23)) }
 
     fun setAgendaView(view: String) = updateSettings { it.copy(agendaView = view) }
+
+    /** Null falls back to the first local calendar. */
+    fun setDefaultCalendarId(id: String?) = updateSettings { it.copy(defaultCalendarId = id) }
 }

@@ -8,7 +8,9 @@ import com.crko.domain.Todo
 import com.crko.domain.TodoNode
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
+import com.crko.domain.effectiveUid
 import com.crko.domain.nextOccurrenceDate
+import com.crko.domain.targetCalendarIndex
 import com.crko.domain.toIcsPriority
 import com.crko.domain.todoForest
 import com.crko.domain.todoPriorityRank
@@ -30,12 +32,16 @@ internal class TodoService(
     private val state: AppState get() = access.state
 
     /** Index of the calendar new local records go into; a payload always keeps at least one. */
-    private val localCalendarIndex: Int
-        get() = state.calendars.indexOfFirst { it.isLocal }.takeIf { it >= 0 } ?: 0
+    private val targetCalendarIndex: Int
+        get() = state.targetCalendarIndex(access.defaultCalendarId)
 
     /** Index of the calendar that owns the record selected by [contains]. */
     private fun calendarIndexContaining(contains: (Calendar) -> Boolean): Int? =
         state.calendars.indexOfFirst(contains).takeIf { it >= 0 }
+
+    /** A calendar explicitly chosen in the editor; null when it no longer exists. */
+    private fun requestedCalendarIndex(id: String?): Int? =
+        id?.let { calendarId -> state.calendars.indexOfFirst { it.id == calendarId }.takeIf { it >= 0 } }
 
     /** Replaces one calendar, leaving every other calendar's records untouched. */
     private fun AppState.replacingCalendar(index: Int, transform: (Calendar) -> Calendar): AppState {
@@ -48,7 +54,7 @@ internal class TodoService(
     /** Displayed due date of every todo: the next occurrence for a series, the stored due otherwise. */
     private fun shownDueDates(): Map<String, String?> {
         val today = today()
-        return state.todos.associate { todo ->
+        return state.visibleTodos.associate { todo ->
             todo.id to if (todo.repeat != null) {
                 todo.nextOccurrenceDate(today)?.toString()
             } else {
@@ -59,7 +65,7 @@ internal class TodoService(
 
     fun activeTodos(): List<Todo> {
         val shownDue = shownDueDates()
-        return state.todos
+        return state.visibleTodos
             .filterNot { it.done }
             .sortedWith(
                 compareBy<Todo> { shownDue[it.id] == null }
@@ -69,7 +75,7 @@ internal class TodoService(
             )
     }
 
-    fun completedTodos(): List<Todo> = state.todos
+    fun completedTodos(): List<Todo> = state.visibleTodos
         .filter { it.done }
         .sortedByDescending { it.createdAt }
 
@@ -85,7 +91,7 @@ internal class TodoService(
     /** Roots sorted the way the flat lists sort them; children keep their creation order. */
     private fun todoForest(active: Boolean): List<TodoNode> {
         val shownDue = shownDueDates()
-        return state.todos
+        return state.visibleTodos
             .todoForest()
             .filter { if (active) !it.todo.done else it.todo.done }
             .sortedWith(
@@ -100,7 +106,13 @@ internal class TodoService(
             )
     }
 
-    fun addTodo(title: String, priority: TodoPriority, due: LocalDate?, parentUid: String? = null): WriteResult {
+    fun addTodo(
+        title: String,
+        priority: TodoPriority,
+        due: LocalDate?,
+        parentUid: String? = null,
+        calendarId: String? = null,
+    ): WriteResult {
         if (title.isBlank()) return WriteResult.EmptyTitle
         val now = clock.now()
         val todo = Todo(
@@ -113,7 +125,18 @@ internal class TodoService(
             dtStamp = now.toString(),
             relatedTo = parentUid?.let { listOf(RelatedTo.parent(it)) } ?: emptyList(),
         )
-        access.persist(state.replacingCalendar(localCalendarIndex) { it.copy(todos = it.todos + todo) })
+        // A subtask stays next to its parent; a top-level todo goes where the editor points.
+        val parentCalendarIndex = parentUid?.let { uid ->
+            state.calendars.indexOfFirst { calendar -> calendar.todos.any { it.effectiveUid == uid } }
+                .takeIf { it >= 0 }
+        }
+        access.persist(
+            state.replacingCalendar(
+                parentCalendarIndex ?: requestedCalendarIndex(calendarId) ?: targetCalendarIndex,
+            ) {
+                it.copy(todos = it.todos + todo)
+            },
+        )
         return WriteResult.Success
     }
 

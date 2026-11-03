@@ -57,7 +57,8 @@ fun MoreTab(
     contentPadding: PaddingValues,
     onOpenSettings: () -> Unit,
     onImportCalendar: () -> Unit,
-    onExportCalendar: () -> Unit,
+    /** Null exports every calendar; a non-null id exports exactly that calendar. */
+    onExportCalendar: (String?) -> Unit,
 ) {
     val today = state.today
     val layoutDirection = LocalLayoutDirection.current
@@ -92,6 +93,18 @@ fun MoreTab(
             StatisticsSection(state = state, strings = strings, today = today)
             Spacer(Modifier.height(20.dp))
             LinkedCardTitle(
+                icon = AppIcons.Week,
+                iconTint = MiuixTheme.colorScheme.primary,
+                title = strings.calendars,
+            )
+            Spacer(Modifier.height(12.dp))
+            CalendarsSection(
+                state = state,
+                strings = strings,
+                onExportCalendar = { onExportCalendar(it) },
+            )
+            Spacer(Modifier.height(20.dp))
+            LinkedCardTitle(
                 icon = AppIcons.Timeline,
                 iconTint = MiuixTheme.colorScheme.primary,
                 title = strings.calendarData,
@@ -109,7 +122,7 @@ fun MoreTab(
                     icon = AppIcons.Export,
                     title = strings.exportIcs,
                     subtitle = strings.exportIcsHint,
-                    onClick = onExportCalendar,
+                    onClick = { onExportCalendar(null) },
                 )
             }
             Spacer(Modifier.height(20.dp))
@@ -213,8 +226,8 @@ private fun CalendarFileRow(
 
 @Composable
 private fun StatisticsSection(state: AppStateHolder, strings: Strings, today: LocalDate) {
-    val events = state.appState.events
-    val todos = state.appState.todos
+    val events = state.appState.visibleEvents
+    val todos = state.appState.visibleTodos
     val weekDates = today.startOfWeek().weekDates()
     val completedToday = state.completedToday()
     val active = todos.count { !it.done }

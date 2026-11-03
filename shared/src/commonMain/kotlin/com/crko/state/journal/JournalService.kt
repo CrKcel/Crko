@@ -4,6 +4,7 @@ import com.crko.domain.AppState
 import com.crko.domain.Calendar
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.Journal
+import com.crko.domain.targetCalendarIndex
 import com.crko.state.StateAccess
 import com.crko.state.WriteResult
 import kotlinx.datetime.LocalDate
@@ -18,12 +19,16 @@ internal class JournalService(
     private val state: AppState get() = access.state
 
     /** Index of the calendar new local records go into; a payload always keeps at least one. */
-    private val localCalendarIndex: Int
-        get() = state.calendars.indexOfFirst { it.isLocal }.takeIf { it >= 0 } ?: 0
+    private val targetCalendarIndex: Int
+        get() = state.targetCalendarIndex(access.defaultCalendarId)
 
     /** Index of the calendar that owns the record selected by [contains]. */
     private fun calendarIndexContaining(contains: (Calendar) -> Boolean): Int? =
         state.calendars.indexOfFirst(contains).takeIf { it >= 0 }
+
+    /** A calendar explicitly chosen in the editor; null when it no longer exists. */
+    private fun requestedCalendarIndex(id: String?): Int? =
+        id?.let { calendarId -> state.calendars.indexOfFirst { it.id == calendarId }.takeIf { it >= 0 } }
 
     /** Replaces one calendar, leaving every other calendar's records untouched. */
     private fun AppState.replacingCalendar(index: Int, transform: (Calendar) -> Calendar): AppState {
@@ -34,13 +39,13 @@ internal class JournalService(
     }
 
     /** Journals sorted newest first; undated ones keep their import order at the end. */
-    fun journalsSorted(): List<Journal> = state.journals
+    fun journalsSorted(): List<Journal> = state.visibleJournals
         .sortedWith(
             compareByDescending<Journal> { it.date != null }
                 .thenByDescending { it.date ?: "" },
         )
 
-    fun addJournal(title: String, note: String, date: LocalDate?): WriteResult {
+    fun addJournal(title: String, note: String, date: LocalDate?, calendarId: String? = null): WriteResult {
         if (title.isBlank() && note.isBlank()) return WriteResult.EmptyTitle
         val now = clock.now()
         val journal = Journal(
@@ -51,7 +56,11 @@ internal class JournalService(
             lastModified = now.toString(),
             dtStamp = now.toString(),
         )
-        access.persist(state.replacingCalendar(localCalendarIndex) { it.copy(journals = it.journals + journal) })
+        access.persist(
+            state.replacingCalendar(requestedCalendarIndex(calendarId) ?: targetCalendarIndex) {
+                it.copy(journals = it.journals + journal)
+            },
+        )
         return WriteResult.Success
     }
 

@@ -29,11 +29,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.crko.domain.Calendar
 import com.crko.domain.Journal
 import com.crko.domain.IcsTimeValue
 import com.crko.i18n.Strings
 import com.crko.state.AppStateHolder
 import com.crko.state.WriteResult
+import com.crko.ui.components.CalendarChips
 import com.crko.ui.components.CardRowDivider
 import com.crko.ui.components.SurfaceCard
 import com.crko.ui.icons.AppIcons
@@ -116,9 +118,11 @@ internal fun JournalSection(state: AppStateHolder, strings: Strings) {
         today = state.today,
         journal = null,
         onDismiss = { creating = false },
-        onSave = { title, note, date ->
-            state.addJournal(title, note, date) == WriteResult.Success
+        onSave = { title, note, date, calendarId ->
+            state.addJournal(title, note, date, calendarId) == WriteResult.Success
         },
+        calendars = state.localCalendars,
+        defaultCalendarId = state.newRecordCalendarId,
     )
     editing?.let { journal ->
         JournalEditorDialog(
@@ -127,7 +131,7 @@ internal fun JournalSection(state: AppStateHolder, strings: Strings) {
             today = state.today,
             journal = journal,
             onDismiss = { editing = null },
-            onSave = { title, note, date ->
+            onSave = { title, note, date, _ ->
                 state.updateJournal(journalWithEdits(journal, title, note, date)) == WriteResult.Success
             },
             onDelete = {
@@ -216,8 +220,10 @@ private fun JournalEditorDialog(
     today: LocalDate,
     journal: Journal?,
     onDismiss: () -> Unit,
-    onSave: (String, String, LocalDate?) -> Boolean,
+    onSave: (String, String, LocalDate?, String?) -> Boolean,
     onDelete: () -> Unit = {},
+    calendars: List<Calendar> = emptyList(),
+    defaultCalendarId: String? = null,
 ) {
     if (!show) return
     // Keyed on the entry and [show]: editing a different journal starts from its content, and a
@@ -225,6 +231,7 @@ private fun JournalEditorDialog(
     var title by remember(journal, show) { mutableStateOf(journal?.title ?: "") }
     var note by remember(journal, show) { mutableStateOf(journal?.note ?: "") }
     var date by remember(journal, show) { mutableStateOf(journal?.date?.let(::parseJournalDate)) }
+    var calendarId by remember(journal, show) { mutableStateOf(defaultCalendarId) }
     var showDatePicker by remember(journal, show) { mutableStateOf(false) }
 
     WindowDialog(
@@ -241,6 +248,21 @@ private fun JournalEditorDialog(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (journal == null && calendars.size > 1) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = strings.calendar,
+                    style = MiuixTheme.textStyles.footnote2,
+                    fontSize = 11.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+                Spacer(Modifier.height(6.dp))
+                CalendarChips(
+                    calendars = calendars,
+                    selectedId = calendarId,
+                    onSelect = { calendarId = it },
+                )
+            }
             Spacer(Modifier.height(16.dp))
             Text(
                 text = strings.journalDate,
@@ -295,7 +317,7 @@ private fun JournalEditorDialog(
             }
             Spacer(Modifier.height(8.dp))
             Button(
-                onClick = { if (onSave(title, note, date)) onDismiss() },
+                onClick = { if (onSave(title, note, date, if (journal == null) calendarId else null)) onDismiss() },
                 enabled = title.isNotBlank() || note.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColorsPrimary(),

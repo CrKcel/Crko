@@ -45,6 +45,7 @@ import kotlinx.datetime.TimeZone
 internal class EventEditorState(
     private val event: Event,
     private val occurrenceDate: LocalDate?,
+    initialCalendarId: String?,
     val fileBridge: CalendarFileBridge,
 ) {
     private val deviceZone = TimeZone.currentSystemDefault()
@@ -60,6 +61,8 @@ internal class EventEditorState(
     private val originalAtEnd = originalAlarm?.relatedToEnd ?: false
 
     var title by mutableStateOf(event.title)
+    /** Container of a new event; an existing record stays where it is. */
+    var calendarId by mutableStateOf(if (event.id == null) initialCalendarId else null)
     var note by mutableStateOf(event.note)
     var date by mutableStateOf(initialStartDate)
     var endDate by mutableStateOf(initialEndDate)
@@ -257,8 +260,14 @@ internal class EventEditorState(
 }
 
 @Composable
-internal fun rememberEventEditorState(event: Event, occurrenceDate: LocalDate?): EventEditorState {
+internal fun rememberEventEditorState(
+    event: Event,
+    occurrenceDate: LocalDate?,
+    initialCalendarId: String? = null,
+): EventEditorState {
     val fileBridge = rememberCalendarFileBridge()
     // Re-key by the full event so switching between events resets every field.
-    return remember(event, occurrenceDate) { EventEditorState(event, occurrenceDate, fileBridge) }
+    return remember(event, occurrenceDate) {
+        EventEditorState(event, occurrenceDate, initialCalendarId, fileBridge)
+    }
 }

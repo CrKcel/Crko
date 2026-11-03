@@ -9,5 +9,5 @@ internal class StatsService(
     private val today: () -> LocalDate,
 ) {
     fun completedToday(): Int =
-        access.state.todos.count { it.done && it.completedAt == today().toString() }
+        access.state.visibleTodos.count { it.done && it.completedAt == today().toString() }
 }

@@ -25,11 +25,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.crko.domain.Calendar
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
 import com.crko.domain.effectiveUid
 import com.crko.domain.plusDays
 import com.crko.i18n.Strings
+import com.crko.ui.components.CalendarChips
 import com.crko.ui.schedule.DatePickerDialog
 import com.crko.ui.schedule.priorityColor
 import kotlinx.datetime.LocalDate
@@ -46,9 +48,11 @@ internal fun TodoEditorDialog(
     strings: Strings,
     today: LocalDate,
     onDismiss: () -> Unit,
-    onSave: (String, TodoPriority, LocalDate?, String?) -> Boolean,
+    onSave: (String, TodoPriority, LocalDate?, String?, String?) -> Boolean,
     /** Parent of the subtask being created; null creates a top-level todo. */
     parent: Todo? = null,
+    calendars: List<Calendar> = emptyList(),
+    defaultCalendarId: String? = null,
 ) {
     if (!show) return
     // Keyed on [show]: the fields start blank on every open instead of keeping the last session's
@@ -56,6 +60,7 @@ internal fun TodoEditorDialog(
     var title by remember(show) { mutableStateOf("") }
     var priority by remember(show) { mutableStateOf(TodoPriority.Normal) }
     var due by remember(show) { mutableStateOf<LocalDate?>(null) }
+    var calendarId by remember(show) { mutableStateOf(defaultCalendarId) }
     var showDatePicker by remember(show) { mutableStateOf(false) }
 
     WindowDialog(
@@ -72,6 +77,20 @@ internal fun TodoEditorDialog(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (parent == null && calendars.size > 1) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = strings.calendar,
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+                Spacer(Modifier.height(6.dp))
+                CalendarChips(
+                    calendars = calendars,
+                    selectedId = calendarId,
+                    onSelect = { calendarId = it },
+                )
+            }
             Spacer(Modifier.height(16.dp))
             SectionCaption(strings.priority)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -113,7 +132,9 @@ internal fun TodoEditorDialog(
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = {
-                    if (onSave(title, priority, due, parent?.effectiveUid)) onDismiss()
+                    if (onSave(title, priority, due, parent?.effectiveUid, if (parent == null) calendarId else null)) {
+                        onDismiss()
+                    }
                 },
                 enabled = title.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),

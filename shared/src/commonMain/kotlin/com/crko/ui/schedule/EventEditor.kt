@@ -14,9 +14,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import com.crko.domain.Attachment
+import com.crko.domain.Calendar
 import com.crko.domain.Event
 import com.crko.i18n.Strings
 import com.crko.state.EditScope
+import com.crko.ui.components.CalendarChips
 import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -35,8 +37,10 @@ internal fun EventEditorDialog(
     today: LocalDate,
     readAttachment: (Attachment) -> ByteArray?,
     onDismiss: () -> Unit,
-    onSave: (Event, EditScope) -> Boolean,
+    onSave: (Event, EditScope, String?) -> Boolean,
     onDelete: (Event, EditScope) -> Unit,
+    calendars: List<Calendar> = emptyList(),
+    defaultCalendarId: String? = null,
 ) {
     if (event != null) {
         EventEditorContent(
@@ -48,6 +52,8 @@ internal fun EventEditorDialog(
             onDismiss,
             onSave,
             onDelete,
+            calendars,
+            defaultCalendarId,
         )
     }
 }
@@ -60,10 +66,12 @@ private fun EventEditorContent(
     today: LocalDate,
     readAttachment: (Attachment) -> ByteArray?,
     onDismiss: () -> Unit,
-    onSave: (Event, EditScope) -> Boolean,
+    onSave: (Event, EditScope, String?) -> Boolean,
     onDelete: (Event, EditScope) -> Unit,
+    calendars: List<Calendar>,
+    defaultCalendarId: String?,
 ) {
-    val state = rememberEventEditorState(event, occurrenceDate)
+    val state = rememberEventEditorState(event, occurrenceDate, defaultCalendarId)
     if (state.pickingTimeField != null) {
         EventEditorTimeDialog(state = state, strings = strings)
         return
@@ -85,6 +93,20 @@ private fun EventEditorContent(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (event.id == null && calendars.size > 1) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = strings.calendar,
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+                Spacer(Modifier.height(6.dp))
+                CalendarChips(
+                    calendars = calendars,
+                    selectedId = state.calendarId,
+                    onSelect = { state.calendarId = it },
+                )
+            }
             Spacer(Modifier.height(14.dp))
             DateSection(
                 strings = strings,
@@ -203,7 +225,7 @@ private fun EventEditorContent(
             val selectedScope = state.selectedScope
             Button(
                 onClick = {
-                    if (onSave(state.buildEvent(), selectedScope)) onDismiss()
+                    if (onSave(state.buildEvent(), selectedScope, state.calendarId)) onDismiss()
                 },
                 enabled = state.valid,
                 modifier = Modifier.fillMaxWidth(),
