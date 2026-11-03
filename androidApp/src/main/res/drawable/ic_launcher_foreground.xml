@@ -9,19 +9,25 @@
         android:scaleY="0.084416"
         android:translateX="10.7792"
         android:translateY="10.7792">
-        <path
-            android:pathData="M757.746,339.927 A300,300 0 1 0 757.746,684.073"
-            android:strokeColor="#E6FBFF"
-            android:strokeLineCap="round"
-            android:strokeWidth="88" />
-        <path
-            android:pathData="M757.746,684.073 m-30,0 a30,30 0 1,0 60,0 a30,30 0 1,0 -60,0"
-            android:fillColor="#FFD36A" />
-        <path
-            android:pathData="M390,536 L492,640 L664,432"
-            android:strokeColor="#FFFFFF"
-            android:strokeLineCap="round"
-            android:strokeLineJoin="round"
-            android:strokeWidth="84" />
+        <group
+            android:scaleX="0.9"
+            android:scaleY="0.9"
+            android:pivotX="512"
+            android:pivotY="512">
+            <path
+                android:pathData="M757.746,339.927 A300,300 0 1 0 757.746,684.073"
+                android:strokeColor="#E6FBFF"
+                android:strokeLineCap="round"
+                android:strokeWidth="88" />
+            <path
+                android:pathData="M757.746,684.073 m-30,0 a30,30 0 1,0 60,0 a30,30 0 1,0 -60,0"
+                android:fillColor="#FFD36A" />
+            <path
+                android:pathData="M390,536 L492,640 L664,432"
+                android:strokeColor="#FFFFFF"
+                android:strokeLineCap="round"
+                android:strokeLineJoin="round"
+                android:strokeWidth="84" />
+        </group>
     </group>
 </vector>

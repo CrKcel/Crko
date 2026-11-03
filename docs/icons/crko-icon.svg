@@ -7,10 +7,12 @@
   </defs>
 
   <rect width="1024" height="1024" fill="#3B6CF5"/>
-  <path d="M757.746 339.927 A300 300 0 1 0 757.746 684.073"
-        fill="none" stroke="url(#ring)" stroke-width="88" stroke-linecap="round"/>
-  <circle cx="757.746" cy="684.073" r="30" fill="#FFD36A"/>
-  <path d="M390 536 L492 640 L664 432"
-        fill="none" stroke="#FFFFFF" stroke-width="84"
-        stroke-linecap="round" stroke-linejoin="round"/>
+  <g transform="translate(51.2 51.2) scale(0.9)">
+    <path d="M757.746 339.927 A300 300 0 1 0 757.746 684.073"
+          fill="none" stroke="url(#ring)" stroke-width="88" stroke-linecap="round"/>
+    <circle cx="757.746" cy="684.073" r="30" fill="#FFD36A"/>
+    <path d="M390 536 L492 640 L664 432"
+          fill="none" stroke="#FFFFFF" stroke-width="84"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
 </svg>
