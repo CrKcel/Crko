@@ -48,6 +48,9 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :androidApp:assembleDebug --stacktrace
 
+      - name: Build release APK
+        run: ./gradlew :androidApp:assembleRelease --stacktrace
+
       - name: Upload test report
         if: failure()
         uses: actions/upload-artifact@v7
@@ -61,6 +64,13 @@ jobs:
         with:
           name: android-debug-apk
           path: androidApp/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-release-apk
+          path: androidApp/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
   # ios:
@@ -148,15 +158,17 @@ jobs:
           set -euo pipefail
           tag="canary"
           short_sha="${GITHUB_SHA::7}"
-          apk=$(find release-assets -type f -name '*.apk' | head -n 1)
+          debug_apk=$(find release-assets/android-debug-apk -type f -name '*.apk' | head -n 1)
+          release_apk=$(find release-assets/android-release-apk -type f -name '*.apk' | head -n 1)
           # ipa=$(find release-assets -type f -name '*.ipa' | head -n 1)
-          if [ -z "$apk" ]; then
+          if [ -z "$debug_apk" ] || [ -z "$release_apk" ]; then
             echo "Missing APK in downloaded artifacts" >&2
             exit 1
           fi
 
           mkdir -p release-assets/out
-          cp "$apk" "release-assets/out/Crko-${tag}-debug.apk"
+          cp "$debug_apk" "release-assets/out/Crko-${tag}-debug.apk"
+          cp "$release_apk" "release-assets/out/Crko-${tag}-release.apk"
           # cp "$ipa" "release-assets/out/Crko-${tag}-unsigned.ipa"
 
           {
@@ -174,6 +186,7 @@ jobs:
 
           gh release create "$tag" \
             "release-assets/out/Crko-${tag}-debug.apk" \
+            "release-assets/out/Crko-${tag}-release.apk" \
             --target "$GITHUB_SHA" \
             --title "Canary Build" \
             --notes-file release-notes.md \
