@@ -28,7 +28,15 @@ actual fun persistenceDriver(): SqlDriver? {
         )
     }
     if (!manager.fileExistsAtPath(directory)) return null
-    return NativeSqliteDriver(CrkoDatabase.Schema, "$directory/crko.db")
+    // sqliter treats the driver name as a bare filename and joins it with `basePath` itself, so a
+    // path separator in the name throws before the database ever opens.
+    return NativeSqliteDriver(
+        CrkoDatabase.Schema,
+        "crko.db",
+        onConfiguration = { config ->
+            config.copy(extendedConfig = config.extendedConfig.copy(basePath = directory))
+        },
+    )
 }
 
 private fun applicationSupportDirectory(): String? {
