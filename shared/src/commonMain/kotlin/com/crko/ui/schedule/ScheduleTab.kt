@@ -57,6 +57,7 @@ import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.LocalTime
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.window.WindowListPopup
@@ -312,6 +313,10 @@ fun ScheduleTab(
                 onMonthChange = onMonthChange,
                 driveStrip = weekStrip,
             )
+        }
+
+        if (listMode || !weekMode) {
+            HorizontalDivider()
         }
 
         // The overview and the day view share this area; the upper calendar stays untouched.
