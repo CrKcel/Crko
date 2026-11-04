@@ -169,8 +169,8 @@ interface Strings {
     /** Global search across events, todos and journals. */
     val search: String
     val searchHint: String
-    val searchEmpty: String
     val searchNoResults: String
+    val searchFilters: String
     val searchAllCalendars: String
     val searchAllCategories: String
     val searchDateFrom: String
@@ -410,9 +410,9 @@ object ZhStrings : Strings {
     override val journalEmpty = "还没有日记"
     override val journalDate = "日期"
     override val search = "搜索"
-    override val searchHint = "搜索标题、备注、地点、分类、参与人"
-    override val searchEmpty = "输入关键词搜索日程、待办和日记"
+    override val searchHint = "搜索日程、待办、日记"
     override val searchNoResults = "没有匹配的结果"
+    override val searchFilters = "筛选"
     override val searchAllCalendars = "全部日历"
     override val searchAllCategories = "全部分类"
     override val searchDateFrom = "起始日期"

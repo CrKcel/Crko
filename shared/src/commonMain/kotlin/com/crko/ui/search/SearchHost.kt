@@ -17,7 +17,7 @@ import com.crko.ui.more.journalWithEdits
 import com.crko.ui.todo.TodoEditorDialog
 
 /**
- * Owns the search panel and the editors it opens. The panel closes when a result is tapped, and the
+ * Owns the search sheet and the editors it opens. The sheet closes when a result is tapped, and the
  * existing record editor (event, todo or journal) takes over; the tab that launched the search stays
  * where it was. [onOpenEvent] hands a tapped event to the app shell, which already knows how to show
  * its editor with the series-occurrence information it holds.
@@ -33,7 +33,7 @@ internal fun SearchHost(
     var editingTodo by remember { mutableStateOf<Todo?>(null) }
     var editingJournal by remember { mutableStateOf<Journal?>(null) }
 
-    SearchDialog(
+    SearchSheet(
         show = open,
         state = state,
         strings = strings,

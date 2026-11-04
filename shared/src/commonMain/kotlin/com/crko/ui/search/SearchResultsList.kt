@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,22 +32,20 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
  * Results grouped by record kind. Ordering comes from the state layer already (kind, date,
- * priority, title), so the groups are only split here and never re-sorted in the UI.
+ * priority, title), so the groups are only split here and never re-sorted in the UI. The caller
+ * bounds the list height, e.g. the search sheet hands it the remaining sheet space.
  */
 @Composable
 internal fun SearchResultsList(
     hits: List<SearchHit>,
     strings: Strings,
     onOpen: (SearchHit) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val groups = SearchType.entries.mapNotNull { type ->
         hits.filter { it.type == type }.takeIf { it.isNotEmpty() }?.let { type to it }
     }
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(max = 380.dp),
-    ) {
+    LazyColumn(modifier = modifier.fillMaxWidth()) {
         groups.forEach { (type, group) ->
             item(key = "header-${type.name}") {
                 Row(

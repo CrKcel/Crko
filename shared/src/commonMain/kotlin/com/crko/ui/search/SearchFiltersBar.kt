@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -47,59 +48,62 @@ internal fun SearchFiltersBar(
     onPickFrom: () -> Unit,
     onPickTo: () -> Unit,
     onClearDates: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    ChipsRow {
-        SearchType.entries.forEach { type ->
-            SearchChip(
-                text = searchTypeLabel(strings, type),
-                selected = type in types,
-                onClick = { onToggleType(type) },
-            )
-        }
-    }
-    ChipsRow {
-        SearchChip(
-            text = strings.searchAllCalendars,
-            selected = calendarId == null,
-            onClick = { onCalendar(null) },
-        )
-        calendars.forEach { calendar ->
-            SearchChip(
-                text = calendar.name,
-                selected = calendar.id == calendarId,
-                onClick = { onCalendar(calendar.id) },
-            )
-        }
-    }
-    if (categories.isNotEmpty()) {
+    Column(modifier = modifier) {
         ChipsRow {
-            SearchChip(
-                text = strings.searchAllCategories,
-                selected = category == null,
-                onClick = { onCategory(null) },
-            )
-            categories.forEach { name ->
+            SearchType.entries.forEach { type ->
                 SearchChip(
-                    text = name,
-                    selected = name == category,
-                    onClick = { onCategory(name) },
+                    text = searchTypeLabel(strings, type),
+                    selected = type in types,
+                    onClick = { onToggleType(type) },
                 )
             }
         }
-    }
-    ChipsRow {
-        SearchChip(
-            text = from?.let(strings::dayMonth) ?: strings.searchDateFrom,
-            selected = from != null,
-            onClick = onPickFrom,
-        )
-        SearchChip(
-            text = to?.let(strings::dayMonth) ?: strings.searchDateTo,
-            selected = to != null,
-            onClick = onPickTo,
-        )
-        if (from != null || to != null) {
-            SearchChip(text = strings.clear, selected = false, onClick = onClearDates)
+        ChipsRow {
+            SearchChip(
+                text = strings.searchAllCalendars,
+                selected = calendarId == null,
+                onClick = { onCalendar(null) },
+            )
+            calendars.forEach { calendar ->
+                SearchChip(
+                    text = calendar.name,
+                    selected = calendar.id == calendarId,
+                    onClick = { onCalendar(calendar.id) },
+                )
+            }
+        }
+        if (categories.isNotEmpty()) {
+            ChipsRow {
+                SearchChip(
+                    text = strings.searchAllCategories,
+                    selected = category == null,
+                    onClick = { onCategory(null) },
+                )
+                categories.forEach { name ->
+                    SearchChip(
+                        text = name,
+                        selected = name == category,
+                        onClick = { onCategory(name) },
+                    )
+                }
+            }
+        }
+        ChipsRow {
+            SearchChip(
+                text = from?.let(strings::dayMonth) ?: strings.searchDateFrom,
+                selected = from != null,
+                onClick = onPickFrom,
+            )
+            SearchChip(
+                text = to?.let(strings::dayMonth) ?: strings.searchDateTo,
+                selected = to != null,
+                onClick = onPickTo,
+            )
+            if (from != null || to != null) {
+                SearchChip(text = strings.clear, selected = false, onClick = onClearDates)
+            }
         }
     }
 }
@@ -123,12 +127,14 @@ private fun SearchChip(text: String, selected: Boolean, onClick: () -> Unit) {
         text = text,
         style = MiuixTheme.textStyles.body2,
         maxLines = 1,
-        color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface,
+        // Paired surface/content colors from the theme: unselected chips read dark on gray, and a
+        // selected chip is solid primary with its on-color, so the state survives both palettes.
+        color = if (selected) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurfaceContainerHigh,
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(
                 if (selected) {
-                    MiuixTheme.colorScheme.primaryContainer
+                    MiuixTheme.colorScheme.primary
                 } else {
                     MiuixTheme.colorScheme.surfaceContainerHigh
                 },
