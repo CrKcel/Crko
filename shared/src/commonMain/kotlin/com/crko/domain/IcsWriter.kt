@@ -371,7 +371,7 @@ private fun StringBuilder.appendTodo(
         candidate !== todo && candidate.effectiveUid == todo.effectiveUid && candidate.recurrenceId == null
     }
     if (masterPresent) {
-        todo.recurrenceId?.let { appendTimeLine("RECURRENCE-ID", it) }
+        appendTimeLine("RECURRENCE-ID", todo.recurrenceId)
     }
     todo.start?.let { appendTimeLine("DTSTART", it) }
     todo.due?.let { appendTimeLine("DUE", it) }

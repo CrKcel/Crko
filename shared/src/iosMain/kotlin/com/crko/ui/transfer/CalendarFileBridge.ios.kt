@@ -182,8 +182,7 @@ private class ImportDelegate(
  * what keeps an oversized file from being loaded into memory only to be rejected afterwards.
  */
 private fun fileSizeBytes(url: NSURL): Long? = runCatching {
-    @Suppress("UNCHECKED_CAST")
-    val values = url.resourceValuesForKeys(listOf(NSURLFileSizeKey), error = null) as? Map<Any?, Any?>
+    val values = url.resourceValuesForKeys(listOf(NSURLFileSizeKey), error = null)
     (values?.get(NSURLFileSizeKey) as? NSNumber)?.longLongValue
 }.getOrNull()
 

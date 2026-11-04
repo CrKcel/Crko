@@ -91,8 +91,8 @@ internal fun mapSeries(
         exceptions += mapped.copy(icsUid = uid, recurrenceId = slot, recurrenceRange = range)
         // Exceptions from the slot on replace instances the segment generates, not the master's:
         // it was truncated, and their slots would come back as mismatched exclusions on it.
-        if (segmentSlot != null && slot.wallDate >= segmentSlot!!.wallDate) {
-            segmentExclusions += alignExclusionValue(segmentSlot!!, slot, deviceZone)
+        if (segmentSlot != null && slot.wallDate >= segmentSlot.wallDate) {
+            segmentExclusions += alignExclusionValue(segmentSlot, slot, deviceZone)
         } else {
             exclusions += slot
         }

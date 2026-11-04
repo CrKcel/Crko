@@ -1,5 +1,6 @@
 package com.crko.storage
 
+import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
@@ -59,7 +60,7 @@ actual fun defaultSubscriptionHttp(): SubscriptionHttp = object : SubscriptionHt
 }
 
 /** Copies these bytes into an [NSData] request body. */
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 private fun ByteArray.toNSData(): NSData =
     if (isEmpty()) {
         NSData.create(bytes = null, length = 0u)

@@ -20,8 +20,8 @@ import platform.Foundation.create
 internal actual fun decodeBytesWithCharset(bytes: ByteArray, charsetName: String): String? {
     val encoding = when (charsetName.trim().uppercase()) {
         "UTF-8", "UTF8" -> NSUTF8StringEncoding
-        "UTF-16LE", "UTF16LE" -> CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingUTF16LE.toUInt())
-        "UTF-16BE", "UTF16BE" -> CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingUTF16BE.toUInt())
+        "UTF-16LE", "UTF16LE" -> CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingUTF16LE)
+        "UTF-16BE", "UTF16BE" -> CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingUTF16BE)
         "GB18030", "GBK", "GB2312" ->
             CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingGB_18030_2000.toUInt())
         "WINDOWS-1252", "CP1252" -> NSWindowsCP1252StringEncoding

@@ -281,15 +281,15 @@ private fun readEvent(
                 status = line.value.trim().uppercase()
                 // RFC 5545 allows X- extension values; the model has no slot for them, so the raw
                 // line is kept for the export instead of silently normalizing what the file said.
-                if (status != null && status !in listOf("CONFIRMED", "TENTATIVE", "CANCELLED")) extra += line.raw
+                if (status !in listOf("CONFIRMED", "TENTATIVE", "CANCELLED")) extra += line.raw
             }
             "TRANSP" -> {
                 transparency = line.value.trim().uppercase()
-                if (transparency != null && transparency !in listOf("OPAQUE", "TRANSPARENT")) extra += line.raw
+                if (transparency !in listOf("OPAQUE", "TRANSPARENT")) extra += line.raw
             }
             "CLASS" -> {
                 eventClass = line.value.trim().uppercase()
-                if (rawClass(eventClass) == null && eventClass?.isNotEmpty() == true) extra += line.raw
+                if (rawClass(eventClass) == null && eventClass.isNotEmpty()) extra += line.raw
             }
             "PRIORITY" -> priority = line.value.trim().toIntOrNull()?.coerceIn(0, 9)
             "ORGANIZER" -> organizer = CalAddress.fromContentLine(line)
@@ -496,7 +496,7 @@ private fun readTodo(
                 rawStatus = line.value.trim().uppercase()
                 // An X- extension status has no enum slot; keep the raw line so the export does not
                 // quietly replace it with NEEDS-ACTION.
-                if (rawStatus != null && rawStatus !in listOf("NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED")) {
+                if (rawStatus !in listOf("NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED")) {
                     extra += line.raw
                 }
             }
@@ -667,11 +667,11 @@ private fun readJournal(
                 rawStatus = line.value.trim().uppercase()
                 // `STATUS` accepts an extension value; with no enum entry for it the raw line is kept
                 // so an export does silently drop what the file declared.
-                if (JournalStatus.parse(rawStatus) == null && rawStatus?.isNotEmpty() == true) extra += line.raw
+                if (JournalStatus.parse(rawStatus) == null && rawStatus.isNotEmpty()) extra += line.raw
             }
             "CLASS" -> {
                 journalClass = line.value.trim().uppercase()
-                if (rawClass(journalClass) == null && journalClass?.isNotEmpty() == true) extra += line.raw
+                if (rawClass(journalClass) == null && journalClass.isNotEmpty()) extra += line.raw
             }
             "EXRULE" -> {
                 warnings += IcsWarning.ExruleIgnored
