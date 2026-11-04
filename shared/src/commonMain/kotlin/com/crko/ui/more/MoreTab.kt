@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -51,15 +50,17 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.crko.ui.icons.AppIcons
 
+/**
+ * Statistics and the journal, plus two entry cards: calendars/subscriptions/ICS data live in the
+ * bottom sheet opened by [onOpenCalendarSheet], settings in the page opened by [onOpenSettings].
+ */
 @Composable
 fun MoreTab(
     state: AppStateHolder,
     strings: Strings,
     contentPadding: PaddingValues,
+    onOpenCalendarSheet: () -> Unit,
     onOpenSettings: () -> Unit,
-    onImportCalendar: () -> Unit,
-    /** Null exports every calendar; a non-null id exports exactly that calendar. */
-    onExportCalendar: (String?) -> Unit,
 ) {
     val today = state.today
     val layoutDirection = LocalLayoutDirection.current
@@ -93,50 +94,15 @@ fun MoreTab(
             Spacer(Modifier.height(12.dp))
             StatisticsSection(state = state, strings = strings, today = today)
             Spacer(Modifier.height(20.dp))
-            LinkedCardTitle(
-                icon = AppIcons.Week,
-                iconTint = MiuixTheme.colorScheme.primary,
-                title = strings.calendars,
-            )
-            Spacer(Modifier.height(12.dp))
-            CalendarsSection(
-                state = state,
-                strings = strings,
-                onExportCalendar = { onExportCalendar(it) },
-            )
-            Spacer(Modifier.height(20.dp))
-            LinkedCardTitle(
-                icon = AppIcons.Timeline,
-                iconTint = MiuixTheme.colorScheme.primary,
-                title = strings.calendarData,
-            )
-            Spacer(Modifier.height(12.dp))
-            SurfaceCard {
-                CalendarFileRow(
-                    icon = AppIcons.Import,
-                    title = strings.importIcs,
-                    subtitle = strings.importIcsHint,
-                    onClick = onImportCalendar,
-                )
-                CardRowDivider()
-                CalendarFileRow(
-                    icon = AppIcons.Export,
-                    title = strings.exportIcs,
-                    subtitle = strings.exportIcsHint,
-                    onClick = { onExportCalendar(null) },
-                )
-            }
-            Spacer(Modifier.height(20.dp))
             JournalSection(state = state, strings = strings)
             Spacer(Modifier.height(20.dp))
-            LinkedCardTitle(
-                icon = AppIcons.Export,
+            EntryCard(
+                icon = AppIcons.Week,
                 iconTint = MiuixTheme.colorScheme.primary,
-                title = strings.subscriptions,
+                title = strings.calendarsAndData,
+                onClick = onOpenCalendarSheet,
             )
             Spacer(Modifier.height(12.dp))
-            SubscriptionsSection(state = state, strings = strings)
-            Spacer(Modifier.height(20.dp))
             EntryCard(
                 icon = AppIcons.Settings,
                 iconTint = MiuixTheme.colorScheme.secondary,
@@ -145,22 +111,6 @@ fun MoreTab(
             )
             Spacer(Modifier.height(GlassNavigationBarDefaults.clearance() + 12.dp))
         }
-    }
-}
-
-@Composable
-private fun LinkedCardTitle(icon: ImageVector, iconTint: Color, title: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(iconTint.copy(alpha = 0.15f))
-                .padding(6.dp),
-        ) {
-            Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.width(18.dp))
-        }
-        Spacer(Modifier.width(12.dp))
-        Text(text = title, style = MiuixTheme.textStyles.title4, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -184,42 +134,6 @@ private fun EntryCard(
                 }
                 Spacer(Modifier.width(12.dp))
                 Text(text = title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Medium)
-            }
-        }
-    }
-}
-
-@Composable
-private fun CalendarFileRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String,
-    onClick: () -> Unit,
-) {
-    BasicComponent(onClick = onClick, insideMargin = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.15f))
-                    .padding(6.dp),
-            ) {
-                Icon(
-                    icon,
-                    contentDescription = null,
-                    tint = MiuixTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text(text = title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Medium)
-                Text(
-                    text = subtitle,
-                    style = MiuixTheme.textStyles.footnote1,
-                    fontSize = 12.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
             }
         }
     }
@@ -446,4 +360,3 @@ private fun PriorityRow(priority: TodoPriority, label: String, counts: TodoCount
         )
     }
 }
-

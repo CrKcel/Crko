@@ -28,8 +28,9 @@ import com.crko.ui.components.AddFab
 import com.crko.ui.components.GlassNavigationBar
 import com.crko.ui.components.GlassNavigationBarDefaults
 import com.crko.ui.components.GlassNavigationBarItem
+import com.crko.ui.more.CalendarSheet
 import com.crko.ui.more.MoreTab
-import com.crko.ui.more.SettingsSheet
+import com.crko.ui.more.SettingsPage
 import com.crko.ui.schedule.EventEditorDialog
 import com.crko.ui.schedule.ScheduleTab
 import com.crko.ui.search.SearchHost
@@ -46,9 +47,10 @@ import top.yukonga.miuix.kmp.basic.SnackbarHost
 import com.crko.ui.icons.AppIcons
 
 /**
- * The app shell: tab switching, the three pages, and the display state of the editor, settings and
- * import preview. File flows live in [com.crko.ui.transfer.ImportCoordinator]; message text and the
- * snackbar queue live in [rememberMessagePresenter].
+ * The app shell: tab switching, the three pages, and the display state of the editor, the calendar
+ * bottom sheet, the settings page and the import preview. File flows live in
+ * [com.crko.ui.transfer.ImportCoordinator]; message text and the snackbar queue live in
+ * [rememberMessagePresenter].
  */
 @Composable
 fun CrkoApp(state: AppStateHolder) {
@@ -57,6 +59,7 @@ fun CrkoApp(state: AppStateHolder) {
     var tab by rememberSaveable { mutableIntStateOf(1) }
     var eventEditor by remember { mutableStateOf<EventEditorTarget?>(null) }
     var showTodoEditor by remember { mutableStateOf(false) }
+    var showCalendarSheet by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var importPreview by remember { mutableStateOf<ImportPreview?>(null) }
@@ -147,9 +150,8 @@ fun CrkoApp(state: AppStateHolder) {
                             state = state,
                             strings = strings,
                             contentPadding = tabPadding,
+                            onOpenCalendarSheet = { showCalendarSheet = true },
                             onOpenSettings = { showSettings = true },
-                            onImportCalendar = importer::importCalendar,
-                            onExportCalendar = importer::exportCalendar,
                         )
                     }
                 }
@@ -224,11 +226,20 @@ fun CrkoApp(state: AppStateHolder) {
         defaultCalendarId = state.newRecordCalendarId,
     )
 
-    SettingsSheet(
+    CalendarSheet(
+        show = showCalendarSheet,
+        state = state,
+        strings = strings,
+        onDismiss = { showCalendarSheet = false },
+        onImportCalendar = importer::importCalendar,
+        onExportCalendar = importer::exportCalendar,
+    )
+
+    SettingsPage(
         show = showSettings,
         state = state,
         strings = strings,
-        onDismiss = { showSettings = false },
+        onBack = { showSettings = false },
     )
 
     // Search over both list pages; a tapped todo or journal opens its editor inside the host, an

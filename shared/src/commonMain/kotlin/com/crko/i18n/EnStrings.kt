@@ -161,6 +161,8 @@ object EnStrings : Strings {
     override val searchTypeJournals = "Journals"
     override val statistics = "Statistics"
     override val settings = "Settings"
+    override val calendarsAndData = "Calendars & Data"
+    override val back = "Back"
     override val completedToday = "Done today"
     override val activeTodos = "Active"
     override val upcomingEvents = "Upcoming"

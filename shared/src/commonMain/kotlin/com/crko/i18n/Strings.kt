@@ -183,6 +183,8 @@ interface Strings {
 
     val statistics: String
     val settings: String
+    val calendarsAndData: String
+    val back: String
     val completedToday: String
     val activeTodos: String
     val upcomingEvents: String
@@ -422,6 +424,8 @@ object ZhStrings : Strings {
     override val searchTypeJournals = "日记"
     override val statistics = "统计"
     override val settings = "设置"
+    override val calendarsAndData = "日历与数据"
+    override val back = "返回"
     override val completedToday = "今日完成"
     override val activeTodos = "进行中"
     override val upcomingEvents = "即将开始"
