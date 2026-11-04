@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.crko.domain.Event
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
 import com.crko.domain.occursOn
@@ -228,21 +229,18 @@ private fun CalendarFileRow(
 private fun StatisticsSection(state: AppStateHolder, strings: Strings, today: LocalDate) {
     val events = state.appState.visibleEvents
     val todos = state.appState.visibleTodos
-    val weekDates = today.startOfWeek().weekDates()
-    val completedToday = state.completedToday()
-    val active = todos.count { !it.done }
-    val upcoming = (0..2).sumOf { offset -> events.count { it.occursOn(today.plusDays(offset)) } }
-    val weekEvents = weekDates.sumOf { day -> events.count { it.occursOn(day) } }
-    val todayEvents = events.count { it.occursOn(today) }
+    // The whole panel is derived from the records and the day: recompositions must not rescan the
+    // calendar for every tile.
+    val stats = remember(events, todos, today) { statistics(events, todos, today) }
 
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-        StatTile(strings.completedToday, completedToday.toString(), Modifier.weight(1f))
-        StatTile(strings.activeTodos, active.toString(), Modifier.weight(1f))
+        StatTile(strings.completedToday, stats.completedToday.toString(), Modifier.weight(1f))
+        StatTile(strings.activeTodos, stats.active.toString(), Modifier.weight(1f))
     }
     Spacer(Modifier.height(10.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-        StatTile(strings.upcomingEvents, upcoming.toString(), Modifier.weight(1f))
-        StatTile(strings.todayEvents, todayEvents.toString(), Modifier.weight(1f))
+        StatTile(strings.upcomingEvents, stats.upcoming.toString(), Modifier.weight(1f))
+        StatTile(strings.todayEvents, stats.todayEvents.toString(), Modifier.weight(1f))
     }
     Spacer(Modifier.height(10.dp))
     SurfaceCard {
@@ -265,11 +263,11 @@ private fun StatisticsSection(state: AppStateHolder, strings: Strings, today: Lo
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
             Spacer(Modifier.height(10.dp))
-            PriorityRow(TodoPriority.High, strings.priorityHigh, todos)
+            PriorityRow(TodoPriority.High, strings.priorityHigh, stats.priority[TodoPriority.High] ?: TodoCounts.Empty)
             Spacer(Modifier.height(8.dp))
-            PriorityRow(TodoPriority.Normal, strings.priorityNormal, todos)
+            PriorityRow(TodoPriority.Normal, strings.priorityNormal, stats.priority[TodoPriority.Normal] ?: TodoCounts.Empty)
             Spacer(Modifier.height(8.dp))
-            PriorityRow(TodoPriority.Low, strings.priorityLow, todos)
+            PriorityRow(TodoPriority.Low, strings.priorityLow, stats.priority[TodoPriority.Low] ?: TodoCounts.Empty)
             Spacer(Modifier.height(12.dp))
             CardRowDivider(Modifier.padding(horizontal = 0.dp))
             Spacer(Modifier.height(10.dp))
@@ -277,13 +275,59 @@ private fun StatisticsSection(state: AppStateHolder, strings: Strings, today: Lo
                 Text(strings.thisWeek, style = MiuixTheme.textStyles.body1)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    strings.eventsCount(weekEvents),
+                    strings.eventsCount(stats.weekEvents),
                     style = MiuixTheme.textStyles.body1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
             }
         }
     }
+}
+
+private data class Statistics(
+    val completedToday: Int,
+    val active: Int,
+    val upcoming: Int,
+    val todayEvents: Int,
+    val weekEvents: Int,
+    val priority: Map<TodoPriority, TodoCounts>,
+)
+
+private data class TodoCounts(val done: Int, val total: Int) {
+    companion object {
+        val Empty = TodoCounts(done = 0, total = 0)
+    }
+}
+
+/** One pass over both record lists; the same day is only counted once. */
+private fun statistics(events: List<Event>, todos: List<Todo>, today: LocalDate): Statistics {
+    val eventsOn = HashMap<LocalDate, Int>()
+    fun countOn(day: LocalDate): Int = eventsOn.getOrPut(day) { events.count { it.occursOn(day) } }
+    val week = today.startOfWeek().weekDates()
+    val priorities = TodoPriority.entries.associateWith { TodoCounts.Empty }.toMutableMap()
+    var active = 0
+    var completedToday = 0
+    val completedAt = today.toString()
+    todos.forEach { todo ->
+        if (todo.done) {
+            if (todo.completedAt == completedAt) completedToday++
+        } else {
+            active++
+        }
+        val current = priorities.getValue(todo.priorityLevel)
+        priorities[todo.priorityLevel] = TodoCounts(
+            done = current.done + if (todo.done) 1 else 0,
+            total = current.total + 1,
+        )
+    }
+    return Statistics(
+        completedToday = completedToday,
+        active = active,
+        upcoming = (0..2).sumOf { countOn(today.plusDays(it)) },
+        todayEvents = countOn(today),
+        weekEvents = week.sumOf { countOn(it) },
+        priority = priorities,
+    )
 }
 
 @Composable
@@ -364,9 +408,9 @@ private fun WeekBars(todos: List<Todo>, today: LocalDate) {
 }
 
 @Composable
-private fun PriorityRow(priority: TodoPriority, label: String, todos: List<Todo>) {
-    val total = todos.count { it.priorityLevel == priority }
-    val done = todos.count { it.priorityLevel == priority && it.done }
+private fun PriorityRow(priority: TodoPriority, label: String, counts: TodoCounts) {
+    val total = counts.total
+    val done = counts.done
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Box(
             Modifier

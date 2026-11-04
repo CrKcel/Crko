@@ -109,28 +109,37 @@ internal class TodoService(
      * The `RELATED-TO` sub-task forest whose roots are the active todos. Subtrees stay whole under
      * each root — a finished subtask keeps its place, struck through, next to its pending siblings.
      */
-    fun activeTodoForest(): List<TodoNode> = todoForest(active = true)
+    fun activeTodoForest(): List<TodoNode> = todoForests().active
 
     /** The same forest rooted at the completed top-level todos. */
-    fun completedTodoForest(): List<TodoNode> = todoForest(active = false)
+    fun completedTodoForest(): List<TodoNode> = todoForests().completed
 
-    /** Roots sorted the way the flat lists sort them; children keep their creation order. */
-    private fun todoForest(active: Boolean): List<TodoNode> {
+    /**
+     * Both forests from one scan. They share the projected due dates and the tree, and the todo tab
+     * asks for both on every frame, so caching the pair per state (and day) avoids building it twice.
+     */
+    private fun todoForests(): TodoForests {
+        val current = state
+        val currentToday = today()
+        forestCache?.let { (key, forests) ->
+            if (key.first === current && key.second == currentToday) return forests
+        }
         val shownDue = shownDueDates()
-        return state.visibleTodos
-            .todoForest()
-            .filter { if (active) !it.todo.done else it.todo.done }
+        val forest = current.visibleTodos.todoForest()
+        val active = forest.filterNot { it.todo.done }
             .sortedWith(
-                if (active) {
-                    compareBy<TodoNode> { shownDue[it.todo.id] == null }
-                        .thenBy { shownDue[it.todo.id] ?: "" }
-                        .thenBy { todoPriorityRank(it.todo.priority) }
-                        .thenByDescending { it.todo.createdAt }
-                } else {
-                    compareByDescending { it.todo.createdAt }
-                },
+                compareBy<TodoNode> { shownDue[it.todo.id] == null }
+                    .thenBy { shownDue[it.todo.id] ?: "" }
+                    .thenBy { todoPriorityRank(it.todo.priority) }
+                    .thenByDescending { it.todo.createdAt },
             )
+        val completed = forest.filter { it.todo.done }.sortedByDescending { it.todo.createdAt }
+        return TodoForests(active, completed).also { forestCache = (current to currentToday) to it }
     }
+
+    private var forestCache: Pair<Pair<AppState, LocalDate>, TodoForests>? = null
+
+    private data class TodoForests(val active: List<TodoNode>, val completed: List<TodoNode>)
 
     fun addTodo(
         title: String,

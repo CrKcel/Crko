@@ -23,8 +23,9 @@ import kotlinx.coroutines.sync.withLock
 /**
  * Owns the in-memory [AppState] and the writes that keep it on disk.
  *
- * Startup still reads [storage] synchronously so the first frame shows restored data. Every later
- * change updates [state] immediately for Compose, and is handed to a writer coroutine on
+ * Construction reads [storage] synchronously; the composition root runs that first read on a
+ * background dispatcher before building the holder, so the launch surface is not blocked. Every
+ * later change updates [state] immediately for Compose, and is handed to a writer coroutine on
  * [ioDispatcher]; requests that pile up behind the writer's mutex are drained together, so a burst
  * of edits serializes the latest snapshot once instead of once per edit.
  */

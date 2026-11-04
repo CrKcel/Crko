@@ -675,21 +675,40 @@ data class AppState(
     /** Layout version of this payload; older payloads are migrated on read. */
     val schemaVersion: Int = CurrentSchemaVersion,
 ) {
+    // Projections are read from several surfaces per frame. Caching them keeps the list identity
+    // stable for `remember` keys and avoids rebuilding every flatten on each read.
+    private val cachedEvents: List<Event> by lazy { calendars.flatMap { it.events } }
+    private val cachedTodos: List<Todo> by lazy { calendars.flatMap { it.todos } }
+    private val cachedJournals: List<Journal> by lazy { calendars.flatMap { it.journals } }
+    private val cachedVisibleCalendars: List<Calendar> by lazy { calendars.filter { it.visible } }
+    private val cachedVisibleEvents: List<Event> by lazy {
+        cachedVisibleCalendars.flatMap { it.events }
+    }
+    private val cachedVisibleTodos: List<Todo> by lazy {
+        cachedVisibleCalendars.flatMap { it.todos }
+    }
+    private val cachedVisibleJournals: List<Journal> by lazy {
+        cachedVisibleCalendars.flatMap { it.journals }
+    }
+    private val cachedSubscriptions: List<CalendarSubscription> by lazy {
+        calendars.mapNotNull { it.subscription }
+    }
+
     /** Records of every calendar, flattened for display queries. */
-    val events: List<Event> get() = calendars.flatMap { it.events }
-    val todos: List<Todo> get() = calendars.flatMap { it.todos }
-    val journals: List<Journal> get() = calendars.flatMap { it.journals }
+    val events: List<Event> get() = cachedEvents
+    val todos: List<Todo> get() = cachedTodos
+    val journals: List<Journal> get() = cachedJournals
 
     /** Calendars the user has not hidden. Mutations still address every calendar by id. */
-    val visibleCalendars: List<Calendar> get() = calendars.filter { it.visible }
+    val visibleCalendars: List<Calendar> get() = cachedVisibleCalendars
 
     /** Flattened projections of [visibleCalendars], for the schedule, todo and journal views. */
-    val visibleEvents: List<Event> get() = visibleCalendars.flatMap { it.events }
-    val visibleTodos: List<Todo> get() = visibleCalendars.flatMap { it.todos }
-    val visibleJournals: List<Journal> get() = visibleCalendars.flatMap { it.journals }
+    val visibleEvents: List<Event> get() = cachedVisibleEvents
+    val visibleTodos: List<Todo> get() = cachedVisibleTodos
+    val visibleJournals: List<Journal> get() = cachedVisibleJournals
 
     /** Subscriptions as their UI-facing view; the sync bookkeeping stays inside each calendar. */
-    val subscriptions: List<CalendarSubscription> get() = calendars.mapNotNull { it.subscription }
+    val subscriptions: List<CalendarSubscription> get() = cachedSubscriptions
 
     /** The calendar new local records go into, falling back to whatever calendar exists. */
     val localCalendar: Calendar? get() = calendars.firstOrNull { it.isLocal } ?: calendars.firstOrNull()

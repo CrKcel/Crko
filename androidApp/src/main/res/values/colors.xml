@@ -1,0 +1,4 @@
+<resources>
+    <!-- Matches the light theme surface so the launch window and the first Compose frame agree. -->
+    <color name="launch_background">#FFFBFE</color>
+</resources>

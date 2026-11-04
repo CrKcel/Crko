@@ -60,6 +60,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -67,6 +68,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 import kotlin.time.Instant
+
+/** Lets the launch surface settle before the first reminder pass competes for CPU and alarm binder. */
+private const val StartupReminderDelayMillis = 1_500L
 
 enum class DarkModeSetting { System, Light, Dark }
 
@@ -281,6 +285,9 @@ class AppStateHolder(
     /** Fingerprints of the plan the scheduler last confirmed; the diff source of the next pass. */
     private var appliedReminders: Map<String, ReminderFingerprint> = emptyMap()
 
+    /** Set at startup; the first pass that runs replaces instead of diffing, even after an edit. */
+    private var fullReplacementPending = true
+
     /**
      * Reminders of one record, kept so a pass re-walks only records whose content changed. The
      * environment the plan is projected through (device zone, today) is part of the cache key:
@@ -301,8 +308,9 @@ class AppStateHolder(
         val damage = repository.loadDamage
         if (!damage.isEmpty) notify(AppMessage.StorageRecovered(damage.droppedRecords))
         // The first pass of a process replaces the platform schedule: alarms and requests may have
-        // outlived the process with content no in-memory diff can vouch for.
-        scheduleReminders(forceFull = true)
+        // outlived the process with content no in-memory diff can vouch for. It waits for the
+        // launch surface so the plan does not compete with the first frames.
+        scheduleReminders(forceFull = true, delayMillis = StartupReminderDelayMillis)
     }
 
     fun refreshToday() {
@@ -637,14 +645,19 @@ class AppStateHolder(
      * One job at a time — and the mutex keeps that promise even though cancelling a job does not
      * stop a pass that is already running, so an older pass can never land after a newer one.
      */
-    private fun scheduleReminders(forceFull: Boolean = false) {
+    private fun scheduleReminders(forceFull: Boolean = false, delayMillis: Long = 0) {
         val scheduler = reminders ?: return
         reminderJob?.cancel()
         reminderJob = scope.launch {
+            if (delayMillis > 0) delay(delayMillis)
             reminderMutex.withLock {
                 runCatching {
                     val plan = withContext(persistenceDispatcher) { reminderPlan() }
-                    val applied = if (forceFull) {
+                    // An edit that lands before the delayed launch pass still needs the full
+                    // replacement, because nothing has reached the platform yet.
+                    val replaceAll = forceFull || fullReplacementPending
+                    fullReplacementPending = false
+                    val applied = if (replaceAll) {
                         scheduler.replaceAll(plan)
                     } else {
                         val diff = diffReminders(appliedReminders, plan)

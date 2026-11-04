@@ -35,6 +35,15 @@ internal fun decodeSettings(raw: String): PersistedSettings =
     runCatching { AppJson.decodeFromString(PersistedSettings.serializer(), raw) }.getOrElse { PersistedSettings() }
 
 /**
+ * Reads only the small preference payload. Unlike [AppStorage] this never opens the state database,
+ * so the loading frame can resolve its theme before the restored calendar is ready.
+ */
+fun loadPersistedSettings(): PersistedSettings {
+    val raw = settingsStore().getString(SETTINGS_KEY) ?: return PersistedSettings()
+    return decodeSettings(raw)
+}
+
+/**
  * The in-process fallback for a launch whose database could not be opened or read: the app runs on
  * memory for this session instead of crashing, and the database file on disk stays untouched for
  * diagnosis. Nothing survives the process.

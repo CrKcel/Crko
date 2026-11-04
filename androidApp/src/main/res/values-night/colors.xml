@@ -1,0 +1,4 @@
+<resources>
+    <!-- Matches the dark theme surface so a dark-mode launch never flashes white. -->
+    <color name="launch_background">#1C1B1F</color>
+</resources>

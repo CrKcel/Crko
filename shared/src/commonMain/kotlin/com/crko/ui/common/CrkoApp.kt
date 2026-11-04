@@ -8,12 +8,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -58,6 +60,15 @@ fun CrkoApp(state: AppStateHolder) {
     var showSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var importPreview by remember { mutableStateOf<ImportPreview?>(null) }
+    // The pages behind the launch destination are kept composed for smooth switching, but building
+    // all of them on the first frame delays the content itself. They join one frame later, and a
+    // tab picked before that composes immediately.
+    var secondaryTabsReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        withFrameNanos { }
+        secondaryTabsReady = true
+    }
 
     val now = rememberClock(state)
     val fileBridge = rememberCalendarFileBridge()
@@ -103,38 +114,44 @@ fun CrkoApp(state: AppStateHolder) {
                     .fillMaxSize()
                     .layerBackdrop(backdrop),
             ) {
-                TabPage(visible = tab == 0) {
-                    TodoTab(
-                        state = state,
-                        strings = strings,
-                        contentPadding = tabPadding,
-                        onOpenSearch = { showSearch = true },
-                    )
+                if (tab == 0 || secondaryTabsReady) {
+                    TabPage(visible = tab == 0) {
+                        TodoTab(
+                            state = state,
+                            strings = strings,
+                            contentPadding = tabPadding,
+                            onOpenSearch = { showSearch = true },
+                        )
+                    }
                 }
-                TabPage(visible = tab == 1) {
-                    ScheduleTab(
-                        state = state,
-                        now = now,
-                        strings = strings,
-                        contentPadding = tabPadding,
-                        onOpenEvent = { event, date ->
-                            // Only a repeating series needs the occurrence slot; a one-off event
-                            // keeps its own start date even when opened from a later day.
-                            val occurrence = if (event.repeat != null) event.occurrenceStartOn(date) else null
-                            eventEditor = EventEditorTarget(event, occurrence)
-                        },
-                        onOpenSearch = { showSearch = true },
-                    )
+                if (tab == 1 || secondaryTabsReady) {
+                    TabPage(visible = tab == 1) {
+                        ScheduleTab(
+                            state = state,
+                            now = now,
+                            strings = strings,
+                            contentPadding = tabPadding,
+                            onOpenEvent = { event, date ->
+                                // Only a repeating series needs the occurrence slot; a one-off event
+                                // keeps its own start date even when opened from a later day.
+                                val occurrence = if (event.repeat != null) event.occurrenceStartOn(date) else null
+                                eventEditor = EventEditorTarget(event, occurrence)
+                            },
+                            onOpenSearch = { showSearch = true },
+                        )
+                    }
                 }
-                TabPage(visible = tab == 2) {
-                    MoreTab(
-                        state = state,
-                        strings = strings,
-                        contentPadding = tabPadding,
-                        onOpenSettings = { showSettings = true },
-                        onImportCalendar = importer::importCalendar,
-                        onExportCalendar = importer::exportCalendar,
-                    )
+                if (tab == 2 || secondaryTabsReady) {
+                    TabPage(visible = tab == 2) {
+                        MoreTab(
+                            state = state,
+                            strings = strings,
+                            contentPadding = tabPadding,
+                            onOpenSettings = { showSettings = true },
+                            onImportCalendar = importer::importCalendar,
+                            onExportCalendar = importer::exportCalendar,
+                        )
+                    }
                 }
             }
 

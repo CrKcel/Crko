@@ -87,7 +87,15 @@ fun ScheduleTab(
     val selected = remember(selectedName) { LocalDate.parse(selectedName) }
     val monthAnchor = remember(monthAnchorName) { LocalDate.parse(monthAnchorName) }
     val events = state.appState.visibleEvents
-    val hasEvents = remember(events) { { date: LocalDate -> events.any { it.occursOn(date) } } }
+    // The same dates are asked for by the week strip, the month grid and every page of both pagers;
+    // remembering the answers keeps a recomposition from rescanning the whole calendar per cell.
+    val hasEvents = remember(events) {
+        val answers = HashMap<LocalDate, Boolean>()
+        val lookup: (LocalDate) -> Boolean = { date ->
+            answers.getOrPut(date) { events.any { it.occursOn(date) } }
+        }
+        lookup
+    }
     val fold = rememberCalendarFold()
     // The calendar toggles from the header block without a ripple: the movement of the calendar
     // itself is the feedback.
