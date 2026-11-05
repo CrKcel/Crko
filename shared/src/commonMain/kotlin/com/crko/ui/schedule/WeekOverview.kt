@@ -310,15 +310,15 @@ private fun WeekDayColumn(
                             .clip(RoundedCornerShape(4.dp))
                             .background(container)
                             .clickable { onOpen(item.event, date) }
-                            .padding(horizontal = 2.dp, vertical = 1.dp),
+                            .padding(horizontal = 3.dp, vertical = 2.dp),
                     ) {
                         Text(
                             text = item.event.title,
                             style = MiuixTheme.textStyles.footnote2,
-                            fontSize = 9.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Medium,
                             color = content,
-                            maxLines = if (weekBlockHeight(item, hours) >= 34.dp) 2 else 1,
+                            maxLines = if (weekBlockHeight(item, hours) >= 32.dp) 2 else 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
@@ -351,31 +351,31 @@ private fun WeekDayColumn(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .padding(horizontal = 1.dp, vertical = 1.dp),
+                    .padding(horizontal = 2.dp, vertical = 2.dp),
             ) {
                 allDay.take(2).forEach { event ->
                     val (container, content) = tones[eventToneIndex(event, tones.size)]
                     Text(
                         text = event.title,
                         style = MiuixTheme.textStyles.footnote2,
-                        fontSize = 8.sp,
+                        fontSize = 9.sp,
                         color = content,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 1.dp)
+                            .padding(bottom = 2.dp)
                             .clip(RoundedCornerShape(4.dp))
                             .background(container)
                             .clickable { onOpen(event, date) }
-                            .padding(horizontal = 2.dp, vertical = 1.dp),
+                            .padding(horizontal = 3.dp, vertical = 2.dp),
                     )
                 }
                 if (allDay.size > 2) {
                     Text(
                         text = "+${allDay.size - 2}",
                         style = MiuixTheme.textStyles.footnote2,
-                        fontSize = 8.sp,
+                        fontSize = 9.sp,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         maxLines = 1,
                     )
@@ -386,7 +386,7 @@ private fun WeekDayColumn(
 }
 
 private fun weekBlockHeight(item: PlacedEvent, hours: HourLayout): Dp =
-    (hours.offsetOf(item.endMinutes) - hours.offsetOf(item.startMinutes)).coerceAtLeast(18.dp)
+    (hours.offsetOf(item.endMinutes) - hours.offsetOf(item.startMinutes)).coerceAtLeast(20.dp)
 
 /** Whole-week overview grouped by day, ordered by start time within each day. */
 @Composable
@@ -416,7 +416,7 @@ internal fun WeekAgendaList(
                     today = today,
                     count = dayEvents.size,
                     strings = strings,
-                    modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
                 )
             }
             if (dayEvents.isEmpty()) {
@@ -425,7 +425,7 @@ internal fun WeekAgendaList(
                         text = strings.noEventsSelected,
                         style = MiuixTheme.textStyles.footnote1,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.6f),
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                     )
                 }
             } else {

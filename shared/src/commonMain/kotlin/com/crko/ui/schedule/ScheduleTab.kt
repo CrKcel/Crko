@@ -238,7 +238,7 @@ fun ScheduleTab(
                         indication = null,
                         onClickLabel = if (expanded) strings.collapseCalendar else strings.expandCalendar,
                     ) { expanded = !expanded }
-                    .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 2.dp),
+                    .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 // The month of the date being shown: while unfolded the month pager reports what it

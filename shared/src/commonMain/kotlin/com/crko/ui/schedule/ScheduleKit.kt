@@ -27,18 +27,19 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 internal val HourHeight = 56.dp
 internal const val SlotMinutes = 60
 internal val TimeGutterWidth = 40.dp
-internal val ColumnHorizontalPadding = 6.dp
-internal val MonthRowHeight = 54.dp
+internal val ColumnHorizontalPadding = 10.dp
+internal val MonthRowHeight = 58.dp
 
 /** Heading that opens a day inside the scrolling timeline. */
-internal val TimelineDayHeadingHeight = 34.dp
+internal val TimelineDayHeadingHeight = 40.dp
 
 /** Share of a full [HourHeight] one hour of a timeline block takes up. */
-private const val HourRatio = 0.5f
+internal const val HourRatio = 0.6f
 
 /**
- * Vertical geometry of the 24 hours of one timeline block. Every hour takes the same half
- * [HourHeight], so a day occupies twelve full hours whether or not anything is scheduled on it.
+ * Vertical geometry of the 24 hours of one timeline block. Every hour takes the same fixed share
+ * of [HourHeight], so a day occupies the same total height whether or not anything is scheduled
+ * on it.
  */
 internal object HourLayout {
     val totalHeight: Dp = HourHeight * (24 * HourRatio)

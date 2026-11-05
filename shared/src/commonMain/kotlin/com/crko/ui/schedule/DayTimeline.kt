@@ -218,12 +218,12 @@ private fun EventBlocks(
                         .clip(RoundedCornerShape(6.dp))
                         .background(container)
                         .clickable { onOpen(item.event, date) }
-                        .padding(horizontal = 2.dp, vertical = 1.dp),
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
                 ) {
                     Text(
                         text = item.event.title,
                         style = MiuixTheme.textStyles.footnote1,
-                        fontSize = 11.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
                         color = content,
                         maxLines = if (compact) 1 else 3,
@@ -235,7 +235,7 @@ private fun EventBlocks(
                         Text(
                             text = clockRange(item.startMinutes, item.endMinutes),
                             style = MiuixTheme.textStyles.footnote2,
-                            fontSize = 9.sp,
+                            fontSize = 10.sp,
                             color = content.copy(alpha = 0.85f),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -278,25 +278,25 @@ private fun AllDayStrip(
         modifier = Modifier
             .fillMaxWidth()
             .zIndex(2f)
-            .padding(horizontal = 2.dp, vertical = 2.dp),
+            .padding(horizontal = 2.dp, vertical = 4.dp),
     ) {
         events.take(3).forEach { event ->
             val (container, content) = tones[eventToneIndex(event, tones.size)]
             Text(
                 text = event.title,
                 style = MiuixTheme.textStyles.footnote2,
-                fontSize = 10.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
                 color = content,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 2.dp)
+                    .padding(bottom = 3.dp)
                     .clip(RoundedCornerShape(4.dp))
                     .background(container)
                     .clickable { onOpen(event, date) }
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
             )
         }
     }
@@ -304,7 +304,7 @@ private fun AllDayStrip(
 
 /** Block height for [item]; short slots can be thinner than a readable one-line block. */
 private fun eventBlockHeight(item: PlacedEvent, hours: HourLayout): Dp =
-    (hours.offsetOf(item.endMinutes) - hours.offsetOf(item.startMinutes)).coerceAtLeast(20.dp)
+    (hours.offsetOf(item.endMinutes) - hours.offsetOf(item.startMinutes)).coerceAtLeast(24.dp)
 
 
 internal class PlacedEvent(

@@ -67,11 +67,11 @@ internal fun AgendaEventRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 2.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(14.dp))
             .background(container)
             .clickable { onOpen(event, date) }
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -100,7 +100,7 @@ internal fun AgendaEventRow(
                 Text(
                     text = detail,
                     style = MiuixTheme.textStyles.footnote2,
-                    fontSize = 10.sp,
+                    fontSize = 11.sp,
                     color = content.copy(alpha = 0.8f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

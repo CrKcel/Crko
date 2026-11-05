@@ -84,7 +84,7 @@ internal fun MonthCalendar(
 
     Column(modifier = modifier.fillMaxWidth()) {
         WeekdayHeader(strings)
-        Spacer(Modifier.height(2.dp))
+        Spacer(Modifier.height(6.dp))
         Box(
             modifier = Modifier
                 .fillMaxWidth()
