@@ -18,6 +18,10 @@ data class PersistedSettings(
     val keyColor: Long = 0xFF3B6CF5,
     val agendaView: String = "",
     val agendaScrollHour: Int = -1,
+    /** Two-finger pinch toggles the day view and the week overview on the schedule page. */
+    val gesturePinchOverview: Boolean = true,
+    /** Swipe toggles the list and the timeline on the schedule page. */
+    val gestureSwipeSwitch: Boolean = true,
     /** Calendar new records and imported files go into; null means the first local calendar. */
     val defaultCalendarId: String? = null,
 )

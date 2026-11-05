@@ -279,6 +279,10 @@ interface Strings {
     val timelineStart: String
     val startHour: String
 
+    val gestures: String
+    val gesturePinchOverview: String
+    val gestureSwipeSwitch: String
+
     val about: String
     val version: String
     val storageNote: String
@@ -574,6 +578,9 @@ object ZhStrings : Strings {
     override val defaultHourNotSet = "未设置"
     override val timelineStart = "默认起始时间"
     override val startHour = "起始小时"
+    override val gestures = "手势"
+    override val gesturePinchOverview = "双指缩放切换日视图与周总览"
+    override val gestureSwipeSwitch = "滑动切换列表与时间轴"
     override val about = "关于"
     override val version = "版本"
     override val storageNote = "数据仅保存在本机"

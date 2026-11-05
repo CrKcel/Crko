@@ -51,6 +51,12 @@ internal class SettingsController(
         get() = runCatching { PaletteSetting.valueOf(settings.palette) }
             .getOrDefault(PaletteSetting.Monet)
 
+    /** Schedule-page two-finger pinch between the day view and the week overview. */
+    val pinchOverviewEnabled: Boolean get() = settings.gesturePinchOverview
+
+    /** Schedule-page swipe between the list and the timeline. */
+    val swipeSwitchEnabled: Boolean get() = settings.gestureSwipeSwitch
+
     private fun updateSettings(transform: (PersistedSettings) -> PersistedSettings) {
         val next = transform(settings)
         settings = next
@@ -68,6 +74,10 @@ internal class SettingsController(
     fun setDefaultHour(hour: Int) = updateSettings { it.copy(agendaScrollHour = hour.coerceIn(0, 23)) }
 
     fun setAgendaView(view: String) = updateSettings { it.copy(agendaView = view) }
+
+    fun setPinchOverview(enabled: Boolean) = updateSettings { it.copy(gesturePinchOverview = enabled) }
+
+    fun setSwipeSwitch(enabled: Boolean) = updateSettings { it.copy(gestureSwipeSwitch = enabled) }
 
     /** Null falls back to the first local calendar. */
     fun setDefaultCalendarId(id: String?) = updateSettings { it.copy(defaultCalendarId = id) }

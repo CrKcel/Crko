@@ -52,6 +52,7 @@ import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.window.WindowDialog
@@ -161,6 +162,18 @@ fun SettingsPage(show: Boolean, state: AppStateHolder, strings: Strings, onBack:
                         )
                     }
                 }
+                SectionTitle(strings.gestures)
+                SurfaceCard(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    SwitchRow(
+                        text = strings.gesturePinchOverview,
+                        checked = state.pinchOverviewEnabled,
+                    ) { state.setPinchOverview(it) }
+                    CardRowDivider()
+                    SwitchRow(
+                        text = strings.gestureSwipeSwitch,
+                        checked = state.swipeSwitchEnabled,
+                    ) { state.setSwipeSwitch(it) }
+                }
                 SectionTitle(strings.timelineStart)
                 SurfaceCard(modifier = Modifier.padding(horizontal = 16.dp)) {
                     BasicComponent(
@@ -213,6 +226,20 @@ fun SettingsPage(show: Boolean, state: AppStateHolder, strings: Strings, onBack:
                 showHourPicker = false
             },
         )
+    }
+}
+
+@Composable
+private fun SwitchRow(text: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    BasicComponent(
+        onClick = { onCheckedChange(!checked) },
+        insideMargin = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(text = text, style = MiuixTheme.textStyles.body1)
+            Spacer(Modifier.weight(1f))
+            Switch(checked = checked, onCheckedChange = onCheckedChange)
+        }
     }
 }
 

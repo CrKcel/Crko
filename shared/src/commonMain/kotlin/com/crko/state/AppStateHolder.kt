@@ -203,6 +203,12 @@ class AppStateHolder(
     val darkModeSetting: DarkModeSetting get() = settingsController.darkModeSetting
     val paletteSetting: PaletteSetting get() = settingsController.paletteSetting
 
+    /** Schedule-page two-finger pinch between the day view and the week overview. */
+    val pinchOverviewEnabled: Boolean get() = settingsController.pinchOverviewEnabled
+
+    /** Schedule-page swipe between the list and the timeline. */
+    val swipeSwitchEnabled: Boolean get() = settingsController.swipeSwitchEnabled
+
     private val attachmentMaterializer = AttachmentMaterializer(attachmentRepository)
 
     private val stateAccess = object : StateAccess {
@@ -339,6 +345,10 @@ class AppStateHolder(
     fun setDefaultHour(hour: Int) = settingsController.setDefaultHour(hour)
 
     fun setAgendaView(view: String) = settingsController.setAgendaView(view)
+
+    fun setPinchOverview(enabled: Boolean) = settingsController.setPinchOverview(enabled)
+
+    fun setSwipeSwitch(enabled: Boolean) = settingsController.setSwipeSwitch(enabled)
 
     // ----- calendars (delegated to CalendarService) -----
 

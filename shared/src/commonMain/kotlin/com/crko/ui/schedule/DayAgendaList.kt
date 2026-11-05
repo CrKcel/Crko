@@ -171,6 +171,7 @@ internal fun DayAgendaList(
     strings: Strings,
     onOpen: (Event, LocalDate) -> Unit,
     onSwipeToTimeline: (travel: Float) -> Unit,
+    swipeToTimelineEnabled: Boolean,
 ) {
     val tones = eventTones()
     val listState = rememberLazyListState()
@@ -181,7 +182,7 @@ internal fun DayAgendaList(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
-            .listSwipeToTimeline(listState, onSwipeToTimeline),
+            .listSwipeToTimeline(listState, swipeToTimelineEnabled, onSwipeToTimeline),
         // The page runs to the window bottom behind the glass bar, so the last row needs its own
         // clearance to be reachable.
         contentPadding = PaddingValues(bottom = GlassNavigationBarDefaults.clearance()),

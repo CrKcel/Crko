@@ -65,10 +65,12 @@ private const val PinchTriggerRatio = 0.72f
 /**
  * Two-finger pinch that opens the week overview (pinch) and closes it (spread). Single-pointer
  * events are left untouched so the timeline scroll and the list pagers keep working; once a
- * second finger lands the events are consumed so nothing underneath scrolls mid-pinch.
+ * second finger lands the events are consumed so nothing underneath scrolls mid-pinch. Disabled
+ * when the user turns the gesture off in the settings.
  */
 @Composable
 internal fun Modifier.weekOverviewGesture(
+    enabled: Boolean,
     inWeekView: Boolean,
     onEnter: () -> Unit,
     onExit: () -> Unit,
@@ -76,7 +78,8 @@ internal fun Modifier.weekOverviewGesture(
     val currentInWeekView by rememberUpdatedState(inWeekView)
     val currentOnEnter by rememberUpdatedState(onEnter)
     val currentOnExit by rememberUpdatedState(onExit)
-    return pointerInput(Unit) {
+    return pointerInput(enabled) {
+        if (!enabled) return@pointerInput
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             var startDistance = 0f
@@ -397,6 +400,7 @@ internal fun WeekAgendaList(
     eventsByDate: Map<LocalDate, List<Event>>,
     onOpen: (Event, LocalDate) -> Unit,
     onSwipeToTimeline: (travel: Float) -> Unit,
+    swipeToTimelineEnabled: Boolean,
 ) {
     val days = remember(weekStart) { weekStart.weekDates() }
     val tones = eventTones()
@@ -405,7 +409,7 @@ internal fun WeekAgendaList(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
-            .listSwipeToTimeline(listState, onSwipeToTimeline),
+            .listSwipeToTimeline(listState, swipeToTimelineEnabled, onSwipeToTimeline),
         contentPadding = PaddingValues(bottom = GlassNavigationBarDefaults.clearance()),
     ) {
         days.forEach { date ->

@@ -42,4 +42,23 @@ class SettingsTest {
         holder.setDefaultHour(6)
         assertEquals(6, Fixture(storage).holder.settings.agendaScrollHour)
     }
+
+    @Test
+    fun gestureSwitchesDefaultOnAndSurviveReload() {
+        val storage = MemoryStorage()
+        val holder = Fixture(storage).holder
+        assertEquals(true, holder.pinchOverviewEnabled)
+        assertEquals(true, holder.swipeSwitchEnabled)
+
+        holder.setPinchOverview(false)
+        holder.setSwipeSwitch(false)
+        val reloaded = Fixture(storage).holder
+        assertEquals(false, reloaded.pinchOverviewEnabled)
+        assertEquals(false, reloaded.swipeSwitchEnabled)
+
+        reloaded.setPinchOverview(true)
+        reloaded.setSwipeSwitch(true)
+        assertEquals(true, Fixture(storage).holder.pinchOverviewEnabled)
+        assertEquals(true, Fixture(storage).holder.swipeSwitchEnabled)
+    }
 }

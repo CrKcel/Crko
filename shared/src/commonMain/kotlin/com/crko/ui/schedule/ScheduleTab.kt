@@ -195,6 +195,7 @@ fun ScheduleTab(
                 eventsByDate = weekEvents,
                 onOpen = onOpenStable,
                 onSwipeToTimeline = onSwipeToTimeline,
+                swipeToTimelineEnabled = state.swipeSwitchEnabled,
             )
         }
     }
@@ -208,6 +209,7 @@ fun ScheduleTab(
                 strings = currentStrings,
                 onOpen = onOpenStable,
                 onSwipeToTimeline = onSwipeToTimeline,
+                swipeToTimelineEnabled = state.swipeSwitchEnabled,
             )
         }
     }
@@ -341,18 +343,22 @@ fun ScheduleTab(
         // A two-finger pinch opens the week overview and a spread closes it, while one finger runs
         // the date axis: on and on through the days in the timeline, one page at a time in the list.
         // Each view also yields to the other along the axis it does not use: sideways over the
-        // timeline opens the list, and a pull past the list's edge returns to the timeline.
+        // timeline opens the list, and a pull past the list's edge returns to the timeline. Both
+        // gestures can be turned off in the settings.
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .weekOverviewGesture(
+                    enabled = state.pinchOverviewEnabled,
                     inWeekView = weekMode,
                     onEnter = { weekMode = true },
                     onExit = { weekMode = false },
                 )
                 // The timeline scrolls vertically, so a sideways swipe is free to open the list.
-                .timelineSwipeToList(enabled = !listMode) { travel -> showListView(true, travel) },
+                .timelineSwipeToList(enabled = !listMode && state.swipeSwitchEnabled) { travel ->
+                    showListView(true, travel)
+                },
         ) {
             AnimatedContent(
                 targetState = weekMode,

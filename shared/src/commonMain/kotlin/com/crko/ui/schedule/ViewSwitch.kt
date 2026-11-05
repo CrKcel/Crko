@@ -116,10 +116,11 @@ internal fun Modifier.timelineSwipeToList(
 @Composable
 internal fun Modifier.listSwipeToTimeline(
     listState: LazyListState,
+    enabled: Boolean,
     onSwipe: (travel: Float) -> Unit,
 ): Modifier = viewSwitchSwipe(
     orientation = Orientation.Vertical,
-    enabled = true,
+    enabled = enabled,
     accepts = { along -> if (along > 0) !listState.canScrollBackward else !listState.canScrollForward },
     onSwipe = onSwipe,
 )
