@@ -16,6 +16,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -119,4 +120,22 @@ internal fun Modifier.foldRevealHeight(
             .coerceIn(constraints.minHeight, constraints.maxHeight)
         val placeable = measurable.measure(constraints.copy(minHeight = height, maxHeight = height))
         layout(placeable.width, height) { placeable.place(0, 0) }
+    }
+
+/**
+ * Slides the wrapped content down by [drop] as the calendar unfolds, and reserves the room it
+ * slides into, so the content below is pushed down rather than overlapped. Like
+ * [foldRevealHeight] the progress is read while laying out: a drag re-places the header without
+ * recomposing it.
+ */
+internal fun Modifier.foldDrop(
+    fold: CalendarFoldState,
+    drop: Dp,
+): Modifier =
+    layout { measurable, constraints ->
+        val dropPx = (fold.progress * drop.toPx()).roundToInt()
+        val placeable = measurable.measure(constraints)
+        layout(placeable.width, placeable.height + dropPx) {
+            placeable.place(0, dropPx)
+        }
     }

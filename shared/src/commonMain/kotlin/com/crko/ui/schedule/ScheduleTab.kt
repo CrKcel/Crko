@@ -39,9 +39,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.lerp
 import com.crko.domain.Event
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.LocalClock
@@ -66,6 +69,12 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.window.WindowListPopup
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.crko.ui.icons.AppIcons
+
+/** How much the month title grows while the calendar unfolds from a week to a month. */
+private val TitleGrowScale = 1.3f
+
+/** How far the title and the calendar under it slide down while the calendar unfolds. */
+private val HeaderDropDistance = 12.dp
 
 @Composable
 fun ScheduleTab(
@@ -251,7 +260,20 @@ fun ScheduleTab(
                 // title follows a swipe (or the timeline) instead of jumping when it settles.
                 Text(
                     text = strings.monthTitle(monthAnchor.year, monthAnchor.month),
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        // The title answers the same fold gesture as the grid: pulling the month
+                        // open grows it and lets it slide down, pinned to its left edge so the row
+                        // it sits in keeps its shape. Progress is read at the draw phase, so
+                        // dragging re-draws the title without recomposing the row above the grid.
+                        .graphicsLayer {
+                            val progress = fold.progress
+                            val scale = lerp(1f, TitleGrowScale, progress)
+                            scaleX = scale
+                            scaleY = scale
+                            translationY = HeaderDropDistance.toPx() * progress
+                            transformOrigin = TransformOrigin(0f, 0.5f)
+                        },
                     style = if (strings === ZhStrings) MiuixTheme.textStyles.title3 else MiuixTheme.textStyles.title1,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -303,21 +325,30 @@ fun ScheduleTab(
                 }
             }
 
-            WeekMonthCalendar(
-                strings = strings,
-                selected = selected,
-                today = today,
-                monthAnchor = monthAnchor,
-                hasEvents = hasEvents,
-                fold = fold,
-                expanded = expanded,
-                // The week overview shows the whole week already, so the collapsed strip drops the
-                // selected-day box; unfolding the calendar brings the selection back.
-                showWeekSelection = expanded || !weekMode,
-                onSelect = onSelectDate,
-                onMonthChange = onMonthChange,
-                driveStrip = weekStrip,
-            )
+            // The calendar rides down with the title it sits under, by the same distance, so the
+            // two move as one block while the month is pulled open. The drop is reserved during
+            // layout, so the view below is pushed away instead of overlapped.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .foldDrop(fold, HeaderDropDistance),
+            ) {
+                WeekMonthCalendar(
+                    strings = strings,
+                    selected = selected,
+                    today = today,
+                    monthAnchor = monthAnchor,
+                    hasEvents = hasEvents,
+                    fold = fold,
+                    expanded = expanded,
+                    // The week overview shows the whole week already, so the collapsed strip drops
+                    // the selected-day box; unfolding the calendar brings the selection back.
+                    showWeekSelection = expanded || !weekMode,
+                    onSelect = onSelectDate,
+                    onMonthChange = onMonthChange,
+                    driveStrip = weekStrip,
+                )
+            }
         }
 
         Box(
