@@ -31,6 +31,11 @@ fun mergeEvents(
     removeVanished: Boolean,
     describedUids: Set<String> = emptySet(),
     idProvider: () -> String,
+    /**
+     * UIDs with changes still queued for upload. A two-way sync passes them so a record the user
+     * edited locally is never removed just because the server no longer mentions it.
+     */
+    protectedUids: Set<String> = emptySet(),
 ): MergeResult<Event> {
     val merged = base.toMutableList()
     var removed = 0
@@ -50,7 +55,8 @@ fun mergeEvents(
             // A file import only owns records it brought in; a subscription owns its whole
             // calendar, so anything upstream no longer describes is gone.
             (source == null || event.importSource == source) &&
-                event.icsUid != null && event.icsUid !in present
+                event.icsUid != null && event.icsUid !in present &&
+                event.icsUid !in protectedUids
         }
         removed += before - merged.size
     }
@@ -99,6 +105,7 @@ fun mergeTodos(
     removeVanished: Boolean,
     describedUids: Set<String> = emptySet(),
     idProvider: () -> String,
+    protectedUids: Set<String> = emptySet(),
 ): MergeResult<Todo> {
     val merged = base.toMutableList()
     var removed = 0
@@ -107,7 +114,8 @@ fun mergeTodos(
         val before = merged.size
         merged.removeAll { todo ->
             (source == null || todo.importSource == source) &&
-                todo.icsUid != null && todo.icsUid !in present
+                todo.icsUid != null && todo.icsUid !in present &&
+                todo.icsUid !in protectedUids
         }
         removed += before - merged.size
     }
@@ -153,6 +161,7 @@ fun mergeJournals(
     removeVanished: Boolean,
     describedUids: Set<String> = emptySet(),
     idProvider: () -> String,
+    protectedUids: Set<String> = emptySet(),
 ): MergeResult<Journal> {
     val merged = base.toMutableList()
     var removed = 0
@@ -161,7 +170,8 @@ fun mergeJournals(
         val before = merged.size
         merged.removeAll { journal ->
             (source == null || journal.importSource == source) &&
-                journal.icsUid != null && journal.icsUid !in present
+                journal.icsUid != null && journal.icsUid !in present &&
+                journal.icsUid !in protectedUids
         }
         removed += before - merged.size
     }

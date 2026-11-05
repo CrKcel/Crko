@@ -207,7 +207,7 @@ fun CrkoApp(state: AppStateHolder) {
         strings = strings,
         today = state.today,
         readAttachment = state::attachmentBytes,
-        calendars = state.localCalendars,
+        calendars = state.editorCalendars,
         defaultCalendarId = state.newRecordCalendarId,
         onDismiss = { eventEditor = null },
         onSave = { event, scope, calendarId ->
@@ -240,7 +240,7 @@ fun CrkoApp(state: AppStateHolder) {
             if (result == WriteResult.Success) state.notify(AppMessage.TodoAdded)
             result == WriteResult.Success
         },
-        calendars = state.localCalendars,
+        calendars = state.editorCalendars,
         defaultCalendarId = state.newRecordCalendarId,
     )
 

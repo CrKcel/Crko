@@ -4,6 +4,7 @@ import com.crko.domain.IcsImportFailure
 import com.crko.domain.IcsPartStat
 import com.crko.domain.IcsWarning
 import com.crko.domain.SubscriptionFailure
+import com.crko.domain.DiscoveryFailure
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
 import kotlinx.datetime.Month
@@ -265,6 +266,26 @@ object EnStrings : Strings {
         return "\"$name\" synced$changed$removedText"
     }
     override fun subscriptionUnchanged(name: String) = "\"$name\" is up to date"
+    override val caldavAdd = "Add CalDAV account"
+    override val caldavAddHint = "Sign in and pick the calendars to sync"
+    override val caldavServer = "Server address"
+    override val caldavUsername = "Account"
+    override val caldavPassword = "Password"
+    override val caldavDiscover = "Sign in"
+    override val caldavDiscovering = "Signing in…"
+    override val caldavNoCalendars = "No calendars found"
+    override val caldavWritable = "Read/write"
+    override val caldavReadonly = "Read-only"
+    override val caldavSave = "Add selected"
+    override val caldavEditCredentials = "Update account"
+    override val caldavCredentialsSaved = "Account updated"
+    override val caldavRemoveSummary = "The calendar is removed from the app; the events stay on the server."
+    override fun caldavDiscoverFailed(failure: DiscoveryFailure): String = when (failure) {
+        DiscoveryFailure.Unreachable -> "Could not reach the server"
+        DiscoveryFailure.Unauthorized -> "The server rejected the account or password"
+        DiscoveryFailure.HttpError -> "The server answered with an error"
+        DiscoveryFailure.NotCalDav -> "That address does not serve a CalDAV calendar list"
+    }
     override fun subscriptionFailed(name: String, failure: SubscriptionFailure): String = when (failure) {
         SubscriptionFailure.Unreachable -> "Could not sync \"$name\": the server is unreachable"
         SubscriptionFailure.Unauthorized -> "Could not sync \"$name\": the server requires sign-in"

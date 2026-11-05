@@ -141,6 +141,8 @@ internal fun readSqliteState(database: CrkoDatabase, nowMillis: () -> Long): Sql
                     etag = row.sync_etag,
                     syncToken = row.sync_token,
                     caldav = row.sync_caldav != 0L,
+                    username = row.sync_username,
+                    writable = row.sync_writable != 0L,
                 )
             },
         )
@@ -224,6 +226,8 @@ private fun writeState(
             sync_etag = calendar.syncState?.etag,
             sync_token = calendar.syncState?.syncToken,
             sync_caldav = calendar.syncState?.let { if (it.caldav) 1L else 0L },
+            sync_username = calendar.syncState?.username,
+            sync_writable = calendar.syncState?.let { if (it.writable) 1L else 0L },
         )
         queries.updateCalendar(
             name = calendar.name,
@@ -239,6 +243,8 @@ private fun writeState(
             sync_etag = calendar.syncState?.etag,
             sync_token = calendar.syncState?.syncToken,
             sync_caldav = calendar.syncState?.let { if (it.caldav) 1L else 0L },
+            sync_username = calendar.syncState?.username,
+            sync_writable = calendar.syncState?.let { if (it.writable) 1L else 0L },
             id = calendar.id,
         )
         if (previousCalendars[calendar.id]?.timeZones != calendar.timeZones) {

@@ -5,6 +5,7 @@ import com.crko.domain.IcsPartStat
 import com.crko.domain.IcsWarning
 import com.crko.domain.SubscriptionFailure
 import com.crko.domain.TodoPriority
+import com.crko.domain.DiscoveryFailure
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalTime
 import kotlinx.datetime.Month
@@ -242,6 +243,23 @@ interface Strings {
     fun subscriptionSynced(name: String, events: Int, todos: Int, removed: Int): String
     fun subscriptionUnchanged(name: String): String
     fun subscriptionFailed(name: String, failure: SubscriptionFailure): String
+
+    /** CalDAV accounts: discovery-based sign-in and two-way sync. */
+    val caldavAdd: String
+    val caldavAddHint: String
+    val caldavServer: String
+    val caldavUsername: String
+    val caldavPassword: String
+    val caldavDiscover: String
+    val caldavDiscovering: String
+    val caldavNoCalendars: String
+    val caldavWritable: String
+    val caldavReadonly: String
+    val caldavSave: String
+    val caldavEditCredentials: String
+    val caldavCredentialsSaved: String
+    val caldavRemoveSummary: String
+    fun caldavDiscoverFailed(failure: DiscoveryFailure): String
 
     /** Local calendar management. */
     val calendars: String
@@ -513,6 +531,26 @@ object ZhStrings : Strings {
     override val subscriptionsHint = "同步 webcal 订阅或 CalDAV 日历"
     override val subscriptionAdd = "添加订阅"
     override val subscriptionAddHint = "粘贴日历链接（webcal:// 或 https://）"
+    override val caldavAdd = "添加 CalDAV 账户"
+    override val caldavAddHint = "登录服务器并选择要同步的日历"
+    override val caldavServer = "服务器地址"
+    override val caldavUsername = "账号"
+    override val caldavPassword = "密码"
+    override val caldavDiscover = "登录"
+    override val caldavDiscovering = "登录中…"
+    override val caldavNoCalendars = "未找到日历"
+    override val caldavWritable = "读写"
+    override val caldavReadonly = "只读"
+    override val caldavSave = "添加所选"
+    override val caldavEditCredentials = "更新账号"
+    override val caldavCredentialsSaved = "账号已更新"
+    override val caldavRemoveSummary = "仅从应用中移除该日历，服务器上的事件不受影响。"
+    override fun caldavDiscoverFailed(failure: DiscoveryFailure): String = when (failure) {
+        DiscoveryFailure.Unreachable -> "无法连接服务器"
+        DiscoveryFailure.Unauthorized -> "服务器拒绝了账号或密码"
+        DiscoveryFailure.HttpError -> "服务器返回错误"
+        DiscoveryFailure.NotCalDav -> "该地址不是 CalDAV 服务器"
+    }
     override val subscriptionName = "名称"
     override val subscriptionUrl = "链接"
     override val subscriptionUrlInvalid = "链接无效，需要 http(s) 或 webcal 开头的完整地址"

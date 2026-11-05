@@ -7,6 +7,8 @@ import com.crko.domain.IcsTimeValue
 import com.crko.domain.PersistedSettings
 import com.crko.state.persistence.StateRepository
 import com.crko.storage.StateStorage
+import com.crko.storage.MemoryOutboxStore
+import com.crko.storage.OutboxStore
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -16,6 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 private class RecordingStorage(var state: AppState = AppState()) : StateStorage {
+    override val outbox: OutboxStore = MemoryOutboxStore()
     val stateWrites = mutableListOf<AppState>()
     val settingsWrites = mutableListOf<PersistedSettings>()
     var failNextStateWrite = false

@@ -19,6 +19,8 @@ import com.crko.domain.itipReply
 import com.crko.domain.sameCalendarAddress
 import com.crko.state.AppStateHolder
 import com.crko.storage.StateStorage
+import com.crko.storage.MemoryOutboxStore
+import com.crko.storage.OutboxStore
 import com.crko.domain.PersistedSettings
 import com.crko.i18n.EnStrings
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -48,6 +50,7 @@ private fun calendar(method: String? = null, body: String): String = buildString
 }
 
 private class ItipStorage : StateStorage {
+    override val outbox: OutboxStore = MemoryOutboxStore()
     var state = com.crko.domain.AppState()
     var settings = PersistedSettings()
 

@@ -1,0 +1,7 @@
+-- v1 -> v2: CalDAV write-support bookkeeping on the calendar row. The password itself never
+-- touches SQLite; it lives in the platform keystore/keychain keyed by the calendar id. The outbox
+-- gains the resource href so a queued deletion can still address the server after the local record
+-- (and its sync metadata) is gone.
+ALTER TABLE calendar ADD COLUMN sync_username TEXT;
+ALTER TABLE calendar ADD COLUMN sync_writable INTEGER;
+ALTER TABLE outbox ADD COLUMN href TEXT;

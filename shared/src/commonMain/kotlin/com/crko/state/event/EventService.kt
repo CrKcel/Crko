@@ -91,11 +91,14 @@ internal class EventService(
                 saveWholeSeries(storedEvents, existing, validated, occurrenceDate, now, calendarIndex)
             }
             else -> {
+                // The editor builds a fresh Event, so the CalDAV resource location of the stored
+                // record has to be carried over: the next upload needs its etag for `If-Match`.
                 val saved = validated.copy(
                     created = existing?.created ?: validated.created ?: now.toString(),
                     lastModified = now.toString(),
                     dtStamp = now.toString(),
                     sequence = (existing?.sequence ?: validated.sequence) + if (existing == null) 0 else 1,
+                    sync = validated.sync ?: existing?.sync,
                 )
                 val updated = if (existing != null) {
                     storedEvents.map { if (it.id == saved.id) saved else it }
@@ -140,6 +143,7 @@ internal class EventService(
             lastModified = now.toString(),
             dtStamp = now.toString(),
             sequence = series.sequence + 1,
+            sync = edited.sync ?: series.sync,
         )
         // Exceptions belong to the same timeline through their shared UID. Moving the series anchor
         // shifts their dates and RECURRENCE-IDs with it, so they cannot collide with or become
@@ -185,7 +189,8 @@ internal class EventService(
             id = existingOverride?.id ?: idProvider(),
             // RECURRENCE-ID stays on the original slot; DTSTART may move to another date.
             recurrence = null,
-            // The exception shares the master's UID, which is what RFC 5545 requires.
+            // The exception shares the master's UID, which is what RFC 5545 requires — and with it
+            // the CalDAV resource the whole group publishes under.
             icsUid = seriesUid,
             recurrenceId = slot,
             recurrenceRange = null,
@@ -193,6 +198,7 @@ internal class EventService(
             lastModified = now.toString(),
             dtStamp = now.toString(),
             sequence = (existingOverride?.sequence ?: 0) + if (existingOverride == null) 0 else 1,
+            sync = existingOverride?.sync ?: series.sync,
         )
         val updatedSeries = series.copy(
             recurrence = series.recurrence.withExclusion(slot),
@@ -261,6 +267,9 @@ internal class EventService(
             lastModified = now.toString(),
             dtStamp = now.toString(),
             sequence = 0,
+            // The new series has never been on the server: any location the editor carried
+            // belonged to the old resource.
+            sync = null,
         )
         val newUid = newSeries.uid
         val events = storedEvents.mapNotNull { current ->
@@ -274,6 +283,9 @@ internal class EventService(
                         current.copy(
                             icsUid = newUid,
                             lastModified = now.toString(),
+                            // The new series publishes under a fresh UID and resource, so the
+                            // re-parented exceptions must not keep the old location.
+                            sync = null,
                         )
                     }
                 else -> current

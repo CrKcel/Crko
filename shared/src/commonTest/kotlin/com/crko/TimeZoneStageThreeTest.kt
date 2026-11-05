@@ -17,6 +17,8 @@ import com.crko.domain.occurrenceStartInstant
 import com.crko.domain.occursOn
 import com.crko.domain.withDeviceDateTime
 import com.crko.storage.StateStorage
+import com.crko.storage.MemoryOutboxStore
+import com.crko.storage.OutboxStore
 import com.crko.state.AppStateHolder
 import com.crko.ui.transfer.importSelection
 import com.crko.ui.transfer.toIcsImport
@@ -86,6 +88,7 @@ private const val LOOKALIKE_ZONE = """
 """
 
 private class MetadataStorage(var state: AppState = AppState()) : StateStorage {
+    override val outbox: OutboxStore = MemoryOutboxStore()
     override fun loadState(): AppState = state
 
     override fun saveState(state: AppState) {

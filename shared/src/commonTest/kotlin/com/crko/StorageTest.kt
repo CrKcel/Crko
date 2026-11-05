@@ -17,6 +17,8 @@ import com.crko.storage.KeyValueStore
 import com.crko.storage.LoadDamage
 import com.crko.storage.MemoryStateStorage
 import com.crko.storage.StateStorage
+import com.crko.storage.MemoryOutboxStore
+import com.crko.storage.OutboxStore
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
 import kotlinx.coroutines.flow.first
@@ -261,6 +263,7 @@ class StorageTest {
 }
 
 private class ReportingStorage(private val damage: LoadDamage) : StateStorage {
+    override val outbox: OutboxStore = MemoryOutboxStore()
     override fun loadState(): AppState = AppState()
 
     override fun saveState(state: AppState) = Unit

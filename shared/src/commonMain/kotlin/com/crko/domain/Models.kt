@@ -47,6 +47,19 @@ data class LocalRecordMeta(
 )
 
 /**
+ * Where the record's RFC component lives on the CalDAV server. One resource carries a whole UID
+ * group (master plus every exception), so all records of a UID share one href and one etag. Like
+ * [LocalRecordMeta] this is bookkeeping, never serialized into an iCalendar file.
+ */
+@Serializable
+data class RecordSyncMeta(
+    /** Absolute collection member URL the resource was last exchanged with. */
+    val href: String,
+    /** ETag after the last confirmed exchange; null when the server did not return one. */
+    val etag: String? = null,
+)
+
+/**
  * Fields an RFC 5545 component shares regardless of its kind. `Event`, `Todo` and `Journal` all
  * implement it, so import and export code can handle `UID`, `DTSTAMP`, text properties, attachments
  * and unknown lines once instead of three times.
@@ -64,6 +77,12 @@ interface CalendarComponent {
     val sequence: Int
     val extraProperties: List<String>
     val local: LocalRecordMeta
+
+    /** CalDAV resource location; null on records the server has never seen. */
+    val sync: RecordSyncMeta? get() = null
+
+    /** The exception slot of this record; null on a master and on journals, which have none. */
+    val recurrenceId: IcsTimeValue? get() = null
 
     /**
      * Parameters of the TEXT properties this component carries (`LANGUAGE`, `ALTREP`, ...), keyed by
@@ -360,7 +379,7 @@ data class Event(
      */
     override val icsUid: String? = null,
     /** Original occurrence slot of an exception (`RECURRENCE-ID`), in the master's value type. */
-    val recurrenceId: IcsTimeValue? = null,
+    override val recurrenceId: IcsTimeValue? = null,
     /** `RANGE` parameter of [recurrenceId]; null for an ordinary single-instance exception. */
     val recurrenceRange: RecurrenceRange? = null,
     /** ISO-8601 instant. */
@@ -376,6 +395,8 @@ data class Event(
     override val textParameters: Map<String, String> = emptyMap(),
     /** Storage provenance, separate from the RFC properties. */
     override val local: LocalRecordMeta = LocalRecordMeta(),
+    /** CalDAV resource location; null on records the server has never seen. */
+    override val sync: RecordSyncMeta? = null,
 ) : CalendarComponent {
     /** Display start date of the anchor occurrence in the device zone. */
     val day: LocalDate get() = start.displayDate(TimeZone.currentSystemDefault())
@@ -487,9 +508,11 @@ data class Todo(
      * master's value type. Null on the master record, which keeps its `RRULE`; an instance shares
      * the master's `UID` and never carries a rule of its own.
      */
-    val recurrenceId: IcsTimeValue? = null,
+    override val recurrenceId: IcsTimeValue? = null,
     /** Storage provenance, separate from the RFC properties. */
     override val local: LocalRecordMeta = LocalRecordMeta(),
+    /** CalDAV resource location; null on records the server has never seen. */
+    override val sync: RecordSyncMeta? = null,
 ) : CalendarComponent {
     /** Completion state derived from [status]; a cancelled todo counts as done like before. */
     val done: Boolean
@@ -570,6 +593,8 @@ data class Journal(
     val eventClass: EventClass? = null,
     /** Storage provenance, separate from the RFC properties. */
     override val local: LocalRecordMeta = LocalRecordMeta(),
+    /** CalDAV resource location; null on records the server has never seen. */
+    override val sync: RecordSyncMeta? = null,
 ) : CalendarComponent {
     /** Display date of [start] in the device zone; null for an undated journal. */
     val date: String? get() = start?.displayDate(TimeZone.currentSystemDefault())?.toString()
@@ -629,6 +654,12 @@ data class CalendarSyncState(
     val syncToken: String? = null,
     /** The server turned out to speak CalDAV, so syncing uses `REPORT` instead of a plain `GET`. */
     val caldav: Boolean = false,
+    /** Account name the server authenticates; the password itself stays in the platform keystore. */
+    val username: String? = null,
+    /** The server grants write access, so local changes are pushed with `PUT`/`DELETE`. */
+    val writable: Boolean = false,
+    /** Authentication scheme; `basic` today, reserved for a later OAuth2 addition. */
+    val authType: String = "basic",
 )
 
 /**

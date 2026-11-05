@@ -27,17 +27,22 @@ import com.crko.domain.toCalendar
 import com.crko.domain.resolveSubscriptionUrl
 import com.crko.domain.targetCalendar
 import com.crko.domain.today
+import com.crko.domain.DiscoveryFailure
+import com.crko.domain.CalendarSyncState
 import com.crko.i18n.AppLanguage
 import com.crko.i18n.Strings
 import com.crko.storage.AttachmentRepository
 import com.crko.storage.AppStorage
 import com.crko.storage.CalendarReadException
+import com.crko.storage.SecretStore
 import com.crko.storage.StateStorage
 import com.crko.storage.SubscriptionHttp
 import com.crko.storage.importCalendarChunks
 import com.crko.storage.newId
 import com.crko.storage.systemLocaleTag
+import com.crko.storage.caldavPasswordKey
 import com.crko.state.`import`.AttachmentMaterializer
+import com.crko.state.sync.OutboxRecorder
 import com.crko.state.`import`.ImportService
 import com.crko.state.calendar.CalendarDeleteResult
 import com.crko.state.calendar.CalendarService
@@ -53,6 +58,8 @@ import com.crko.state.stats.StatsService
 import com.crko.state.subscription.SubscriptionSyncService
 import com.crko.state.todo.TodoDraft
 import com.crko.state.todo.TodoService
+import com.crko.sync.CalDavDiscovery
+import com.crko.sync.discoverCalendars
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.coroutines.CoroutineDispatcher
@@ -165,6 +172,11 @@ class AppStateHolder(
      */
     private val parseDispatcher: CoroutineDispatcher? = null,
     /**
+     * Platform keystore/keychain access for CalDAV passwords, wired by the composition root. Null
+     * by default so tests never touch platform secret storage.
+     */
+    private val secretStore: SecretStore? = null,
+    /**
      * Reads and writes materialized `ATTACH` payloads. Injectable so tests can keep files in memory
      * and so the domain package never needs a storage import.
      */
@@ -213,11 +225,17 @@ class AppStateHolder(
 
     private val stateAccess = object : StateAccess {
         override val state: AppState get() = appState
-        override fun persist(next: AppState) = this@AppStateHolder.persist(next)
+        override fun persist(next: AppState, origin: ChangeOrigin) = this@AppStateHolder.persist(next, origin)
         override fun notify(message: AppMessage) = this@AppStateHolder.notify(message)
         override val defaultCalendarId: String? get() = settingsController.settings.defaultCalendarId
         override fun setDefaultCalendarId(id: String?) = settingsController.setDefaultCalendarId(id)
     }
+
+    /** Queues user edits of writable CalDAV calendars for the next push. */
+    private val outboxRecorder = OutboxRecorder(
+        outbox = storage.outbox,
+        nowMillis = { clock.now().toEpochMilliseconds() },
+    )
 
     private val calendarService = CalendarService(access = stateAccess, idProvider = idProvider)
 
@@ -251,6 +269,8 @@ class AppStateHolder(
         attachmentRepository = attachmentRepository,
         parseDispatcher = parseDispatcher,
         idProvider = idProvider,
+        outbox = storage.outbox,
+        secretStore = secretStore,
         // Read on every use so the untitled-event placeholder follows a language switch.
         strings = { currentStrings },
     )
@@ -620,6 +640,33 @@ class AppStateHolder(
         persist(appState.copy(calendars = appState.calendars.filterNot { it.id == id && !it.isLocal }))
     }
 
+    // ----- CalDAV accounts -----
+
+    /** Calendars the user may put new records into: local ones plus writable CalDAV ones. */
+    val editorCalendars: List<Calendar> get() =
+        appState.calendars.filter { it.isLocal || it.syncState?.writable == true }
+
+    private val calDavAccounts = CalDavAccountService(
+        state = { appState },
+        persist = { persist(it) },
+        sync = { subscriptionSync.syncSubscription(it) },
+        idProvider = idProvider,
+        http = subscriptionHttp,
+        secretStore = secretStore,
+    )
+
+    suspend fun discoverCalDavAccount(serverUrl: String, username: String, password: String): CalDavAccountDiscovery =
+        calDavAccounts.discover(serverUrl, username, password)
+
+    suspend fun addCalDavAccount(
+        username: String,
+        password: String,
+        collections: List<DiscoveredCalDavCalendar>,
+    ): List<String> = calDavAccounts.add(username, password, collections)
+
+    suspend fun updateCalDavCredentials(id: String, username: String, password: String) =
+        calDavAccounts.updateCredentials(id, username, password)
+
     /** Subscriptions whose automatic refresh interval has elapsed at [now]. */
     fun subscriptionsDue(now: Instant = clock.now()): List<CalendarSubscription> =
         subscriptionSync.subscriptionsDue(now)
@@ -644,7 +691,19 @@ class AppStateHolder(
         scope.launch { messageChannel.send(message) }
     }
 
-    private fun persist(next: AppState) = repository.persist(next)
+    private fun persist(next: AppState, origin: ChangeOrigin = ChangeOrigin.User) {
+        if (origin == ChangeOrigin.User) {
+            // User edits of writable CalDAV calendars queue their upload and trigger a prompt
+            // push; sync-engine writes already mirror the server and must not re-queue.
+            val recorded = outboxRecorder.record(appState, next)
+            repository.persist(recorded)
+            outboxRecorder.touchedCalendars.forEach { id ->
+                scope.launch { subscriptionSync.syncSubscription(id) }
+            }
+        } else {
+            repository.persist(next)
+        }
+    }
 
     /**
      * Keeps the platform notifications in line with the state. The plan is computed record by

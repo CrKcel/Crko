@@ -26,6 +26,7 @@ import com.crko.state.reminderScheduler
 import com.crko.storage.AttachmentRepository
 import com.crko.storage.AppStorage
 import com.crko.storage.StateStorage
+import com.crko.storage.defaultSecretStore
 import com.crko.storage.defaultSubscriptionHttp
 import com.crko.storage.loadPersistedSettings
 import com.crko.storage.platformSupportsMonet
@@ -79,6 +80,7 @@ fun App(
             initialSystemLocale = systemLocale,
             reminders = reminderScheduler(),
             subscriptionHttp = defaultSubscriptionHttp(),
+            secretStore = defaultSecretStore(),
             attachmentRepository = AttachmentRepository(),
             storage = appStorage(),
         )

@@ -24,22 +24,26 @@ enum class SubscriptionFailure {
 sealed interface SubscriptionFetch {
     /**
      * The full upstream content; every record the source still carries, so records that vanished
-     * from it can be removed locally.
+     * from it can be removed locally. [entries] is the per-resource view a two-way sync uses.
      */
     data class Full(
         val text: String,
         val etag: String? = null,
         val syncToken: String? = null,
+        val entries: List<CalDavChange> = emptyList(),
     ) : SubscriptionFetch
 
     /**
      * An incremental CalDAV report: only the records that changed since the last sync. [deletions]
      * says the source also reported removals this content cannot name, so a full refetch follows.
+     * [entries] keeps the per-resource view (href, etag, content) a two-way sync stamps onto the
+     * records it merges.
      */
     data class Changes(
         val text: String,
         val syncToken: String? = null,
         val deletions: Boolean = false,
+        val entries: List<CalDavChange> = emptyList(),
     ) : SubscriptionFetch
 
     /** The source answered 304: nothing changed since the stored entity tag. */
@@ -47,6 +51,33 @@ sealed interface SubscriptionFetch {
 
     data class Failed(val failure: SubscriptionFailure, val status: Int? = null) : SubscriptionFetch
 }
+
+/** Why a CalDAV account discovery walk did not produce a calendar list. */
+enum class DiscoveryFailure {
+    /** The server could not be reached at all. */
+    Unreachable,
+
+    /** The server rejected the credentials. */
+    Unauthorized,
+
+    /** The server answered with an unexpected HTTP status. */
+    HttpError,
+
+    /** The address is not a CalDAV server (no principal, no calendar home set). */
+    NotCalDav,
+}
+
+/** One changed CalDAV resource: the whole UID group as the server currently holds it. */
+data class CalDavChange(
+    /** Absolute member URL of the resource. */
+    val href: String,
+    /** ETag after this change; echoed back as `If-Match` on the next upload. */
+    val etag: String?,
+    /** The resource's `calendar-data` text; null when the resource carried none. */
+    val text: String?,
+    /** Whether the server reported the resource as vanished. */
+    val vanished: Boolean = false,
+)
 
 /** Upper bound for one response; a calendar beyond it would freeze the device for seconds. */
 internal const val MaxSubscriptionBytes = 8L * 1024 * 1024
@@ -96,6 +127,12 @@ data class CalendarSubscription(
      * Detected from the first response and remembered.
      */
     val caldav: Boolean = false,
+    /** Account name the server authenticates; the password itself stays in the platform keystore. */
+    val username: String? = null,
+    /** The server grants write access, so local changes are pushed with `PUT`/`DELETE`. */
+    val writable: Boolean = false,
+    /** Authentication scheme; `basic` today, reserved for a later OAuth2 addition. */
+    val authType: String = "basic",
 )
 
 /** The sync half of a subscribed calendar. */
@@ -107,6 +144,9 @@ fun CalendarSubscription.toSyncState(): CalendarSyncState = CalendarSyncState(
     etag = etag,
     syncToken = syncToken,
     caldav = caldav,
+    username = username,
+    writable = writable,
+    authType = authType,
 )
 
 /** Creates the calendar container of a subscription, without any records yet. */
@@ -130,5 +170,8 @@ val Calendar.subscription: CalendarSubscription?
             etag = state.etag,
             syncToken = state.syncToken,
             caldav = state.caldav,
+            username = state.username,
+            writable = state.writable,
+            authType = state.authType,
         )
     }

@@ -27,6 +27,9 @@ interface StateStorage {
     fun loadSettings(): PersistedSettings
     fun saveSettings(settings: PersistedSettings)
 
+    /** Pending local changes of writable CalDAV calendars, drained by the push engine. */
+    val outbox: OutboxStore
+
     /** Damage from the last [loadState]; storages that cannot report any keep the default. */
     fun loadDamage(): LoadDamage = LoadDamage.None
 }
@@ -53,6 +56,8 @@ internal class MemoryStateStorage(
 ) : StateStorage {
     private var state: AppState = AppState()
     private var lastDamage: LoadDamage = LoadDamage.None
+
+    override val outbox: OutboxStore = MemoryOutboxStore()
 
     override fun loadState(): AppState {
         lastDamage = LoadDamage(unreadable = true)
@@ -94,6 +99,8 @@ object AppStorage : StateStorage {
             seedProvider = seedProvider,
         )
     }
+
+    override val outbox: OutboxStore get() = delegate.outbox
 
     override fun loadState(): AppState = delegate.loadState()
 

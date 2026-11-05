@@ -22,6 +22,8 @@ import com.crko.storage.HttpRequest
 import com.crko.storage.HttpResponse
 import com.crko.storage.StateStorage
 import com.crko.storage.SubscriptionHttp
+import com.crko.storage.MemoryOutboxStore
+import com.crko.storage.OutboxStore
 import com.crko.domain.PersistedSettings
 import kotlin.coroutines.ContinuationInterceptor
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -35,6 +37,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private class SyncStorage : StateStorage {
+    override val outbox: OutboxStore = MemoryOutboxStore()
     var state = AppState()
     var settings = PersistedSettings()
 

@@ -11,6 +11,8 @@ import com.crko.state.AppStateHolder
 import com.crko.state.ReminderScheduler
 import com.crko.state.ScheduledReminder
 import com.crko.storage.StateStorage
+import com.crko.storage.MemoryOutboxStore
+import com.crko.storage.OutboxStore
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
@@ -32,6 +34,7 @@ internal class MemoryStorage(
     var state: AppState = AppState(),
     var settings: PersistedSettings = PersistedSettings(),
 ) : StateStorage {
+    override val outbox: OutboxStore = MemoryOutboxStore()
     var writes = 0
 
     override fun loadState() = state

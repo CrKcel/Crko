@@ -22,6 +22,8 @@ import com.crko.storage.HttpRequest
 import com.crko.storage.HttpResponse
 import com.crko.storage.StateStorage
 import com.crko.storage.SubscriptionHttp
+import com.crko.storage.MemoryOutboxStore
+import com.crko.storage.OutboxStore
 import com.crko.state.AppStateHolder
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
@@ -38,6 +40,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Instant
 
 private class ScopeStorage(var state: AppState = AppState()) : StateStorage {
+    override val outbox: OutboxStore = MemoryOutboxStore()
     override fun loadState() = state
     override fun saveState(state: AppState) {
         this.state = state

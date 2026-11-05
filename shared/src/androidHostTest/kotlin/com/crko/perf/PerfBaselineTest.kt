@@ -26,6 +26,8 @@ import com.crko.storage.LoadDamage
 import com.crko.storage.SqliteStateStorage
 import com.crko.storage.StateStorage
 import com.crko.storage.db.CrkoDatabase
+import com.crko.storage.MemoryOutboxStore
+import com.crko.storage.OutboxStore
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -433,6 +435,7 @@ class PerfBaselineTest {
     }
 
     private class CountingStateStorage(private val delegate: StateStorage) : StateStorage {
+    override val outbox: OutboxStore = MemoryOutboxStore()
         var stateWrites = 0
 
         override fun loadState(): AppState = delegate.loadState()
@@ -450,6 +453,7 @@ class PerfBaselineTest {
     }
 
     private class FixedStateStorage(private val state: AppState) : StateStorage {
+    override val outbox: OutboxStore = MemoryOutboxStore()
         private var settings = PersistedSettings()
 
         override fun loadState(): AppState = state

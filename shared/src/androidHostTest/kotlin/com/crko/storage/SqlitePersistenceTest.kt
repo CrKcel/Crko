@@ -274,7 +274,7 @@ class SqlitePersistenceTest {
     fun aDamagedPayloadMovesToDamagedRecordAndKeepsTheRest() {
         val (_, database) = inMemoryDatabase()
         database.crkoQueries.insertCalendar(
-            "local", "Crko", null, 1, null, null, 0, null, null, null, null, null, null, null,
+            "local", "Crko", null, 1, null, null, 0, null, null, null, null, null, null, null, null, null,
         )
         database.crkoQueries.insertRecord(
             calendar_id = "local",
@@ -437,7 +437,7 @@ class SqlitePersistenceTest {
     fun theFactoryProbeDoesNotSwallowLoadDamage() {
         val (driver, database) = inMemoryDatabase()
         database.crkoQueries.insertCalendar(
-            "local", "Crko", null, 1, null, null, 0, null, null, null, null, null, null, null,
+            "local", "Crko", null, 1, null, null, 0, null, null, null, null, null, null, null, null, null,
         )
         database.crkoQueries.insertRecord(
             calendar_id = "local",

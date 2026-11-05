@@ -16,7 +16,9 @@ CREATE TABLE calendar (
     sync_last_sync TEXT,
     sync_etag TEXT,
     sync_token TEXT,
-    sync_caldav INTEGER
+    sync_caldav INTEGER,
+    sync_username TEXT,
+    sync_writable INTEGER
 );
 
 CREATE TABLE calendar_timezone (
@@ -69,6 +71,7 @@ CREATE TABLE outbox (
     operation TEXT NOT NULL,
     sequence INTEGER NOT NULL DEFAULT 0,
     base_etag TEXT,
+    href TEXT,
     created_ms INTEGER NOT NULL,
     updated_ms INTEGER NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -97,15 +100,17 @@ CREATE TABLE meta (
 
 selectCalendars:
 SELECT id, name, color_argb, visible, method, refresh_minutes, position,
-       sync_url, sync_enabled, sync_refresh_minutes, sync_last_sync, sync_etag, sync_token, sync_caldav
+       sync_url, sync_enabled, sync_refresh_minutes, sync_last_sync, sync_etag, sync_token,
+       sync_caldav, sync_username, sync_writable
 FROM calendar
 ORDER BY position;
 
 insertCalendar:
 INSERT OR IGNORE INTO calendar(
     id, name, color_argb, visible, method, refresh_minutes, position,
-    sync_url, sync_enabled, sync_refresh_minutes, sync_last_sync, sync_etag, sync_token, sync_caldav
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    sync_url, sync_enabled, sync_refresh_minutes, sync_last_sync, sync_etag, sync_token,
+    sync_caldav, sync_username, sync_writable
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- A plain update instead of INSERT OR REPLACE: REPLACE deletes the row first, and with foreign keys
 -- on that would cascade-delete every record and timezone belonging to the calendar.
@@ -113,7 +118,7 @@ updateCalendar:
 UPDATE calendar SET
     name = ?, color_argb = ?, visible = ?, method = ?, refresh_minutes = ?, position = ?,
     sync_url = ?, sync_enabled = ?, sync_refresh_minutes = ?, sync_last_sync = ?,
-    sync_etag = ?, sync_token = ?, sync_caldav = ?
+    sync_etag = ?, sync_token = ?, sync_caldav = ?, sync_username = ?, sync_writable = ?
 WHERE id = ?;
 
 deleteCalendar:
@@ -206,8 +211,47 @@ DELETE FROM damaged_record WHERE source_table = ? AND source_key = ?;
 deleteAllDamaged:
 DELETE FROM damaged_record;
 
-countOutbox:
-SELECT count(*) FROM outbox;
+selectOutboxEntries:
+SELECT outbox_id, calendar_id, entity, uid, recurrence_key, operation, sequence, base_etag, href,
+       created_ms, updated_ms, attempts, next_attempt_ms, last_error
+FROM outbox
+ORDER BY created_ms, outbox_id;
+
+selectOutboxEntriesForCalendar:
+SELECT outbox_id, calendar_id, entity, uid, recurrence_key, operation, sequence, base_etag, href,
+       created_ms, updated_ms, attempts, next_attempt_ms, last_error
+FROM outbox
+WHERE calendar_id = ?
+ORDER BY created_ms, outbox_id;
+
+selectOutboxEntry:
+SELECT outbox_id, calendar_id, entity, uid, recurrence_key, operation, sequence, base_etag, href,
+       created_ms, updated_ms, attempts, next_attempt_ms, last_error
+FROM outbox
+WHERE calendar_id = ? AND entity = ? AND uid = ? AND recurrence_key = ?;
+
+insertOutboxEntry:
+INSERT INTO outbox(
+    calendar_id, entity, uid, recurrence_key, operation, sequence, base_etag, href, created_ms, updated_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- A fresh local edit re-queues with clean retry bookkeeping; attempts live in updateOutboxAttempt.
+updateOutboxEntry:
+UPDATE outbox SET
+    operation = ?, sequence = ?, base_etag = ?, href = ?, updated_ms = ?,
+    attempts = 0, next_attempt_ms = NULL, last_error = NULL
+WHERE outbox_id = ?;
+
+updateOutboxAttempt:
+UPDATE outbox SET
+    attempts = ?, next_attempt_ms = ?, last_error = ?, updated_ms = ?
+WHERE outbox_id = ?;
+
+deleteOutboxEntry:
+DELETE FROM outbox WHERE outbox_id = ?;
+
+deleteOutboxEntriesForCalendar:
+DELETE FROM outbox WHERE calendar_id = ?;
 
 getMeta:
 SELECT value FROM meta WHERE key = ?;
