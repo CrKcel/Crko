@@ -143,9 +143,10 @@ internal fun WeekRow(
     val dates = remember(weekStart) { weekStart.weekDates() }
     val daysWithEvents = remember(dates, hasEvents) { dates.associateWith(hasEvents) }
     // The floating frame belongs to whichever week row is on screen: riding every page lets a week
-    // swipe carry the highlight in with the incoming week instead of popping it in on settle. Two
-    // weeks of a crossing draw no frame at all (the pair passes no position), so only the pager's
-    // own pages ever show it.
+    // swipe carry the highlight in with the incoming week instead of popping it in on settle. The
+    // two rows of a crossing draw the frame at the same driven position; the row outside the
+    // viewport places its copy beyond the strip's bounds, where the strip clips it, so exactly one
+    // frame shows and it hands over between the rows as the pages swap mid-gesture.
     val floating = selectionPosition != null && selected != null && showSelection
     Box(modifier = Modifier.fillMaxWidth().height(MonthRowHeight)) {
         Row(modifier = Modifier.fillMaxSize()) {
@@ -210,6 +211,10 @@ private fun SelectionFrame(position: () -> Float) {
  * Two weeks drawn next to each other and slid between as the driving pager crosses the edge of a
  * week. Sideways for the list, stacked up and down for the week timeline. The translation is read
  * while placing the row, so dragging only re-lays it out, never recomposes it.
+ *
+ * [selectionPosition] rides the crossing: both rows place the frame at it, and the row outside the
+ * viewport places its copy beyond the strip's bounds, where the strip clips it — so one frame shows
+ * and glides from the outgoing cell onto where the incoming cell lands.
  */
 @Composable
 internal fun WeekStripRow(
@@ -224,6 +229,7 @@ internal fun WeekStripRow(
     hasEvents: (LocalDate) -> Boolean,
     showSelection: Boolean,
     onSelect: (LocalDate) -> Unit,
+    selectionPosition: (() -> Float)? = null,
     visible: () -> Boolean = { true },
 ) {
     // Both weeks are measured at exactly the viewport size and placed one page apart, so the offset
@@ -239,6 +245,7 @@ internal fun WeekStripRow(
                     hasEvents = hasEvents,
                     showSelection = showSelection,
                     onSelect = onSelect,
+                    selectionPosition = selectionPosition,
                 )
             }
         },

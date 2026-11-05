@@ -305,12 +305,16 @@ private fun WeekStripPanel(
                 hasEvents = hasEvents,
                 showSelection = showSelection,
                 onSelect = onSelect,
+                selectionPosition = drive.selectionPosition,
                 visible = visible,
             )
         }
     } else {
         val crossingPair = if (pair != null && visible()) pair else null
         if (crossingPair != null) {
+            // The selection frame rides the crossing: drawn on both rows at the driven position,
+            // the row outside the viewport clips its copy, so one frame glides from the old cell
+            // onto where the incoming week's cell lands and hands over between the rows.
             WeekStripRow(
                 left = crossingPair.first,
                 right = crossingPair.second,
@@ -323,6 +327,7 @@ private fun WeekStripPanel(
                 hasEvents = hasEvents,
                 showSelection = showSelection,
                 onSelect = onSelect,
+                selectionPosition = drive.selectionPosition,
             )
         } else {
             HorizontalPager(
@@ -484,6 +489,7 @@ internal fun rememberWeekStripDrive(
     LaunchedEffect(dayStrip) {
         val strip = dayStrip ?: return@LaunchedEffect
         val slide = selectionSlide ?: return@LaunchedEffect
+        var previousPage = strip.state.currentPage
         snapshotFlow {
             Triple(
                 strip.state.currentPage,
@@ -492,7 +498,17 @@ internal fun rememberWeekStripDrive(
             )
         }.collectLatest { (page, fraction, scrolling) ->
             val target = strip.dayPosition(page, fraction)
-            if (scrolling) slide.snapTo(target) else slide.animateTo(target, tween(220))
+            // A flip across the Sunday/Monday edge wraps the position from one end of the row to
+            // the other. While scrolling the pair row carries the frame over; on a jump (a pick
+            // elsewhere, or a settle whose final emissions conflate) the pair has already slid the
+            // new week in, so the frame lands where the row left it instead of gliding back
+            // across the row it just arrived on.
+            val wrapped = strip.weekOf(page) != strip.weekOf(previousPage)
+            previousPage = page
+            when {
+                scrolling || wrapped -> slide.snapTo(target)
+                else -> slide.animateTo(target, tween(220))
+            }
         }
     }
 
