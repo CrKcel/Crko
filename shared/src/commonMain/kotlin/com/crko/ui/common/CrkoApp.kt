@@ -31,6 +31,7 @@ import com.crko.ui.components.GlassNavigationBarItem
 import com.crko.ui.more.CalendarSheet
 import com.crko.ui.more.MoreTab
 import com.crko.ui.more.SettingsPage
+import com.crko.ui.schedule.EventDetailDialog
 import com.crko.ui.schedule.EventEditorDialog
 import com.crko.ui.schedule.ScheduleTab
 import com.crko.ui.search.SearchHost
@@ -58,6 +59,7 @@ fun CrkoApp(state: AppStateHolder) {
     // The schedule is the primary surface, so the middle tab is the launch destination.
     var tab by rememberSaveable { mutableIntStateOf(1) }
     var eventEditor by remember { mutableStateOf<EventEditorTarget?>(null) }
+    var eventDetail by remember { mutableStateOf<EventEditorTarget?>(null) }
     var showTodoEditor by remember { mutableStateOf(false) }
     var showCalendarSheet by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -138,7 +140,7 @@ fun CrkoApp(state: AppStateHolder) {
                                 // Only a repeating series needs the occurrence slot; a one-off event
                                 // keeps its own start date even when opened from a later day.
                                 val occurrence = if (event.repeat != null) event.occurrenceStartOn(date) else null
-                                eventEditor = EventEditorTarget(event, occurrence)
+                                eventDetail = EventEditorTarget(event, occurrence)
                             },
                             onOpenSearch = { showSearch = true },
                         )
@@ -181,6 +183,22 @@ fun CrkoApp(state: AppStateHolder) {
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
+    }
+
+    eventDetail?.let { target ->
+        EventDetailDialog(
+            event = target.event,
+            occurrenceDate = target.occurrenceDate,
+            calendar = state.appState.calendars.firstOrNull { calendar ->
+                calendar.events.any { it.id == target.event.id }
+            },
+            strings = strings,
+            onDismiss = { eventDetail = null },
+            onEdit = {
+                eventDetail = null
+                eventEditor = target
+            },
+        )
     }
 
     EventEditorDialog(
@@ -242,14 +260,14 @@ fun CrkoApp(state: AppStateHolder) {
         onBack = { showSettings = false },
     )
 
-    // Search over both list pages; a tapped todo or journal opens its editor inside the host, an
-    // event goes through the same editor target the schedule page uses.
+    // Search over both list pages; tapped todos show a detail card inside the host, an event goes
+    // through the same detail target the schedule page uses, and journals open their editor.
     SearchHost(
         open = showSearch,
         state = state,
         strings = strings,
         onDismiss = { showSearch = false },
-        onOpenEvent = { event -> eventEditor = EventEditorTarget(event, null) },
+        onOpenEvent = { event -> eventDetail = EventEditorTarget(event, null) },
     )
 
     importPreview?.let { preview ->

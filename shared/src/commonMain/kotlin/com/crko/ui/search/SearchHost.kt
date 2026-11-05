@@ -14,13 +14,14 @@ import com.crko.state.WriteResult
 import com.crko.state.search.SearchRecord
 import com.crko.ui.more.JournalEditorDialog
 import com.crko.ui.more.journalWithEdits
+import com.crko.ui.todo.TodoDetailDialog
 import com.crko.ui.todo.TodoEditorDialog
 
 /**
- * Owns the search sheet and the editors it opens. The sheet closes when a result is tapped, and the
- * existing record editor (event, todo or journal) takes over; the tab that launched the search stays
- * where it was. [onOpenEvent] hands a tapped event to the app shell, which already knows how to show
- * its editor with the series-occurrence information it holds.
+ * Owns the search sheet and the record cards it opens. The sheet closes when a result is tapped: a
+ * todo shows its read-only detail card (editing is one tap further) and a journal opens its editor.
+ * The tab that launched the search stays where it was. [onOpenEvent] hands a tapped event to the app
+ * shell, which shows the detail card with the series-occurrence information it holds.
  */
 @Composable
 internal fun SearchHost(
@@ -30,6 +31,7 @@ internal fun SearchHost(
     onDismiss: () -> Unit,
     onOpenEvent: (Event) -> Unit,
 ) {
+    var viewingTodo by remember { mutableStateOf<Todo?>(null) }
     var editingTodo by remember { mutableStateOf<Todo?>(null) }
     var editingJournal by remember { mutableStateOf<Journal?>(null) }
 
@@ -46,7 +48,7 @@ internal fun SearchHost(
                 }
                 is SearchRecord.TodoRecord -> {
                     onDismiss()
-                    editingTodo = record.todo
+                    viewingTodo = record.todo
                 }
                 is SearchRecord.JournalRecord -> {
                     onDismiss()
@@ -55,6 +57,23 @@ internal fun SearchHost(
             }
         },
     )
+
+    viewingTodo?.let { todo ->
+        TodoDetailDialog(
+            todo = todo,
+            shownDue = state.nextTodoOccurrence(todo),
+            today = state.today,
+            calendar = state.appState.calendars.firstOrNull { calendar ->
+                calendar.todos.any { it.id == todo.id }
+            },
+            strings = strings,
+            onDismiss = { viewingTodo = null },
+            onEdit = {
+                viewingTodo = null
+                editingTodo = todo
+            },
+        )
+    }
 
     editingTodo?.let { todo ->
         TodoEditorDialog(

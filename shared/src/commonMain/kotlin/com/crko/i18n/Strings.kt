@@ -52,10 +52,13 @@ interface Strings {
 
     val eventNew: String
     val eventEdit: String
+    val eventDetail: String
     val eventTitleField: String
     val noteField: String
     val save: String
     val cancel: String
+    val edit: String
+    val close: String
     val done: String
     val saved: String
     val deleted: String
@@ -108,6 +111,7 @@ interface Strings {
     val eventStatus: String
     val statusConfirmed: String
     val statusTentative: String
+    val statusCancelled: String
     val transparency: String
     val busy: String
     val free: String
@@ -131,7 +135,9 @@ interface Strings {
     val todos: String
     val todoNew: String
     val todoEdit: String
+    val todoDetail: String
     val todoTitleField: String
+    val untitledTodo: String
     val startDate: String
     val progress: String
     val priority: String
@@ -304,10 +310,13 @@ object ZhStrings : Strings {
 
     override val eventNew = "新建日程"
     override val eventEdit = "编辑日程"
+    override val eventDetail = "日程详情"
     override val eventTitleField = "标题"
     override val noteField = "备注"
     override val save = "保存"
     override val cancel = "取消"
+    override val edit = "编辑"
+    override val close = "关闭"
     override val done = "完成"
     override val saved = "已保存"
     override val deleted = "已删除"
@@ -359,6 +368,7 @@ object ZhStrings : Strings {
     override val eventStatus = "状态"
     override val statusConfirmed = "确认"
     override val statusTentative = "待定"
+    override val statusCancelled = "已取消"
     override val transparency = "空闲状态"
     override val busy = "忙碌"
     override val free = "空闲"
@@ -382,7 +392,9 @@ object ZhStrings : Strings {
     override val todos = "待办"
     override val todoNew = "新建待办"
     override val todoEdit = "编辑待办"
+    override val todoDetail = "待办详情"
     override val todoTitleField = "要做的事"
+    override val untitledTodo = "未命名待办"
     override val startDate = "开始日期"
     override val progress = "完成度"
     override val priority = "优先级"

@@ -86,6 +86,7 @@ fun TodoTab(
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
     var subtaskParent by remember { mutableStateOf<Todo?>(null) }
     var editing by remember { mutableStateOf<Todo?>(null) }
+    var viewing by remember { mutableStateOf<Todo?>(null) }
     var actionsFor by remember { mutableStateOf<Todo?>(null) }
     val layoutDirection = LocalLayoutDirection.current
 
@@ -157,7 +158,7 @@ fun TodoTab(
                         }
                     },
                     onAddSubtask = { subtaskParent = node.todo },
-                    onEdit = { editing = node.todo },
+                    onShowDetail = { viewing = node.todo },
                     onActions = if (node.todo.repeat != null) {
                         { actionsFor = node.todo }
                     } else {
@@ -201,7 +202,7 @@ fun TodoTab(
                             shownDue = state.nextTodoOccurrence(node.todo),
                             onToggle = { state.setTodoDone(node.todo.id, false) },
                             onAddSubtask = { subtaskParent = node.todo },
-                            onEdit = { editing = node.todo },
+                            onShowDetail = { viewing = node.todo },
                             onActions = if (node.todo.repeat != null) {
                                 { actionsFor = node.todo }
                             } else {
@@ -238,6 +239,23 @@ fun TodoTab(
             initial = todo,
             calendars = state.localCalendars,
             defaultCalendarId = state.newRecordCalendarId,
+        )
+    }
+
+    viewing?.let { todo ->
+        TodoDetailDialog(
+            todo = todo,
+            shownDue = state.nextTodoOccurrence(todo),
+            today = today,
+            calendar = state.appState.calendars.firstOrNull { calendar ->
+                calendar.todos.any { it.id == todo.id }
+            },
+            strings = strings,
+            onDismiss = { viewing = null },
+            onEdit = {
+                viewing = null
+                editing = todo
+            },
         )
     }
 
@@ -281,7 +299,7 @@ private fun TodoCard(
     shownDue: LocalDate?,
     onToggle: () -> Unit,
     onAddSubtask: () -> Unit,
-    onEdit: () -> Unit,
+    onShowDetail: () -> Unit,
     /** Opens the series actions; null for a one-off todo. */
     onActions: (() -> Unit)?,
     onDelete: () -> Unit,
@@ -293,8 +311,9 @@ private fun TodoCard(
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(MiuixTheme.colorScheme.surfaceContainer)
-            // Tapping the row toggles completion; long-pressing opens the editor.
-            .combinedClickable(onClick = onToggle, onLongClick = onEdit)
+            // Tapping anywhere on the row opens the read-only detail card; the check circle still
+            // toggles completion.
+            .combinedClickable(onClick = onShowDetail, onLongClick = onShowDetail)
             .padding(start = 12.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -313,8 +332,6 @@ private fun TodoCard(
                 textDecoration = if (todo.done) TextDecoration.LineThrough else TextDecoration.None,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                // The row toggle stays on the background; tapping the title opens the editor.
-                modifier = Modifier.clickable(onClick = onEdit),
             )
             if (todo.note.isNotBlank()) {
                 Spacer(Modifier.height(3.dp))
