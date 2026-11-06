@@ -10,6 +10,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -42,20 +47,32 @@ internal fun EventEditorDialog(
     calendars: List<Calendar> = emptyList(),
     defaultCalendarId: String? = null,
 ) {
+    // Hold the last editing target so the sheet keeps its content while animating out: the shell
+    // nulls [event] on dismiss, which would otherwise blank the form mid-exit.
+    var shownEvent by remember { mutableStateOf<Event?>(null) }
+    var shownOccurrence by remember { mutableStateOf<LocalDate?>(null) }
     if (event != null) {
-        EventEditorContent(
-            event,
-            occurrenceDate,
-            strings,
-            today,
-            readAttachment,
-            onDismiss,
-            onSave,
-            onDelete,
-            calendars,
-            defaultCalendarId,
-        )
+        shownEvent = event
+        shownOccurrence = occurrenceDate
     }
+    val target = shownEvent ?: return
+    // Bumped once the sheet finished animating out, so a reopened sheet starts blank.
+    var session by remember { mutableIntStateOf(0) }
+    EventEditorContent(
+        target,
+        shownOccurrence,
+        strings,
+        today,
+        readAttachment,
+        onDismiss,
+        onSave,
+        onDelete,
+        calendars,
+        defaultCalendarId,
+        show = event != null,
+        onDismissFinished = { session += 1 },
+        session,
+    )
 }
 
 @Composable
@@ -70,8 +87,11 @@ private fun EventEditorContent(
     onDelete: (Event, EditScope) -> Unit,
     calendars: List<Calendar>,
     defaultCalendarId: String?,
+    show: Boolean,
+    onDismissFinished: () -> Unit,
+    session: Int,
 ) {
-    val state = rememberEventEditorState(event, occurrenceDate, defaultCalendarId)
+    val state = rememberEventEditorState(event, occurrenceDate, session, defaultCalendarId)
     if (state.pickingTimeField != null) {
         EventEditorTimeDialog(state = state, strings = strings)
         return
@@ -79,8 +99,9 @@ private fun EventEditorContent(
     if (EventEditorDateDialogs(state = state, strings = strings, today = today)) return
 
     WindowDialog(
-        show = true,
+        show = show,
         onDismissRequest = onDismiss,
+        onDismissFinished = onDismissFinished,
         title = if (event.id == null) strings.eventNew else strings.eventEdit,
         insideMargin = DpSize(20.dp, 16.dp),
     ) {

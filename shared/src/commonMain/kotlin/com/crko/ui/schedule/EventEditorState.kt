@@ -263,11 +263,13 @@ internal class EventEditorState(
 internal fun rememberEventEditorState(
     event: Event,
     occurrenceDate: LocalDate?,
+    session: Int = 0,
     initialCalendarId: String? = null,
 ): EventEditorState {
     val fileBridge = rememberCalendarFileBridge()
-    // Re-key by the full event so switching between events resets every field.
-    return remember(event, occurrenceDate) {
+    // Re-key by the full event and the close/open session so switching between events or reopening
+    // one resets every field.
+    return remember(event, occurrenceDate, session) {
         EventEditorState(event, occurrenceDate, initialCalendarId, fileBridge)
     }
 }

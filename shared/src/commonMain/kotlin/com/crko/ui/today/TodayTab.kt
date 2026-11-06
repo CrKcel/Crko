@@ -308,18 +308,16 @@ internal fun TodayTab(
         defaultCalendarId = state.newRecordCalendarId,
     )
 
-    editing?.let { todo ->
-        TodoEditorDialog(
-            show = true,
-            strings = strings,
-            today = today,
-            onDismiss = { editing = null },
-            onSave = { draft, _ -> state.updateTodo(todo.id, draft) == WriteResult.Success },
-            initial = todo,
-            calendars = state.localCalendars,
-            defaultCalendarId = state.newRecordCalendarId,
-        )
-    }
+    TodoEditorDialog(
+        show = editing != null,
+        strings = strings,
+        today = today,
+        onDismiss = { editing = null },
+        onSave = { draft, _ -> editing?.let { state.updateTodo(it.id, draft) } == WriteResult.Success },
+        initial = editing,
+        calendars = state.localCalendars,
+        defaultCalendarId = state.newRecordCalendarId,
+    )
 
     viewing?.let { todo ->
         TodoDetailDialog(

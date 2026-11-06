@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -68,45 +69,58 @@ internal fun TodoEditorDialog(
     calendars: List<Calendar> = emptyList(),
     defaultCalendarId: String? = null,
 ) {
-    if (!show) return
-    // Keyed on the record, the parent and [show]: editing another todo starts from its content and a
+    // Hold the last editing target so the sheet keeps its content while animating out: the call
+    // site nulls [initial]/[parent] on dismiss, which would otherwise blank the form mid-exit.
+    var shownInitial by remember { mutableStateOf<Todo?>(null) }
+    var shownParent by remember { mutableStateOf<Todo?>(null) }
+    if (show) {
+        shownInitial = initial
+        shownParent = parent
+    }
+    val editingTarget = shownInitial
+    val parentTarget = shownParent
+    // Bumped once the sheet finished animating out, so a reopened sheet starts blank instead of
+    // keeping the last session's input.
+    var session by remember { mutableIntStateOf(0) }
+    // Keyed on the target and [session]: editing another todo starts from its content and a
     // reopened dialog starts blank instead of keeping the last session's input.
-    var title by remember(initial, parent, show) { mutableStateOf(initial?.title ?: "") }
-    var note by remember(initial, parent, show) { mutableStateOf(initial?.note ?: "") }
-    var location by remember(initial, parent, show) { mutableStateOf(initial?.location ?: "") }
-    var priority by remember(initial, parent, show) {
-        mutableStateOf(initial?.priorityLevel ?: TodoPriority.Normal)
+    var title by remember(editingTarget, parentTarget, session) { mutableStateOf(editingTarget?.title ?: "") }
+    var note by remember(editingTarget, parentTarget, session) { mutableStateOf(editingTarget?.note ?: "") }
+    var location by remember(editingTarget, parentTarget, session) { mutableStateOf(editingTarget?.location ?: "") }
+    var priority by remember(editingTarget, parentTarget, session) {
+        mutableStateOf(editingTarget?.priorityLevel ?: TodoPriority.Normal)
     }
-    var start by remember(initial, parent, show) { mutableStateOf(initial?.startDay) }
-    var due by remember(initial, parent, show) { mutableStateOf(initial?.dueDay) }
-    var percent by remember(initial, parent, show) { mutableStateOf(initial?.percentComplete ?: 0) }
-    var categoriesText by remember(initial, parent, show) {
-        mutableStateOf(initial?.categories?.joinToString(", ").orEmpty())
+    var start by remember(editingTarget, parentTarget, session) { mutableStateOf(editingTarget?.startDay) }
+    var due by remember(editingTarget, parentTarget, session) { mutableStateOf(editingTarget?.dueDay) }
+    var percent by remember(editingTarget, parentTarget, session) { mutableStateOf(editingTarget?.percentComplete ?: 0) }
+    var categoriesText by remember(editingTarget, parentTarget, session) {
+        mutableStateOf(editingTarget?.categories?.joinToString(", ").orEmpty())
     }
-    var calendarId by remember(initial, parent, show) { mutableStateOf(defaultCalendarId) }
-    var picking by remember(initial, parent, show) { mutableStateOf<TodoDateField?>(null) }
+    var calendarId by remember(editingTarget, parentTarget, session) { mutableStateOf(defaultCalendarId) }
+    var picking by remember(editingTarget, parentTarget, session) { mutableStateOf<TodoDateField?>(null) }
     // Collapsed unless an edited todo already carries non-default values in the folded fields, so
     // reopening it never hides the data the user entered before.
-    var moreOptions by remember(initial, parent, show) {
+    var moreOptions by remember(editingTarget, parentTarget, session) {
         mutableStateOf(
-            initial != null && (
-                initial.priorityLevel != TodoPriority.Normal ||
-                    initial.percentComplete != 0 ||
-                    initial.location.isNotBlank() ||
-                    initial.categories.isNotEmpty()
+            editingTarget != null && (
+                editingTarget.priorityLevel != TodoPriority.Normal ||
+                    editingTarget.percentComplete != 0 ||
+                    editingTarget.location.isNotBlank() ||
+                    editingTarget.categories.isNotEmpty()
                 ),
         )
     }
 
     val dialogTitle = when {
-        initial != null -> strings.todoEdit
-        parent != null -> strings.subtaskOf(parent.title)
+        editingTarget != null -> strings.todoEdit
+        parentTarget != null -> strings.subtaskOf(parentTarget.title)
         else -> strings.todoNew
     }
 
     WindowDialog(
-        show = true,
+        show = show,
         onDismissRequest = onDismiss,
+        onDismissFinished = { session += 1 },
         title = dialogTitle,
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -118,7 +132,7 @@ internal fun TodoEditorDialog(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (initial == null && parent == null && calendars.size > 1) {
+            if (editingTarget == null && parentTarget == null && calendars.size > 1) {
                 Spacer(Modifier.height(12.dp))
                 SectionCaption(strings.calendar)
                 CalendarChips(
@@ -210,7 +224,7 @@ internal fun TodoEditorDialog(
                             .map { it.trim() }
                             .filter { it.isNotEmpty() },
                     )
-                    val pickedCalendar = if (initial == null && parent == null) calendarId else null
+                    val pickedCalendar = if (editingTarget == null && parentTarget == null) calendarId else null
                     if (onSave(draft, pickedCalendar)) onDismiss()
                 },
                 enabled = title.isNotBlank(),

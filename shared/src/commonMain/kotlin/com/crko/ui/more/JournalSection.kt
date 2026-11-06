@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -124,22 +125,21 @@ internal fun JournalSection(state: AppStateHolder, strings: Strings) {
         calendars = state.localCalendars,
         defaultCalendarId = state.newRecordCalendarId,
     )
-    editing?.let { journal ->
-        JournalEditorDialog(
-            show = true,
-            strings = strings,
-            today = state.today,
-            journal = journal,
-            onDismiss = { editing = null },
-            onSave = { title, note, date, _ ->
-                state.updateJournal(journalWithEdits(journal, title, note, date)) == WriteResult.Success
-            },
-            onDelete = {
-                state.deleteJournal(journal.id)
-                editing = null
-            },
-        )
-    }
+    JournalEditorDialog(
+        show = editing != null,
+        strings = strings,
+        today = state.today,
+        journal = editing,
+        onDismiss = { editing = null },
+        onSave = { title, note, date, _ ->
+            editing?.let { state.updateJournal(journalWithEdits(it, title, note, date)) } ==
+                WriteResult.Success
+        },
+        onDelete = {
+            editing?.let { state.deleteJournal(it.id) }
+            editing = null
+        },
+    )
 }
 
 /** Parses a stored journal date; malformed values fall back to the untitled placeholder. */
@@ -225,19 +225,27 @@ internal fun JournalEditorDialog(
     calendars: List<Calendar> = emptyList(),
     defaultCalendarId: String? = null,
 ) {
-    if (!show) return
-    // Keyed on the entry and [show]: editing a different journal starts from its content, and a
+    // Hold the last editing target so the sheet keeps its content while animating out: the call
+    // site nulls [journal] on dismiss, which would otherwise blank the form mid-exit.
+    var shownJournal by remember { mutableStateOf<Journal?>(null) }
+    if (show) shownJournal = journal
+    val editingTarget = shownJournal
+    // Bumped once the sheet finished animating out, so a reopened sheet starts blank instead of
+    // keeping the last session's input.
+    var session by remember { mutableIntStateOf(0) }
+    // Keyed on the entry and [session]: editing a different journal starts from its content, and a
     // reopened dialog starts blank instead of keeping the last session's input.
-    var title by remember(journal, show) { mutableStateOf(journal?.title ?: "") }
-    var note by remember(journal, show) { mutableStateOf(journal?.note ?: "") }
-    var date by remember(journal, show) { mutableStateOf(journal?.date?.let(::parseJournalDate)) }
-    var calendarId by remember(journal, show) { mutableStateOf(defaultCalendarId) }
-    var showDatePicker by remember(journal, show) { mutableStateOf(false) }
+    var title by remember(editingTarget, session) { mutableStateOf(editingTarget?.title ?: "") }
+    var note by remember(editingTarget, session) { mutableStateOf(editingTarget?.note ?: "") }
+    var date by remember(editingTarget, session) { mutableStateOf(editingTarget?.date?.let(::parseJournalDate)) }
+    var calendarId by remember(editingTarget, session) { mutableStateOf(defaultCalendarId) }
+    var showDatePicker by remember(editingTarget, session) { mutableStateOf(false) }
 
     WindowDialog(
-        show = true,
+        show = show,
         onDismissRequest = onDismiss,
-        title = if (journal == null) strings.journalNew else strings.journalEdit,
+        onDismissFinished = { session += 1 },
+        title = if (editingTarget == null) strings.journalNew else strings.journalEdit,
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             TextField(
@@ -248,7 +256,7 @@ internal fun JournalEditorDialog(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (journal == null && calendars.size > 1) {
+            if (editingTarget == null && calendars.size > 1) {
                 Spacer(Modifier.height(12.dp))
                 Text(
                     text = strings.calendar,
@@ -301,7 +309,7 @@ internal fun JournalEditorDialog(
                 minLines = 3,
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (journal != null) {
+            if (editingTarget != null) {
                 Spacer(Modifier.height(12.dp))
                 Text(
                     text = strings.delete,
@@ -317,7 +325,7 @@ internal fun JournalEditorDialog(
             }
             Spacer(Modifier.height(8.dp))
             Button(
-                onClick = { if (onSave(title, note, date, if (journal == null) calendarId else null)) onDismiss() },
+                onClick = { if (onSave(title, note, date, if (editingTarget == null) calendarId else null)) onDismiss() },
                 enabled = title.isNotBlank() || note.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColorsPrimary(),

@@ -75,33 +75,32 @@ internal fun SearchHost(
         )
     }
 
-    editingTodo?.let { todo ->
-        TodoEditorDialog(
-            show = true,
-            strings = strings,
-            today = state.today,
-            onDismiss = { editingTodo = null },
-            onSave = { draft, _ -> state.updateTodo(todo.id, draft) == WriteResult.Success },
-            initial = todo,
-            calendars = state.localCalendars,
-            defaultCalendarId = state.newRecordCalendarId,
-        )
-    }
+    TodoEditorDialog(
+        show = editingTodo != null,
+        strings = strings,
+        today = state.today,
+        onDismiss = { editingTodo = null },
+        onSave = { draft, _ ->
+            editingTodo?.let { state.updateTodo(it.id, draft) } == WriteResult.Success
+        },
+        initial = editingTodo,
+        calendars = state.localCalendars,
+        defaultCalendarId = state.newRecordCalendarId,
+    )
 
-    editingJournal?.let { journal ->
-        JournalEditorDialog(
-            show = true,
-            strings = strings,
-            today = state.today,
-            journal = journal,
-            onDismiss = { editingJournal = null },
-            onSave = { title, note, date, _ ->
-                state.updateJournal(journalWithEdits(journal, title, note, date)) == WriteResult.Success
-            },
-            onDelete = {
-                state.deleteJournal(journal.id)
-                editingJournal = null
-            },
-        )
-    }
+    JournalEditorDialog(
+        show = editingJournal != null,
+        strings = strings,
+        today = state.today,
+        journal = editingJournal,
+        onDismiss = { editingJournal = null },
+        onSave = { title, note, date, _ ->
+            editingJournal?.let { state.updateJournal(journalWithEdits(it, title, note, date)) } ==
+                WriteResult.Success
+        },
+        onDelete = {
+            editingJournal?.let { state.deleteJournal(it.id) }
+            editingJournal = null
+        },
+    )
 }
