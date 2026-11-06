@@ -34,6 +34,9 @@ import com.crko.i18n.Strings
 import com.crko.storage.AttachmentRepository
 import com.crko.storage.AppStorage
 import com.crko.storage.CalendarReadException
+import com.crko.storage.CloudAccountConfig
+import com.crko.storage.CloudAccountStore
+import com.crko.storage.CloudCrypto
 import com.crko.storage.SecretStore
 import com.crko.storage.StateStorage
 import com.crko.storage.SubscriptionHttp
@@ -79,71 +82,6 @@ import kotlin.time.Instant
 /** Lets the launch surface settle before the first reminder pass competes for CPU and alarm binder. */
 private const val StartupReminderDelayMillis = 1_500L
 
-enum class DarkModeSetting { System, Light, Dark }
-
-enum class EditScope { ThisEvent, ThisAndFuture, AllEvents }
-
-/** User-visible notifications; localized at display time so they follow language switches. */
-sealed interface AppMessage {
-    data object Saved : AppMessage
-    /** A delete happened; [undoable] is true when its records wait in the in-memory undo snapshot. */
-    data class Deleted(val undoable: Boolean) : AppMessage
-
-    /** The most recent delete was put back into its calendar. */
-    data object DeleteUndone : AppMessage
-    /** Undo found nothing to restore, or a record with one of the ids exists again. */
-    data object DeleteUndoFailed : AppMessage
-    data object TodoAdded : AppMessage
-    data class EventsImported(
-        val events: Int,
-        val todos: Int = 0,
-        val journals: Int = 0,
-        val removed: Int = 0,
-        val warnings: List<IcsWarning> = emptyList(),
-        val warningDetails: List<IcsWarningDetail> = emptyList(),
-    ) : AppMessage
-    data class ImportFailed(val failure: IcsImportFailure) : AppMessage
-    data object Exported : AppMessage
-    data object ExportFailed : AppMessage
-
-    /** An attendee answered an invitation; [partStat] is the answer. */
-    data class ItipReplyProcessed(val attendee: String, val partStat: IcsPartStat) : AppMessage
-
-    /** A `REPLY` named no record this calendar knows (or an older revision than the stored one). */
-    data class ItipReplyUnknown(val attendee: String) : AppMessage
-    data class SubscriptionSynced(
-        val name: String,
-        val events: Int,
-        val todos: Int = 0,
-        val removed: Int = 0,
-    ) : AppMessage
-
-    data class SubscriptionUnchanged(val name: String) : AppMessage
-    data class SubscriptionFailed(val name: String, val failure: SubscriptionFailure) : AppMessage
-
-    /**
-     * Stored data could not be read completely. [droppedRecords] is zero when nothing at all could
-     * be parsed; the damaged payload itself was kept by the storage.
-     */
-    data class StorageRecovered(val droppedRecords: Int) : AppMessage
-}
-
-/** Outcome of reading a picked calendar file; the UI maps [Failed] onto a message. */
-sealed interface CalendarFileParse {
-    data class Parsed(val import: IcsImport) : CalendarFileParse
-    data class Failed(val failure: IcsImportFailure) : CalendarFileParse
-}
-
-enum class PaletteSetting { Monet, Monochrome, Custom }
-
-/** Result of a mutation attempt; the UI maps [WriteResult] onto localized text. */
-sealed interface WriteResult {
-    data object Success : WriteResult
-    data object EmptyTitle : WriteResult
-    data object InvalidTimeRange : WriteResult
-    data object InvalidRepeat : WriteResult
-}
-
 @Stable
 class AppStateHolder(
     private val scope: CoroutineScope,
@@ -176,6 +114,16 @@ class AppStateHolder(
      * by default so tests never touch platform secret storage.
      */
     private val secretStore: SecretStore? = null,
+    /**
+     * Randomness for the cloud payload encryption, wired by the composition root. The algorithms
+     * are common code; only this stays a platform concern. Null by default so tests run without it.
+     */
+    private val cloudCrypto: CloudCrypto? = null,
+    /**
+     * Cloud account config and device-local sync bookkeeping, wired by the composition root. Null
+     * by default so tests never touch the platform preferences.
+     */
+    private val cloudAccountStore: CloudAccountStore? = null,
     /**
      * Reads and writes materialized `ATTACH` payloads. Injectable so tests can keep files in memory
      * and so the domain package never needs a storage import.
@@ -231,10 +179,25 @@ class AppStateHolder(
         override fun setDefaultCalendarId(id: String?) = settingsController.setDefaultCalendarId(id)
     }
 
-    /** Queues user edits of writable CalDAV calendars for the next push. */
+    /** Queues user edits of sync-managed calendars for the next push. */
     private val outboxRecorder = OutboxRecorder(
         outbox = storage.outbox,
         nowMillis = { clock.now().toEpochMilliseconds() },
+        cloudActive = { cloud.cloudActive },
+    )
+
+    /** The cloud push/pull engines and the account service, behind one handle. */
+    private val cloud = CloudSyncHandle(
+        access = stateAccess,
+        scope = scope,
+        outbox = storage.outbox,
+        http = subscriptionHttp,
+        crypto = cloudCrypto,
+        secretStore = secretStore,
+        clock = clock,
+        idProvider = idProvider,
+        accountStore = cloudAccountStore,
+        settingsController = settingsController,
     )
 
     private val calendarService = CalendarService(access = stateAccess, idProvider = idProvider)
@@ -667,6 +630,37 @@ class AppStateHolder(
     suspend fun updateCalDavCredentials(id: String, username: String, password: String) =
         calDavAccounts.updateCredentials(id, username, password)
 
+    // ----- cloud sync (crko.cloud) -----
+
+    /** The signed-in cloud account, or null when this device has none. */
+    val cloudAccount: CloudAccountConfig? get() = cloud.account
+
+    /** Whether a cloud push+pull pass is currently running. */
+    val isCloudSyncing: Boolean get() = cloud.isSyncing
+
+    /** Epoch millis of the last completed cloud pass; 0 when this device never synced. */
+    val cloudLastSyncMs: Long get() = cloud.lastSyncMs
+
+    suspend fun signupCloudAccount(server: String, invite: String, name: String, password: String): CloudAccountResult =
+        cloud.signup(server, invite, name, password)
+
+    suspend fun loginCloudAccount(server: String, name: String, password: String): CloudAccountResult =
+        cloud.login(server, name, password)
+
+    /** Signs out; the local calendars and records stay on the device. */
+    suspend fun signOutCloudAccount() = cloud.signOut()
+
+    fun setCloudSyncEnabled(enabled: Boolean) = cloud.setEnabled(enabled)
+
+    /** Removes the account and every encrypted blob on the server after verifying [password]. */
+    suspend fun deleteCloudAccount(password: String): CloudAccountResult = cloud.deleteAccount(password)
+
+    /** One manual push+pull pass; the outcome arrives as a message. */
+    fun syncCloudNow() = cloud.syncNow()
+
+    /** The foreground poll's quiet pass: pushes due rows, pulls at most every five minutes. */
+    fun syncDueCloud() = cloud.syncDue()
+
     /** Subscriptions whose automatic refresh interval has elapsed at [now]. */
     fun subscriptionsDue(now: Instant = clock.now()): List<CalendarSubscription> =
         subscriptionSync.subscriptionsDue(now)
@@ -693,13 +687,14 @@ class AppStateHolder(
 
     private fun persist(next: AppState, origin: ChangeOrigin = ChangeOrigin.User) {
         if (origin == ChangeOrigin.User) {
-            // User edits of writable CalDAV calendars queue their upload and trigger a prompt
-            // push; sync-engine writes already mirror the server and must not re-queue.
+            // User edits of sync-managed calendars queue their upload and trigger a prompt push;
+            // sync-engine writes already mirror the server and must not re-queue.
             val recorded = outboxRecorder.record(appState, next)
             repository.persist(recorded)
             outboxRecorder.touchedCalendars.forEach { id ->
                 scope.launch { subscriptionSync.syncSubscription(id) }
             }
+            if (outboxRecorder.touchedCalendars.isNotEmpty()) cloud.syncDue()
         } else {
             repository.persist(next)
         }

@@ -261,6 +261,38 @@ interface Strings {
     val caldavRemoveSummary: String
     fun caldavDiscoverFailed(failure: DiscoveryFailure): String
 
+    /** The crko.cloud account: end-to-end encrypted sync of the local calendars. */
+    val cloudSync: String
+    val cloudNotSignedIn: String
+    val cloudSyncEnabled: String
+    val cloudSyncNow: String
+    val cloudSyncing: String
+    val cloudNeverSynced: String
+    fun cloudLastSyncAt(at: String): String
+    val cloudE2eeNote: String
+    val cloudSignIn: String
+    val cloudSignUp: String
+    val cloudSwitchToSignIn: String
+    val cloudSwitchToSignUp: String
+    val cloudServerField: String
+    val cloudInviteField: String
+    val cloudNameField: String
+    val cloudPasswordField: String
+    val cloudWorking: String
+    val cloudSignOut: String
+    val cloudSignOutSummary: String
+    val cloudDeleteAccount: String
+    val cloudDeleteAccountSummary: String
+    val cloudErrorInvite: String
+    val cloudErrorNameTaken: String
+    val cloudErrorCredentials: String
+    val cloudErrorUnknownAccount: String
+    val cloudErrorServer: String
+    val cloudErrorGeneric: String
+    fun cloudSynced(events: Int, todos: Int, journals: Int, removed: Int): String
+    val cloudUnchanged: String
+    val cloudAuthExpired: String
+
     /** Local calendar management. */
     val calendars: String
     val calendar: String
@@ -622,6 +654,43 @@ object ZhStrings : Strings {
     override val about = "关于"
     override val version = "版本"
     override val storageNote = "数据仅保存在本机"
+    override val cloudSync = "云同步"
+    override val cloudNotSignedIn = "未登录"
+    override val cloudSyncEnabled = "同步此设备"
+    override val cloudSyncNow = "立即同步"
+    override val cloudSyncing = "同步中…"
+    override val cloudNeverSynced = "从未同步"
+    override fun cloudLastSyncAt(at: String) = "上次同步 $at"
+    override val cloudE2eeNote = "数据端到端加密后同步，服务器无法读取内容"
+    override val cloudSignIn = "登录"
+    override val cloudSignUp = "注册"
+    override val cloudSwitchToSignIn = "已有账号？登录"
+    override val cloudSwitchToSignUp = "没有账号？注册"
+    override val cloudServerField = "服务器"
+    override val cloudInviteField = "邀请码"
+    override val cloudNameField = "用户名"
+    override val cloudPasswordField = "密码"
+    override val cloudWorking = "请稍候…"
+    override val cloudSignOut = "退出登录"
+    override val cloudSignOutSummary = "本机数据保留，但不再与云端同步。"
+    override val cloudDeleteAccount = "注销云端账号"
+    override val cloudDeleteAccountSummary = "将删除云端账号与全部云端数据，本机数据保留，不可撤销。"
+    override val cloudErrorInvite = "邀请码无效或已用尽"
+    override val cloudErrorNameTaken = "用户名已被占用"
+    override val cloudErrorCredentials = "用户名或密码错误"
+    override val cloudErrorUnknownAccount = "账号不存在"
+    override val cloudErrorServer = "服务器地址无效"
+    override val cloudErrorGeneric = "连接失败，请稍后重试"
+    override fun cloudSynced(events: Int, todos: Int, journals: Int, removed: Int): String {
+        val parts = mutableListOf<String>()
+        if (events > 0) parts += "日程 $events"
+        if (todos > 0) parts += "待办 $todos"
+        if (journals > 0) parts += "手帐 $journals"
+        if (removed > 0) parts += "移除 $removed"
+        return "云同步完成：${parts.joinToString("、")}"
+    }
+    override val cloudUnchanged = "云同步已是最新"
+    override val cloudAuthExpired = "云同步登录已过期，请重新登录"
 }
 
 fun todoPriorityLabel(strings: Strings, priority: TodoPriority): String = when (priority) {

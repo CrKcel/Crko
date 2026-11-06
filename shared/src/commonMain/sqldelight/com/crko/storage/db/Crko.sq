@@ -72,6 +72,7 @@ CREATE TABLE outbox (
     sequence INTEGER NOT NULL DEFAULT 0,
     base_etag TEXT,
     href TEXT,
+    backend TEXT NOT NULL DEFAULT 'caldav',
     created_ms INTEGER NOT NULL,
     updated_ms INTEGER NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -80,7 +81,7 @@ CREATE TABLE outbox (
 );
 
 CREATE UNIQUE INDEX outbox_pending
-    ON outbox(calendar_id, entity, uid, recurrence_key);
+    ON outbox(backend, calendar_id, entity, uid, recurrence_key);
 
 CREATE TABLE damaged_record (
     damaged_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,27 +214,35 @@ DELETE FROM damaged_record;
 
 selectOutboxEntries:
 SELECT outbox_id, calendar_id, entity, uid, recurrence_key, operation, sequence, base_etag, href,
-       created_ms, updated_ms, attempts, next_attempt_ms, last_error
+       backend, created_ms, updated_ms, attempts, next_attempt_ms, last_error
 FROM outbox
 ORDER BY created_ms, outbox_id;
 
 selectOutboxEntriesForCalendar:
 SELECT outbox_id, calendar_id, entity, uid, recurrence_key, operation, sequence, base_etag, href,
-       created_ms, updated_ms, attempts, next_attempt_ms, last_error
+       backend, created_ms, updated_ms, attempts, next_attempt_ms, last_error
 FROM outbox
 WHERE calendar_id = ?
 ORDER BY created_ms, outbox_id;
 
+selectOutboxEntriesForBackend:
+SELECT outbox_id, calendar_id, entity, uid, recurrence_key, operation, sequence, base_etag, href,
+       backend, created_ms, updated_ms, attempts, next_attempt_ms, last_error
+FROM outbox
+WHERE backend = ?
+ORDER BY created_ms, outbox_id;
+
 selectOutboxEntry:
 SELECT outbox_id, calendar_id, entity, uid, recurrence_key, operation, sequence, base_etag, href,
-       created_ms, updated_ms, attempts, next_attempt_ms, last_error
+       backend, created_ms, updated_ms, attempts, next_attempt_ms, last_error
 FROM outbox
-WHERE calendar_id = ? AND entity = ? AND uid = ? AND recurrence_key = ?;
+WHERE backend = ? AND calendar_id = ? AND entity = ? AND uid = ? AND recurrence_key = ?;
 
 insertOutboxEntry:
 INSERT INTO outbox(
-    calendar_id, entity, uid, recurrence_key, operation, sequence, base_etag, href, created_ms, updated_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    calendar_id, entity, uid, recurrence_key, operation, sequence, base_etag, href, backend,
+    created_ms, updated_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- A fresh local edit re-queues with clean retry bookkeeping; attempts live in updateOutboxAttempt.
 updateOutboxEntry:
@@ -252,6 +261,9 @@ DELETE FROM outbox WHERE outbox_id = ?;
 
 deleteOutboxEntriesForCalendar:
 DELETE FROM outbox WHERE calendar_id = ?;
+
+deleteOutboxEntriesForBackend:
+DELETE FROM outbox WHERE backend = ?;
 
 getMeta:
 SELECT value FROM meta WHERE key = ?;

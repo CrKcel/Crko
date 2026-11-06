@@ -91,6 +91,14 @@ internal fun messageText(strings: Strings, message: AppMessage): String = when (
     is AppMessage.SubscriptionUnchanged -> strings.subscriptionUnchanged(message.name)
     is AppMessage.SubscriptionFailed ->
         strings.subscriptionFailed(message.name, message.failure)
+    is AppMessage.CloudSynced -> strings.cloudSynced(
+        message.events,
+        message.todos,
+        message.journals,
+        message.removed,
+    )
+    AppMessage.CloudUnchanged -> strings.cloudUnchanged
+    AppMessage.CloudAuthExpired -> strings.cloudAuthExpired
 }
 
 /** How many records one warning kind may name in the import message. */

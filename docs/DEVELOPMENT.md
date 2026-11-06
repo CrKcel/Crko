@@ -32,7 +32,7 @@ shared/src/
 ├── commonMain/kotlin/com/crko/
 │   ├── domain/     纯 Kotlin：模型、重复规则（RecurrenceMatching / RecurrenceIndex / TodoRecurrence）、ICS 编解码
 │   ├── storage/    持久化门面、SQLDelight 读写、平台声明（expect）与文本解码（CalendarTextReader）
-│   ├── sync/       订阅抓取与 CalDAV 协议实现
+│   ├── sync/       订阅抓取、CalDAV 协议与 crko.cloud 客户端实现
 │   ├── state/      AppStateHolder 门面 + event/todo/journal/import/settings/persistence 服务
 │   ├── i18n/       中英文文案
 │   └── ui/         主题、组件、日程/待办/更多三个页面；ui/transfer 只编排导入导出
@@ -100,4 +100,33 @@ shared/src/
 - 莫奈与自选色盘由 `ThemeController` 以 `MonetSystem` 模式驱动，无配色使用 `ColorSchemeMode.System`（即 miuix 自带的默认色板）；所有 miuix 组件与 Material `TimePicker` 共享同一套颜色。
 - 整页使用 `safeDrawingPadding`，因为 iOS 上 `WindowInsets.statusBars` 为空。
 - 对话框使用 `WindowDialog`（独立窗口），不依赖 Scaffold 的 `MiuixPopupHost`。
+
+## 云同步（crko.cloud）
+
+与 CalDAV 同步平行的自有同步方案，服务端是独立的 Cloudflare Worker + D1（代码在 `crko.cloud` 仓库）。设计原则：**Worker 只做鉴权、JSON 转发和 D1 读写，不解析业务对象；数据端到端加密；业务逻辑全部在客户端。**
+
+### 覆盖范围与触发
+
+- 只同步**本地日历**（`syncState == null`）及其日程/待办/手帐、日历配置（名称/颜色/可见性/时区定义）和应用设置；CalDAV 与订阅日历继续走各自的服务器。
+- 触发：用户编辑即时推拉（`persist(ChangeOrigin.User)` → outbox 落行 → `cloud.syncDue()`）；前台轮询每分钟一次（`App.kt` 的 60s 循环调用 `syncDueCloud()`），拉取间隔至少 5 分钟；设置页可手动「立即同步」。
+
+### 加密与账号
+
+- 密钥派生：`PBKDF2-HMAC-SHA256(密码, 服务器下发 salt, 600k)` → master，再经两个 HMAC 域（`crko/auth` / `crko/enc`）拆成 authKey 与 encKey。authKey 仅用于认证，服务器只存其 SHA-256；encKey 加密所有 payload，保存在平台 keystore/keychain（`SecretStore`），**从不出客户端**。
+- payload 格式：`v1.` + base64(nonce ‖ AES-256-GCM 密文 ‖ tag)，AAD 绑定 `kind|key`，防止密文被挪用到别的实体上。
+- 密码学原语是 `storage/` 下的**纯 Kotlin 实现**（SHA-256/HMAC/PBKDF2/AES-GCM，NIST/RFC 向量测试锁定），平台 actual 只提供随机数——两端密文逐字节一致，没有 provider 差异。
+
+### 同步协议与合并
+
+- outbox 表带 `backend` 列（`caldav` / `cloud`），同一条记录可同时排在两个后端；`OutboxRecorder` 按「CalDAV 可写 → caldav 行、云同步开启的本地日历 → cloud 行」扇出，日历的配置变化也入队（仅 cloud）。
+- 推送：`CloudPushService` 把待发行打包成 `{kind, key, seq, ts, deleted, payload}` 批量 `POST /v1/sync`；删除发送墓碑（`seq = 原 SEQUENCE + 1`、无 payload）。服务器按 `(seq, ts)` 元组条件 upsert，旧版本被拒（stale）后直接丢行，由随后的拉取收敛——没有冲突协商。
+- 拉取：`CloudSyncService` 按游标增量拉取 `changes` 日志（新设备 `cursor=0` 全量拉 `entities` 快照），按与 CalDAV 相同的 `isNewer`（SEQUENCE → DTSTAMP → LAST-MODIFIED）规则合并；有待发行（`backend=cloud`）的记录跳过不覆盖，待推送的内容胜出后再被下次拉取回读。
+- 账号与设备簿记（游标、bootstrap 标记、设置指纹）在 `CloudAccountStore`（平台偏好，不同步、不入库）；开启同步时先 bootstrap（全量本地内容入队），登录/注册会重置这些簿记。
+
+### 已知边界
+
+- 设置是单块加密 blob 的 LWW：两端离线各改设置时，后推的一方整体胜出，不按字段合并。
+- 同步关闭期间的删除不会生成墓碑，重新开启后在其他设备上可能需要再次手动删除。
+- 附件不同步；服务端 `changes` 日志无 GC（量大后可在 Worker 加 Cron 清理旧行）。
+
 

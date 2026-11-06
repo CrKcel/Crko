@@ -81,4 +81,10 @@ internal class SettingsController(
 
     /** Null falls back to the first local calendar. */
     fun setDefaultCalendarId(id: String?) = updateSettings { it.copy(defaultCalendarId = id) }
+
+    /**
+     * Replaces preferences wholesale with a synced payload. The cloud engine applies this only for
+     * a blob whose content differs from the last applied one, so this stays a rare, deliberate write.
+     */
+    fun applyCloud(next: PersistedSettings) = updateSettings { next }
 }

@@ -1,0 +1,7 @@
+-- v2 -> v3: the outbox serves two sync backends. Rows marked `caldav` drain into the calendar's
+-- CalDAV server, rows marked `cloud` into the crko.cloud relay; both may queue the same record.
+ALTER TABLE outbox ADD COLUMN backend TEXT NOT NULL DEFAULT 'caldav';
+
+DROP INDEX outbox_pending;
+CREATE UNIQUE INDEX outbox_pending
+    ON outbox(backend, calendar_id, entity, uid, recurrence_key);

@@ -82,8 +82,11 @@ private class SqlOutboxStore(
     override fun entriesFor(calendarId: String): List<OutboxEntry> =
         queries.selectOutboxEntriesForCalendar(calendarId).executeAsList().map { it.toEntry() }
 
-    override fun entry(calendarId: String, entity: String, uid: String, recurrenceKey: String): OutboxEntry? =
-        queries.selectOutboxEntry(calendarId, entity, uid, recurrenceKey).executeAsOneOrNull()?.toEntry()
+    override fun entriesForBackend(backend: String): List<OutboxEntry> =
+        queries.selectOutboxEntriesForBackend(backend).executeAsList().map { it.toEntry() }
+
+    override fun entry(backend: String, calendarId: String, entity: String, uid: String, recurrenceKey: String): OutboxEntry? =
+        queries.selectOutboxEntry(backend, calendarId, entity, uid, recurrenceKey).executeAsOneOrNull()?.toEntry()
 
     override fun upsert(entry: OutboxEntry) {
         if (entry.id == 0L) {
@@ -96,6 +99,7 @@ private class SqlOutboxStore(
                 sequence = entry.sequence,
                 base_etag = entry.baseEtag,
                 href = entry.href,
+                backend = entry.backend,
                 created_ms = entry.createdMs,
                 updated_ms = entry.updatedMs,
             )
@@ -128,6 +132,10 @@ private class SqlOutboxStore(
     override fun deleteForCalendar(calendarId: String) {
         queries.deleteOutboxEntriesForCalendar(calendarId)
     }
+
+    override fun deleteForBackend(backend: String) {
+        queries.deleteOutboxEntriesForBackend(backend)
+    }
 }
 
 private fun com.crko.storage.db.Outbox.toEntry(): OutboxEntry = OutboxEntry(
@@ -140,6 +148,7 @@ private fun com.crko.storage.db.Outbox.toEntry(): OutboxEntry = OutboxEntry(
     sequence = sequence,
     baseEtag = base_etag,
     href = href,
+    backend = backend,
     createdMs = created_ms,
     updatedMs = updated_ms,
     attempts = attempts,

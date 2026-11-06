@@ -191,6 +191,8 @@ fun SettingsPage(show: Boolean, state: AppStateHolder, strings: Strings, onBack:
                         }
                     }
                 }
+                SectionTitle(strings.cloudSync)
+                CloudSyncSection(state = state, strings = strings)
                 SectionTitle(strings.about)
                 SurfaceCard(modifier = Modifier.padding(horizontal = 16.dp)) {
                     BasicComponent(insideMargin = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {

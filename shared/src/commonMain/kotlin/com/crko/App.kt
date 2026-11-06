@@ -25,11 +25,14 @@ import com.crko.state.PaletteSetting
 import com.crko.state.reminderScheduler
 import com.crko.storage.AttachmentRepository
 import com.crko.storage.AppStorage
+import com.crko.storage.KeyValueCloudAccountStore
 import com.crko.storage.StateStorage
+import com.crko.storage.cloudCrypto
 import com.crko.storage.defaultSecretStore
 import com.crko.storage.defaultSubscriptionHttp
 import com.crko.storage.loadPersistedSettings
 import com.crko.storage.platformSupportsMonet
+import com.crko.storage.settingsStore
 import com.crko.storage.systemLocaleTag
 import com.crko.ui.common.CrkoApp
 import com.crko.ui.theme.CrkoTheme
@@ -81,6 +84,8 @@ fun App(
             reminders = reminderScheduler(),
             subscriptionHttp = defaultSubscriptionHttp(),
             secretStore = defaultSecretStore(),
+            cloudCrypto = cloudCrypto(),
+            cloudAccountStore = KeyValueCloudAccountStore(settingsStore()),
             attachmentRepository = AttachmentRepository(),
             storage = appStorage(),
         )
@@ -98,11 +103,13 @@ fun App(
 
     // Subscriptions publish their own refresh interval; one launch-time check only covers the
     // moment the app opens, so the due set is polled while the app stays open. The first poll waits
-    // until the launch work settled, so a due feed does not compete with the first frames.
+    // until the launch work settled, so a due feed does not compete with the first frames. The
+    // cloud pass rides the same loop: it pushes due rows every minute and pulls at most every five.
     LaunchedEffect(state) {
         delay(StartupSyncDelayMillis)
         while (true) {
             state.syncDueSubscriptions()
+            state.syncDueCloud()
             delay(60.seconds)
         }
     }

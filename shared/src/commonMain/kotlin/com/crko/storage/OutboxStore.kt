@@ -1,17 +1,27 @@
 package com.crko.storage
 
+/** Which sync backend drains an [OutboxEntry]. */
+object OutboxBackend {
+    /** The calendar's own CalDAV server; drained by [com.crko.state.sync.CalDavPushService]. */
+    const val CalDav = "caldav"
+
+    /** The crko.cloud relay; drained by [com.crko.state.sync.CloudPushService]. */
+    const val Cloud = "cloud"
+}
+
 /**
- * One pending local change of a writable CalDAV calendar. Rows are keyed by
- * `(calendarId, entity, uid, recurrenceKey)`: a second change to the same record replaces the
- * pending one, so a burst of edits drains as at most one push per record.
+ * One pending local change queued for a sync backend. Rows are keyed by
+ * `(backend, calendarId, entity, uid, recurrenceKey)`: a second change to the same record replaces
+ * the pending one, so a burst of edits drains as at most one push per record per backend. A record
+ * may queue for both backends at once — a CalDAV calendar that also syncs to the cloud.
  */
 data class OutboxEntry(
     /** 0 for an entry the caller has not persisted yet. */
     val id: Long = 0,
     val calendarId: String,
-    /** Record kind: `event`, `todo` or `journal`. */
+    /** Record kind: `event`, `todo`, `journal`, or `calendar` for a calendar config change. */
     val entity: String,
-    /** RFC UID the resource is published under; empty while the record has none yet. */
+    /** RFC UID the resource is published under; for a calendar row, the calendar id. */
     val uid: String,
     /** Stable text encoding of `RECURRENCE-ID`; empty on a master or standalone record. */
     val recurrenceKey: String = "",
@@ -23,6 +33,8 @@ data class OutboxEntry(
     val baseEtag: String? = null,
     /** Server href of the record's resource; needed by a queued deletion after the record is gone. */
     val href: String? = null,
+    /** Which backend drains this row; one of [OutboxBackend]. */
+    val backend: String = OutboxBackend.CalDav,
     val createdMs: Long,
     val updatedMs: Long,
     val attempts: Long = 0,
@@ -42,8 +54,8 @@ data class OutboxEntry(
 }
 
 /**
- * The pending-change queue a two-way CalDAV sync drains. A storage-layer port like [StateStorage]:
- * the push engine lives in the state layer, the rows live next to the rest of the SQLite schema.
+ * The pending-change queue the sync engines drain. A storage-layer port like [StateStorage]: the
+ * push engines live in the state layer, the rows live next to the rest of the SQLite schema.
  */
 interface OutboxStore {
     /** Every pending entry, oldest first. */
@@ -52,8 +64,11 @@ interface OutboxStore {
     /** Entries of one calendar, oldest first. */
     fun entriesFor(calendarId: String): List<OutboxEntry>
 
-    /** The pending entry for [calendarId], [entity], [uid] and [recurrenceKey], if any. */
-    fun entry(calendarId: String, entity: String, uid: String, recurrenceKey: String): OutboxEntry?
+    /** Entries drained by one backend, oldest first. */
+    fun entriesForBackend(backend: String): List<OutboxEntry>
+
+    /** The pending entry for [backend], [calendarId], [entity], [uid] and [recurrenceKey], if any. */
+    fun entry(backend: String, calendarId: String, entity: String, uid: String, recurrenceKey: String): OutboxEntry?
 
     /** Inserts [entry] (id 0) or replaces the stored row with the same id. */
     fun upsert(entry: OutboxEntry)
@@ -66,6 +81,9 @@ interface OutboxStore {
 
     /** Removes every entry of a calendar, e.g. when the calendar itself is deleted. */
     fun deleteForCalendar(calendarId: String)
+
+    /** Removes every entry drained by [backend], e.g. when a cloud account signs out. */
+    fun deleteForBackend(backend: String)
 }
 
 /** In-memory [OutboxStore]; the fallback storage and the tests run on this. */
@@ -78,9 +96,12 @@ class MemoryOutboxStore : OutboxStore {
     override fun entriesFor(calendarId: String): List<OutboxEntry> =
         entries().filter { it.calendarId == calendarId }
 
-    override fun entry(calendarId: String, entity: String, uid: String, recurrenceKey: String): OutboxEntry? =
+    override fun entriesForBackend(backend: String): List<OutboxEntry> =
+        entries().filter { it.backend == backend }
+
+    override fun entry(backend: String, calendarId: String, entity: String, uid: String, recurrenceKey: String): OutboxEntry? =
         rows.firstOrNull {
-            it.calendarId == calendarId && it.entity == entity &&
+            it.backend == backend && it.calendarId == calendarId && it.entity == entity &&
                 it.uid == uid && it.recurrenceKey == recurrenceKey
         }
 
@@ -104,5 +125,9 @@ class MemoryOutboxStore : OutboxStore {
 
     override fun deleteForCalendar(calendarId: String) {
         rows.removeAll { it.calendarId == calendarId }
+    }
+
+    override fun deleteForBackend(backend: String) {
+        rows.removeAll { it.backend == backend }
     }
 }
