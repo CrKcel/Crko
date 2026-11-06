@@ -79,6 +79,10 @@ internal class SettingsController(
 
     fun setSwipeSwitch(enabled: Boolean) = updateSettings { it.copy(gestureSwipeSwitch = enabled) }
 
+    /** App prompts per day; only 0, 3 and 6 are offered, so anything else clamps to 0 or 6. */
+    fun setCoachReminderBudget(budget: Int) =
+        updateSettings { it.copy(coachReminderBudget = budget.coerceIn(0, 6)) }
+
     /** Null falls back to the first local calendar. */
     fun setDefaultCalendarId(id: String?) = updateSettings { it.copy(defaultCalendarId = id) }
 

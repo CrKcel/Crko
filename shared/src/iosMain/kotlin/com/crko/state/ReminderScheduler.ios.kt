@@ -1,7 +1,15 @@
 package com.crko.state
 
+import com.crko.i18n.Strings
+import com.crko.i18n.languageFromTag
+import com.crko.i18n.resolveLanguage
+import com.crko.i18n.stringsFor
+import com.crko.state.entry.EntryInbox
+import com.crko.state.entry.EntryTarget
+import com.crko.storage.loadPersistedSettings
+import com.crko.storage.systemLocaleTag
 import kotlinx.coroutines.suspendCancellableCoroutine
-import platform.darwin.NSObject
+import platform.Foundation.NSNumber
 import platform.UserNotifications.UNAuthorizationOptionAlert
 import platform.UserNotifications.UNAuthorizationOptionSound
 import platform.UserNotifications.UNAuthorizationStatusAuthorized
@@ -9,18 +17,37 @@ import platform.UserNotifications.UNAuthorizationStatusNotDetermined
 import platform.UserNotifications.UNAuthorizationStatusProvisional
 import platform.UserNotifications.UNMutableNotificationContent
 import platform.UserNotifications.UNNotification
+import platform.UserNotifications.UNNotificationAction
+import platform.UserNotifications.UNNotificationActionOptionForeground
+import platform.UserNotifications.UNNotificationCategory
+import platform.UserNotifications.UNNotificationCategoryOptionNone
+import platform.UserNotifications.UNNotificationDefaultActionIdentifier
 import platform.UserNotifications.UNNotificationPresentationOptionBanner
 import platform.UserNotifications.UNNotificationPresentationOptionList
 import platform.UserNotifications.UNNotificationPresentationOptionSound
 import platform.UserNotifications.UNNotificationPresentationOptions
 import platform.UserNotifications.UNNotificationRequest
+import platform.UserNotifications.UNNotificationResponse
 import platform.UserNotifications.UNNotificationSettings
 import platform.UserNotifications.UNNotificationSound
 import platform.UserNotifications.UNTimeIntervalNotificationTrigger
 import platform.UserNotifications.UNUserNotificationCenter
 import platform.UserNotifications.UNUserNotificationCenterDelegateProtocol
+import platform.darwin.NSObject
 import kotlin.coroutines.resume
+import kotlin.math.max
 import kotlin.time.Clock
+
+private const val CategoryOpen = "crko.open"
+private const val CategoryOpenSnooze = "crko.open.snooze"
+private const val CategoryOpenSnoozeStart = "crko.open.snooze.start"
+private const val ActionOpen = "crko.action.open"
+private const val ActionSnooze = "crko.action.snooze"
+private const val ActionStart = "crko.action.start"
+private const val UserInfoDeepLink = "deepLink"
+private const val UserInfoRecordId = "recordId"
+private const val UserInfoSnoozeCount = "snoozeCount"
+private const val SnoozeSeconds = 600.0
 
 /**
  * UNUserNotificationCenter backed scheduler. Every reminder becomes one non-repeating time-interval
@@ -29,22 +56,67 @@ import kotlin.time.Clock
  * all pending requests first, which keeps iOS's 64-request budget in line with the planner's cap.
  */
 internal object IosReminderScheduler : ReminderScheduler {
-    /** Kept alive for the notification center's weak `delegate` reference. */
-    private val foregroundPresenter = ForegroundPresenter()
+    /** Kept alive for the notification center's weak delegate reference. */
+    private val router = NotificationRouter()
+
+    override fun prepare() {
+        install()
+    }
 
     /**
      * iOS silently discards notifications that fire while the app is in the foreground unless a
-     * delegate presents them, so the delegate is installed before anything is scheduled. Replaced
-     * without complaint if a host app later installs its own.
+     * delegate presents them, and a notification tap is delivered to the same delegate. Installing
+     * it at launch lets a cold start through a notification action reach [EntryInbox].
      */
-    private fun installForegroundPresentation(center: UNUserNotificationCenter) {
-        if (center.delegate == null) center.delegate = foregroundPresenter
+    private fun install() {
+        val center = UNUserNotificationCenter.currentNotificationCenter()
+        if (center.delegate == null) center.delegate = router
+        center.setNotificationCategories(categories())
+    }
+
+    private fun categories(): Set<UNNotificationCategory> {
+        val strings = notificationStrings()
+        val open = UNNotificationAction.actionWithIdentifier(
+            identifier = ActionOpen,
+            title = strings.reminderActionOpen,
+            options = UNNotificationActionOptionForeground,
+        )
+        val snooze = UNNotificationAction.actionWithIdentifier(
+            identifier = ActionSnooze,
+            title = strings.reminderActionSnooze,
+            options = 0u,
+        )
+        val start = UNNotificationAction.actionWithIdentifier(
+            identifier = ActionStart,
+            title = strings.reminderActionStart,
+            options = UNNotificationActionOptionForeground,
+        )
+        return setOf(
+            UNNotificationCategory.categoryWithIdentifier(
+                identifier = CategoryOpen,
+                actions = listOf(open),
+                intentIdentifiers = emptyList<String>(),
+                options = UNNotificationCategoryOptionNone,
+            ),
+            UNNotificationCategory.categoryWithIdentifier(
+                identifier = CategoryOpenSnooze,
+                actions = listOf(open, snooze),
+                intentIdentifiers = emptyList<String>(),
+                options = UNNotificationCategoryOptionNone,
+            ),
+            UNNotificationCategory.categoryWithIdentifier(
+                identifier = CategoryOpenSnoozeStart,
+                actions = listOf(open, snooze, start),
+                intentIdentifiers = emptyList<String>(),
+                options = UNNotificationCategoryOptionNone,
+            ),
+        )
     }
 
     /** The center when notifications are allowed; null makes the pass report "not applied". */
     private suspend fun authorizedCenter(): UNUserNotificationCenter? {
         val center = UNUserNotificationCenter.currentNotificationCenter()
-        installForegroundPresentation(center)
+        install()
         val settings = awaitSettings(center) ?: return null
         return if (settings.authorizationStatus == UNAuthorizationStatusAuthorized ||
             settings.authorizationStatus == UNAuthorizationStatusProvisional
@@ -80,16 +152,34 @@ internal object IosReminderScheduler : ReminderScheduler {
             val content = UNMutableNotificationContent()
             content.setTitle(reminder.title)
             content.setBody(reminder.body)
-            content.setSound(UNNotificationSound.defaultSound())
+            if (reminder.level == ReminderLevel.Normal) {
+                content.setSound(UNNotificationSound.defaultSound())
+            } else {
+                content.setSound(null)
+            }
+            content.setCategoryIdentifier(categoryFor(reminder.actions))
+            content.setUserInfo(
+                mapOf(
+                    UserInfoDeepLink to reminder.deepLink.orEmpty(),
+                    UserInfoRecordId to reminder.recordId.orEmpty(),
+                    UserInfoSnoozeCount to 0,
+                ),
+            )
             val trigger = UNTimeIntervalNotificationTrigger.triggerWithTimeInterval(interval, repeats = false)
             val request = UNNotificationRequest.requestWithIdentifier(reminder.key, content, trigger)
             center.addNotificationRequest(request) { /* a failed request is re-planned on the next full pass */ }
         }
     }
 
+    private fun categoryFor(actions: List<ReminderAction>): String = when {
+        ReminderAction.Start in actions -> CategoryOpenSnoozeStart
+        ReminderAction.Snooze in actions -> CategoryOpenSnooze
+        else -> CategoryOpen
+    }
+
     override suspend fun ensurePermission(): Boolean {
         val center = UNUserNotificationCenter.currentNotificationCenter()
-        installForegroundPresentation(center)
+        install()
         val settings = awaitSettings(center) ?: return false
         return when (settings.authorizationStatus) {
             UNAuthorizationStatusAuthorized, UNAuthorizationStatusProvisional -> true
@@ -103,8 +193,11 @@ internal object IosReminderScheduler : ReminderScheduler {
     }
 }
 
-/** Presents scheduled reminders that fire while the app is open, like a background delivery would. */
-private class ForegroundPresenter : NSObject(), UNUserNotificationCenterDelegateProtocol {
+/**
+ * Presents reminders that fire while the app is open and routes taps and actions into
+ * [EntryInbox]. The center holds this object weakly, so [IosReminderScheduler] keeps it alive.
+ */
+private class NotificationRouter : NSObject(), UNUserNotificationCenterDelegateProtocol {
     override fun userNotificationCenter(
         center: UNUserNotificationCenter,
         willPresentNotification: UNNotification,
@@ -116,6 +209,49 @@ private class ForegroundPresenter : NSObject(), UNUserNotificationCenterDelegate
                 UNNotificationPresentationOptionSound,
         )
     }
+
+    override fun userNotificationCenter(
+        center: UNUserNotificationCenter,
+        didReceiveNotificationResponse: UNNotificationResponse,
+        withCompletionHandler: () -> Unit,
+    ) {
+        val request = didReceiveNotificationResponse.notification.request
+        val userInfo = request.content.userInfo
+        val deepLink = userInfo[UserInfoDeepLink] as? String
+        val recordId = (userInfo[UserInfoRecordId] as? String)?.takeIf { it.isNotBlank() }
+        when (didReceiveNotificationResponse.actionIdentifier) {
+            UNNotificationDefaultActionIdentifier, ActionOpen -> EntryInbox.offerDeepLink(deepLink)
+            ActionStart -> EntryInbox.offer(EntryTarget.Focus(recordId))
+            ActionSnooze -> snooze(center, request)
+        }
+        withCompletionHandler()
+    }
+
+    /** Re-adds the same request ten minutes later, at most twice. */
+    private fun snooze(center: UNUserNotificationCenter, request: UNNotificationRequest) {
+        val userInfo = request.content.userInfo
+        val count = (userInfo[UserInfoSnoozeCount] as? NSNumber)?.intValue?.toInt() ?: 0
+        if (count >= 2) return
+        val content = request.content.mutableCopy() as? UNMutableNotificationContent ?: return
+        content.setUserInfo(
+            mapOf(
+                UserInfoDeepLink to (userInfo[UserInfoDeepLink] as? String).orEmpty(),
+                UserInfoRecordId to (userInfo[UserInfoRecordId] as? String).orEmpty(),
+                UserInfoSnoozeCount to max(count + 1, 1),
+            ),
+        )
+        val trigger = UNTimeIntervalNotificationTrigger.triggerWithTimeInterval(SnoozeSeconds, repeats = false)
+        center.addNotificationRequest(
+            UNNotificationRequest.requestWithIdentifier(request.identifier, content, trigger),
+        ) { /* a failed snooze simply leaves the delivered notification in place */ }
+    }
+}
+
+private fun notificationStrings(): Strings {
+    val settings = runCatching { loadPersistedSettings() }.getOrNull()
+    return stringsFor(
+        resolveLanguage(languageFromTag(settings?.language.orEmpty()), systemLocaleTag()),
+    )
 }
 
 private suspend fun awaitSettings(center: UNUserNotificationCenter): UNNotificationSettings? =

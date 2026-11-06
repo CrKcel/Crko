@@ -26,5 +26,8 @@ struct ContentView: View {
                     }
                 }
             }
+            .onOpenURL { url in
+                EntryInbox.shared.offerDeepLink(url: url.absoluteString)
+            }
     }
 }

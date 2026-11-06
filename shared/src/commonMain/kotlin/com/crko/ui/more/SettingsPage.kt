@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.crko.i18n.AppLanguage
 import com.crko.i18n.Strings
 import com.crko.state.AppStateHolder
@@ -190,6 +191,36 @@ fun SettingsPage(show: Boolean, state: AppStateHolder, strings: Strings, onBack:
                             )
                         }
                     }
+                }
+                SectionTitle(strings.remindersSection)
+                SurfaceCard(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    BasicComponent(insideMargin = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
+                        Column {
+                            Text(strings.appPromptBudget, style = MiuixTheme.textStyles.body1)
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = strings.appPromptBudgetHint,
+                                style = MiuixTheme.textStyles.footnote2,
+                                fontSize = 11.sp,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                        }
+                    }
+                    CardRowDivider()
+                    OptionRow(
+                        text = strings.budgetOff,
+                        selected = state.coachReminderBudget() == 0,
+                    ) { state.setCoachReminderBudget(0) }
+                    CardRowDivider()
+                    OptionRow(
+                        text = strings.budgetThree,
+                        selected = state.coachReminderBudget() == 3,
+                    ) { state.setCoachReminderBudget(3) }
+                    CardRowDivider()
+                    OptionRow(
+                        text = strings.budgetSix,
+                        selected = state.coachReminderBudget() == 6,
+                    ) { state.setCoachReminderBudget(6) }
                 }
                 SectionTitle(strings.cloudSync)
                 CloudSyncSection(state = state, strings = strings)

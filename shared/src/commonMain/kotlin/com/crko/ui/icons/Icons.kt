@@ -29,6 +29,16 @@ private fun icon(name: String, path: String, evenOdd: Boolean = false): ImageVec
 object AppIcons {
     val Add: ImageVector by lazy { icon("Add", "M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z") }
 
+    val Today: ImageVector by lazy {
+        icon(
+            "Today",
+            "M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6z" +
+                "M11 1h2v3h-2zM11 20h2v3h-2zM1 11h3v2H1zM20 11h3v2h-3z" +
+                "M4.2 5.6l1.4-1.4 2.1 2.1-1.4 1.4zM16.3 17.7l1.4-1.4 2.1 2.1-1.4 1.4z" +
+                "M5.6 19.8 4.2 18.4l2.1-2.1 1.4 1.4zM17.7 7.7l-1.4-1.4 2.1-2.1 1.4 1.4z",
+        )
+    }
+
     val Check: ImageVector by lazy {
         icon("Check", "M9.55 17.6 4.4 12.45l1.4-1.4 3.75 3.75 8.65-8.65 1.4 1.4z")
     }

@@ -9,5 +9,16 @@
 		<key>UIColorName</key>
 		<string>LaunchBackground</string>
 	</dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.crko.deeplink</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>crko</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -1,0 +1,11 @@
+-- v3 -> v4: device-local support data that never syncs: the day's three things and the running
+-- focus session. There is no `deleted` column; rows are replaced by key and old daily plans are
+-- pruned by date.
+CREATE TABLE support_record(
+    record_id TEXT NOT NULL PRIMARY KEY,
+    kind TEXT NOT NULL,
+    day TEXT,
+    payload TEXT NOT NULL,
+    updated_ms INTEGER NOT NULL
+);
+CREATE INDEX support_record_kind_day ON support_record(kind, day);

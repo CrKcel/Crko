@@ -273,3 +273,37 @@ INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?);
 
 deleteMeta:
 DELETE FROM meta WHERE key = ?;
+
+-- Current schema of the device-local support table. Existing databases reach it through `3.sqm`;
+-- a fresh database gets it from this create statement.
+CREATE TABLE support_record(
+    record_id TEXT NOT NULL PRIMARY KEY,
+    kind TEXT NOT NULL,
+    day TEXT,
+    payload TEXT NOT NULL,
+    updated_ms INTEGER NOT NULL
+);
+CREATE INDEX support_record_kind_day ON support_record(kind, day);
+
+-- Device-local support rows: `daily_plan:{yyyy-MM-dd}` and `focus_current`. Only `kind` and `day`
+-- are indexed, the payload stays the source of truth.
+selectSupportRecords:
+SELECT record_id, kind, day, payload, updated_ms
+FROM support_record
+ORDER BY updated_ms;
+
+selectSupportRecordsByKind:
+SELECT record_id, kind, day, payload, updated_ms
+FROM support_record
+WHERE kind = ?
+ORDER BY updated_ms;
+
+upsertSupportRecord:
+INSERT OR REPLACE INTO support_record(record_id, kind, day, payload, updated_ms)
+VALUES (?, ?, ?, ?, ?);
+
+deleteSupportRecord:
+DELETE FROM support_record WHERE record_id = ?;
+
+deleteSupportRecordsByKindBeforeDay:
+DELETE FROM support_record WHERE kind = ? AND day IS NOT NULL AND day < ?;

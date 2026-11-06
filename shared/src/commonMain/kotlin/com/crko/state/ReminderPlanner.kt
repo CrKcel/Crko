@@ -7,6 +7,7 @@ import com.crko.domain.Event
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.OccurrenceTime
 import com.crko.domain.Todo
+import com.crko.domain.coach.CoachPromptKind
 import com.crko.domain.daysTo
 import com.crko.domain.instantOrNull
 import com.crko.domain.localStart
@@ -30,6 +31,15 @@ import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
+/** Who created a reminder: the user's own `VALARM`, the app's gentle prompts, or a focus session. */
+enum class ReminderOrigin { User, Coach, Session }
+
+/** Sound level of a notification: user alarms keep the system sound, app prompts stay quiet. */
+enum class ReminderLevel { Normal, Quiet }
+
+/** Actions offered on a reminder notification. */
+enum class ReminderAction { Open, Snooze, Start }
+
 /**
  * Language-independent identity of one reminder: trigger instant, raw record title and the raw
  * alarm description (or the canonical ingredients of the derived body). Localized wording is
@@ -40,6 +50,10 @@ data class ReminderFingerprint(
     val triggerAtMillis: Long,
     val title: String,
     val body: String,
+    /** A level or action change must re-register the request, so both are part of the identity. */
+    val level: ReminderLevel = ReminderLevel.Normal,
+    val actions: List<ReminderAction> = emptyList(),
+    val deepLink: String? = null,
 )
 
 /** One reminder handed to the platform scheduler: it fires once at [triggerAtMillis]. */
@@ -51,10 +65,25 @@ data class ScheduledReminder(
     val body: String,
     /** What [diffReminders] compares to decide whether this reminder changed at all. */
     val fingerprint: ReminderFingerprint,
+    /** `user` alarms pass the budget untouched; only `coach` prompts are filtered. */
+    val origin: ReminderOrigin = ReminderOrigin.User,
+    val level: ReminderLevel = ReminderLevel.Normal,
+    val actions: List<ReminderAction> = listOf(ReminderAction.Open),
+    /** In-app destination opened by the notification, e.g. `crko://today` or `crko://start`. */
+    val deepLink: String? = null,
+    /** Record the reminder belongs to, used by the "开始" action. */
+    val recordId: String? = null,
+    /** Coach prompt kind; only `origin = coach` entries carry one. */
+    val coachKind: CoachPromptKind? = null,
 )
 
 /** Occurrence dates further than this behind today no longer feed `RELATED=END` triggers. */
 private const val MaxLookbackDays = 400
+
+private const val TodayDeepLink = "crko://today"
+
+private val EventActions = listOf(ReminderAction.Open, ReminderAction.Snooze)
+private val TodoActions = EventActions + ReminderAction.Start
 
 /** How far ahead reminders are planned, in days of occurrence starts. */
 const val ReminderHorizonDays = 60
@@ -183,7 +212,15 @@ private fun collectEventReminders(
                 body = alarm.description.ifBlank {
                     "abs|${event.start is IcsTimeValue.Date}|${event.day}|${event.localStart(zone).let { it.hour * 60 + it.minute }}"
                 },
+                level = ReminderLevel.Normal,
+                actions = EventActions,
+                deepLink = TodayDeepLink,
             ),
+            origin = ReminderOrigin.User,
+            level = ReminderLevel.Normal,
+            actions = EventActions,
+            deepLink = TodayDeepLink,
+            recordId = event.id,
         )
     }
     if (relative.isEmpty()) return
@@ -273,7 +310,15 @@ private fun emitWithRepeat(
                 body = alarm.description.ifBlank {
                     "rel|${trigger.duration}|${trigger.related}|${event.start is IcsTimeValue.Date}|$occurrence|$startMinutes"
                 },
+                level = ReminderLevel.Normal,
+                actions = EventActions,
+                deepLink = TodayDeepLink,
             ),
+            origin = ReminderOrigin.User,
+            level = ReminderLevel.Normal,
+            actions = EventActions,
+            deepLink = TodayDeepLink,
+            recordId = event.id,
         )
     }
 }
@@ -380,7 +425,15 @@ private fun emitTodoReminder(
                 triggerAtMillis = at,
                 title = todo.title,
                 body = alarm.description.ifBlank { "rel|${relative?.duration}|${relative?.related}" },
+                level = ReminderLevel.Normal,
+                actions = TodoActions,
+                deepLink = TodayDeepLink,
             ),
+            origin = ReminderOrigin.User,
+            level = ReminderLevel.Normal,
+            actions = TodoActions,
+            deepLink = TodayDeepLink,
+            recordId = todo.id,
         )
     }
 }

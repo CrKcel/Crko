@@ -38,6 +38,13 @@ fun diffReminders(
  */
 interface ReminderScheduler {
     /**
+     * Installs platform notification plumbing (categories, delegates) before the first plan. Called
+     * once at launch so a notification tap that started the process can be routed; hosts without
+     * such plumbing keep the default no-op.
+     */
+    fun prepare() = Unit
+
+    /**
      * Cancels the keys in [cancelKeys] and registers [register], replacing whatever was registered
      * under the same key before. Returns whether the platform took the change; `false` (notifications
      * not permitted) makes the next pass treat the whole plan as new instead of assuming it applied.

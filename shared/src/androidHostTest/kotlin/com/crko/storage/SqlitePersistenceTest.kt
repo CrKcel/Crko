@@ -518,4 +518,48 @@ class SqlitePersistenceTest {
             directory.deleteRecursively()
         }
     }
+
+    @Test
+    fun supportRecordsLiveInTheirOwnTableAndPruneOldDays() {
+        val (_, database) = inMemoryDatabase()
+        assertEquals(4L, CrkoDatabase.Schema.version)
+        val store = SqlSupportStore(database.crkoQueries, nowMillis = { 99L })
+        store.upsert(
+            SupportRecord(
+                recordId = "daily_plan:2026-11-06",
+                kind = "daily_plan",
+                day = "2026-11-06",
+                payload = """{"day":"2026-11-06","taskIds":["t1"]}""",
+                updatedMs = 0,
+            ),
+        )
+        store.upsert(
+            SupportRecord(
+                recordId = "daily_plan:2026-10-01",
+                kind = "daily_plan",
+                day = "2026-10-01",
+                payload = "{}",
+                updatedMs = 0,
+            ),
+        )
+        store.upsert(
+            SupportRecord(
+                recordId = "focus_current",
+                kind = "focus_current",
+                day = null,
+                payload = """{"startedAtMs":100}""",
+                updatedMs = 0,
+            ),
+        )
+        assertEquals(3, store.records().size)
+        assertEquals(99L, store.records().first().updatedMs)
+        // Only dated rows of the requested kind leave; the focus row has no day to compare.
+        store.deleteBefore("daily_plan", "2026-11-01")
+        assertEquals(
+            listOf("daily_plan:2026-11-06", "focus_current"),
+            store.records().map { it.recordId }.sorted(),
+        )
+        // The support table is separate from the calendar payload: the restored state has no records.
+        assertEquals(0, database.crkoQueries.selectRecords().executeAsList().size)
+    }
 }

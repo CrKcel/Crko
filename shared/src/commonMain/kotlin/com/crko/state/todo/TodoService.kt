@@ -8,6 +8,7 @@ import com.crko.domain.Todo
 import com.crko.domain.TodoNode
 import com.crko.domain.TodoPriority
 import com.crko.domain.TodoStatus
+import com.crko.domain.coach.TaskCoaching
 import com.crko.domain.displayDate
 import com.crko.domain.effectiveUid
 import com.crko.domain.nextOccurrenceDate
@@ -273,6 +274,37 @@ internal class TodoService(
                         } else {
                             todo
                         }
+                    },
+                )
+            },
+        )
+    }
+
+    /** Stores the first concrete step without touching the RFC properties of the record. */
+    fun setFirstStep(id: String, firstStep: String) = updateCoaching(id) { current ->
+        (current ?: TaskCoaching()).copy(firstStep = firstStep.trim())
+    }
+
+    /** Stores the minutes a focus session actually spent on the task. */
+    fun setActualMinutes(id: String, minutes: Int) = updateCoaching(id) { current ->
+        (current ?: TaskCoaching()).copy(actualMinutes = minutes.coerceAtLeast(0))
+    }
+
+    /**
+     * Coaching is device-local, so this write deliberately leaves `SEQUENCE`, `DTSTAMP` and
+     * `LAST-MODIFIED` alone: a first step or a focus measurement is not an RFC edit and must not
+     * look like one to a CalDAV peer.
+     */
+    private fun updateCoaching(id: String, transform: (TaskCoaching?) -> TaskCoaching) {
+        val index = calendarIndexContaining { calendar -> calendar.todos.any { it.id == id } } ?: return
+        // Coaching belongs to the local calendar only; a CalDAV/subscribed record never stores it,
+        // because the next round trip through the server would drop it anyway.
+        if (!state.calendars[index].isLocal) return
+        access.persist(
+            state.replacingCalendar(index) { calendar ->
+                calendar.copy(
+                    todos = calendar.todos.map { todo ->
+                        if (todo.id == id) todo.copy(coaching = transform(todo.coaching)) else todo
                     },
                 )
             },

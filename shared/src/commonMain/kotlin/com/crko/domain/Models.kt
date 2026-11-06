@@ -1,5 +1,6 @@
 package com.crko.domain
 
+import com.crko.domain.coach.TaskCoaching
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -513,6 +514,8 @@ data class Todo(
     override val local: LocalRecordMeta = LocalRecordMeta(),
     /** CalDAV resource location; null on records the server has never seen. */
     override val sync: RecordSyncMeta? = null,
+    /** Device-local guidance (first step, estimate, actual time); never leaves the local calendar. */
+    val coaching: TaskCoaching? = null,
 ) : CalendarComponent {
     /** Completion state derived from [status]; a cancelled todo counts as done like before. */
     val done: Boolean

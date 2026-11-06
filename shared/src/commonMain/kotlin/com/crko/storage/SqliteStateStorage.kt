@@ -22,6 +22,8 @@ class SqliteStateStorage(
 
     override val outbox: OutboxStore = SqlOutboxStore(database.crkoQueries, nowMillis)
 
+    override val support: SupportStore = SqlSupportStore(database.crkoQueries, nowMillis)
+
     override fun loadState(): AppState {
         // The composition root probes once to decide whether SQLite is usable; the repository then
         // asks again for the first frame. Cache the decoded state so that probe does not consume

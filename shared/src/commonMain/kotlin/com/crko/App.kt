@@ -23,6 +23,9 @@ import com.crko.state.AppStateHolder
 import com.crko.state.DarkModeSetting
 import com.crko.state.PaletteSetting
 import com.crko.state.reminderScheduler
+import com.crko.state.today.FocusController
+import com.crko.state.today.SupportRepository
+import com.crko.state.today.TodayController
 import com.crko.storage.AttachmentRepository
 import com.crko.storage.AppStorage
 import com.crko.storage.KeyValueCloudAccountStore
@@ -41,6 +44,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
 
 /** Storage wired by the composition root; only debug builds seed sample content on first launch. */
@@ -97,6 +101,29 @@ fun App(
         return
     }
 
+    // The today and focus controllers are assembled here, outside the state holder: they read the
+    // restored state, but their device-local rows never join the calendar payload.
+    val supportRepository = remember(state) { SupportRepository(AppStorage.support) }
+    val todayController = remember(state) {
+        TodayController(
+            state = { state.appState },
+            today = { state.today },
+            support = supportRepository,
+        )
+    }
+    val focusController = remember(state) {
+        FocusController(
+            clock = Clock.System,
+            support = supportRepository,
+            strings = { state.strings },
+            taskTitle = { id -> state.appState.todos.firstOrNull { it.id == id }?.title },
+            onChange = { state.refreshReminders() },
+        )
+    }
+    LaunchedEffect(focusController) {
+        state.setExternalReminders { listOfNotNull(focusController.sessionReminder()) }
+    }
+
     LaunchedEffect(systemLocale) {
         state.systemLocale = systemLocale
     }
@@ -121,7 +148,7 @@ fun App(
         systemDark = systemDark,
         platform = platform,
     ) {
-        CrkoApp(state)
+        CrkoApp(state, todayController, focusController)
     }
 }
 

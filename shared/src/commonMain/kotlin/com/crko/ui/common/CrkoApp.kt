@@ -19,11 +19,17 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import com.crko.domain.occurrenceStartOn
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
 import com.crko.state.WriteResult
+import com.crko.state.entry.EntryInbox
+import com.crko.state.entry.EntryTarget
+import com.crko.state.today.FocusController
+import com.crko.state.today.FocusEnd
+import com.crko.state.today.TodayController
 import com.crko.ui.components.AddFab
 import com.crko.ui.components.GlassNavigationBar
 import com.crko.ui.components.GlassNavigationBarDefaults
@@ -35,14 +41,20 @@ import com.crko.ui.schedule.EventDetailDialog
 import com.crko.ui.schedule.EventEditorDialog
 import com.crko.ui.schedule.ScheduleTab
 import com.crko.ui.search.SearchHost
+import com.crko.ui.today.FocusDoneDialog
+import com.crko.ui.today.FocusScreen
+import com.crko.ui.today.TodayTab
+import com.crko.ui.today.completeTodo
+import com.crko.ui.today.isLocalTodo
+import com.crko.ui.today.rememberNowMillis
 import com.crko.ui.todo.TodoEditorDialog
-import com.crko.ui.todo.TodoTab
 import com.crko.ui.transfer.ImportPreview
 import com.crko.ui.transfer.ImportPreviewDialog
 import com.crko.ui.transfer.rememberCalendarFileBridge
 import com.crko.ui.transfer.rememberImportCoordinator
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import kotlinx.coroutines.flow.collect
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import com.crko.ui.icons.AppIcons
@@ -54,9 +66,13 @@ import com.crko.ui.icons.AppIcons
  * [rememberMessagePresenter].
  */
 @Composable
-fun CrkoApp(state: AppStateHolder) {
+internal fun CrkoApp(
+    state: AppStateHolder,
+    todayController: TodayController,
+    focusController: FocusController,
+) {
     val strings = state.strings
-    // The schedule is the primary surface, so the middle tab is the launch destination.
+    // Three slots: schedule on the left, the default today page in the middle, more on the right.
     var tab by rememberSaveable { mutableIntStateOf(1) }
     var eventEditor by remember { mutableStateOf<EventEditorTarget?>(null) }
     var eventDetail by remember { mutableStateOf<EventEditorTarget?>(null) }
@@ -65,6 +81,9 @@ fun CrkoApp(state: AppStateHolder) {
     var showSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var importPreview by remember { mutableStateOf<ImportPreview?>(null) }
+    var captureRequest by rememberSaveable { mutableIntStateOf(0) }
+    var focusExpanded by remember { mutableStateOf(focusController.isRunning) }
+    var focusEnd by remember { mutableStateOf<FocusEnd?>(null) }
     // The pages behind the launch destination are kept composed for smooth switching, but building
     // all of them on the first frame delays the content itself. They join one frame later, and a
     // tab picked before that composes immediately.
@@ -76,6 +95,7 @@ fun CrkoApp(state: AppStateHolder) {
     }
 
     val now = rememberClock(state)
+    val keyboard = LocalSoftwareKeyboardController.current
     val fileBridge = rememberCalendarFileBridge()
     val snackbar = rememberMessagePresenter(state)
     val importer = rememberImportCoordinator(state, fileBridge) { importPreview = it }
@@ -86,10 +106,63 @@ fun CrkoApp(state: AppStateHolder) {
     val layoutDirection = LocalLayoutDirection.current
     val barItems = remember(strings) {
         listOf(
-            GlassNavigationBarItem(AppIcons.Task, strings.tabTodo),
             GlassNavigationBarItem(AppIcons.Timeline, strings.tabSchedule),
+            GlassNavigationBarItem(AppIcons.Today, strings.tabToday),
             GlassNavigationBarItem(AppIcons.Tune, strings.tabMore),
         )
+    }
+
+    fun finishFocus() {
+        val ended = focusController.finish()
+        if (ended.taskId != null && ended.actualMinutes > 0) {
+            state.recordTodoActualMinutes(ended.taskId, ended.actualMinutes)
+        }
+        focusEnd = ended
+        focusExpanded = false
+        tab = 0
+    }
+
+    // Entries from deep links and notification actions wait in the inbox until the restored state
+    // is ready; consuming them here keeps a cold start on the same landing page as a warm one.
+    LaunchedEffect(state) {
+        EntryInbox.entries.collect { target ->
+            when (target) {
+                EntryTarget.Today -> {
+                    tab = 1
+                    focusExpanded = false
+                }
+
+                EntryTarget.Capture -> {
+                    tab = 1
+                    // Capture is an explicit request for the input field; it takes precedence over
+                    // a running focus screen, which stays available through its banner.
+                    focusExpanded = false
+                    captureRequest++
+                }
+
+                is EntryTarget.Focus -> {
+                    tab = 1
+                    if (focusController.session == null) {
+                        focusController.start(target.taskId ?: todayController.nextTask?.id, 5)
+                    }
+                    focusExpanded = true
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(focusController.session?.startedAtMs) {
+        if (focusController.session == null) focusExpanded = false
+    }
+
+    LaunchedEffect(state.today) {
+        todayController.refreshDay()
+    }
+
+    // Opening the focus screen takes over the page; the capture field's keyboard must not cover
+    // its pause and end controls.
+    LaunchedEffect(focusExpanded) {
+        if (focusExpanded) keyboard?.hide()
     }
 
     Scaffold(
@@ -121,16 +194,6 @@ fun CrkoApp(state: AppStateHolder) {
             ) {
                 if (tab == 0 || secondaryTabsReady) {
                     TabPage(visible = tab == 0) {
-                        TodoTab(
-                            state = state,
-                            strings = strings,
-                            contentPadding = tabPadding,
-                            onOpenSearch = { showSearch = true },
-                        )
-                    }
-                }
-                if (tab == 1 || secondaryTabsReady) {
-                    TabPage(visible = tab == 1) {
                         ScheduleTab(
                             state = state,
                             now = now,
@@ -142,6 +205,26 @@ fun CrkoApp(state: AppStateHolder) {
                                 val occurrence = if (event.repeat != null) event.occurrenceStartOn(date) else null
                                 eventDetail = EventEditorTarget(event, occurrence)
                             },
+                            onOpenSearch = { showSearch = true },
+                        )
+                    }
+                }
+                if (tab == 1 || secondaryTabsReady) {
+                    TabPage(visible = tab == 1) {
+                        TodayTab(
+                            state = state,
+                            controller = todayController,
+                            focus = focusController,
+                            strings = strings,
+                            contentPadding = tabPadding,
+                            captureRequest = captureRequest,
+                            focusVisible = focusExpanded,
+                            onStartFocus = { taskId, minutes ->
+                                focusController.start(taskId, minutes)
+                                focusExpanded = true
+                                tab = 1
+                            },
+                            onOpenFocus = { focusExpanded = true },
                             onOpenSearch = { showSearch = true },
                         )
                     }
@@ -162,8 +245,8 @@ fun CrkoApp(state: AppStateHolder) {
             AddFab(
                 onClick = {
                     when (tab) {
-                        0 -> showTodoEditor = true
-                        1 -> eventEditor = EventEditorTarget(newEvent(state, now.value), null)
+                        0 -> eventEditor = EventEditorTarget(newEvent(state, now.value), null)
+                        1 -> showTodoEditor = true
                         else -> showSettings = true
                     }
                 },
@@ -182,6 +265,27 @@ fun CrkoApp(state: AppStateHolder) {
                 onSelect = { tab = it },
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
+
+            val focusSession = focusController.session
+            if (focusExpanded && focusSession != null) {
+                val nowMillis = rememberNowMillis()
+                FocusScreen(
+                    task = state.appState.visibleTodos.firstOrNull { it.id == focusSession.taskId },
+                    firstStep = state.appState.visibleTodos
+                        .firstOrNull { it.id == focusSession.taskId }
+                        ?.let { todo -> if (isLocalTodo(state, todo)) todo.coaching?.firstStep.orEmpty() else "" }
+                        .orEmpty(),
+                    strings = strings,
+                    remainingMillis = focusController.remainingMillis(nowMillis.value),
+                    paused = focusController.isPaused,
+                    finished = focusController.isFinished(nowMillis.value),
+                    onPause = focusController::pause,
+                    onResume = focusController::resume,
+                    onEnd = { finishFocus() },
+                    onContinue = { focusController.extend(5) },
+                    onCollapse = { focusExpanded = false },
+                )
+            }
         }
     }
 
@@ -280,5 +384,20 @@ fun CrkoApp(state: AppStateHolder) {
             },
             onDismiss = { importPreview = null },
         )
+    }
+
+    // Ending a focus session asks about the task, never completes it on its own.
+    focusEnd?.let { ended ->
+        state.appState.todos.firstOrNull { it.id == ended.taskId }?.let { todo ->
+            FocusDoneDialog(
+                task = todo,
+                strings = strings,
+                onComplete = {
+                    completeTodo(state, todo, state.nextTodoOccurrence(todo), state.today)
+                    focusEnd = null
+                },
+                onNotYet = { focusEnd = null },
+            )
+        }
     }
 }

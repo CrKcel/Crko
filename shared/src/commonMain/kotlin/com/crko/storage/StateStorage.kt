@@ -30,6 +30,9 @@ interface StateStorage {
     /** Pending local changes of writable CalDAV calendars, drained by the push engine. */
     val outbox: OutboxStore
 
+    /** Device-local support rows (today plan, focus session); storage without them keeps none. */
+    val support: SupportStore get() = EmptySupportStore
+
     /** Damage from the last [loadState]; storages that cannot report any keep the default. */
     fun loadDamage(): LoadDamage = LoadDamage.None
 }
@@ -58,6 +61,8 @@ internal class MemoryStateStorage(
     private var lastDamage: LoadDamage = LoadDamage.None
 
     override val outbox: OutboxStore = MemoryOutboxStore()
+
+    override val support: SupportStore = MemorySupportStore()
 
     override fun loadState(): AppState {
         lastDamage = LoadDamage(unreadable = true)
@@ -101,6 +106,8 @@ object AppStorage : StateStorage {
     }
 
     override val outbox: OutboxStore get() = delegate.outbox
+
+    override val support: SupportStore get() = delegate.support
 
     override fun loadState(): AppState = delegate.loadState()
 

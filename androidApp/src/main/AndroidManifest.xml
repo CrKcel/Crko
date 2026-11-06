@@ -16,11 +16,20 @@
         android:theme="@style/Theme.Crko">
         <activity
             android:exported="true"
+            android:launchMode="singleTop"
             android:name=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="crko" android:host="today" />
+                <data android:scheme="crko" android:host="start" />
+                <data android:scheme="crko" android:host="capture" />
             </intent-filter>
         </activity>
 
@@ -28,6 +37,10 @@
              non-exported receivers, so neither one accepts anything from other apps. -->
         <receiver
             android:name="com.crko.state.ReminderReceiver"
+            android:enabled="true"
+            android:exported="false" />
+        <receiver
+            android:name="com.crko.state.ReminderActionReceiver"
             android:enabled="true"
             android:exported="false" />
         <receiver
