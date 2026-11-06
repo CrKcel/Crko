@@ -98,6 +98,7 @@ internal fun messageText(strings: Strings, message: AppMessage): String = when (
         message.removed,
     )
     AppMessage.CloudUnchanged -> strings.cloudUnchanged
+    AppMessage.CloudFailed -> strings.cloudErrorGeneric
     AppMessage.CloudAuthExpired -> strings.cloudAuthExpired
 }
 

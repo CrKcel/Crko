@@ -9,6 +9,7 @@ import com.crko.domain.Journal
 import com.crko.domain.Todo
 import com.crko.domain.matchesOwnExport
 import com.crko.domain.recurrenceKeyText
+import com.crko.storage.CloudAccountStore
 import kotlinx.serialization.Serializable
 import kotlin.time.Instant
 
@@ -26,6 +27,40 @@ internal const val CloudSettingsKey = "settings"
 
 /** AAD of one payload: the ciphertext is bound to its coordinates, so a replay elsewhere fails. */
 internal fun cloudPayloadAad(kind: String, key: String): String = "crko/v1|$kind|$key"
+
+/** Applied-version key of a calendar config: the calendar id is its cloud key. */
+internal fun cloudCalendarVersionKey(calendarId: String): String = "calendar:$calendarId"
+
+/**
+ * The server logs every pushed op, including the ones it rejects as stale. Settings and calendar
+ * configs carry no `SEQUENCE`, so the pull remembers the newest `seq:ts` tuple it applied or pushed
+ * per key and ignores older log entries; without it a clock-skewed device would revert them.
+ */
+internal class CloudVersionBook(private val store: CloudAccountStore) {
+
+    /** True when `seq:ts` outranks what this device already applied or pushed for [key]. */
+    fun isNewer(key: String, seq: Long, ts: Long): Boolean {
+        val applied = parseCloudVersion(store.loadAppliedVersions()[key]) ?: return true
+        return seq > applied.first || (seq == applied.first && ts > applied.second)
+    }
+
+    /** Raises the stored tuple after a local push or an applied pull; never lowers it. */
+    fun record(key: String, seq: Long, ts: Long) {
+        val versions = store.loadAppliedVersions()
+        val applied = parseCloudVersion(versions[key])
+        if (applied != null && (seq < applied.first || (seq == applied.first && ts <= applied.second))) return
+        store.saveAppliedVersions(versions + (key to "$seq:$ts"))
+    }
+}
+
+/** Parses the stored `seq:ts` text; null when missing or malformed. */
+private fun parseCloudVersion(text: String?): Pair<Long, Long>? {
+    val parts = text?.split(':') ?: return null
+    if (parts.size != 2) return null
+    val seq = parts[0].toLongOrNull() ?: return null
+    val ts = parts[1].toLongOrNull() ?: return null
+    return seq to ts
+}
 
 /** The server-side key of one record: `calendarId/uid/recurrenceKey`. */
 internal fun cloudRecordKey(calendarId: String, uid: String, recurrenceKey: String): String =

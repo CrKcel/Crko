@@ -63,6 +63,9 @@ sealed interface AppMessage {
     ) : AppMessage
     data object CloudUnchanged : AppMessage
 
+    /** A manual pass could not push or pull; the generic connection failure is shown. */
+    data object CloudFailed : AppMessage
+
     /** The cloud token no longer verifies; the user signs in again from the settings. */
     data object CloudAuthExpired : AppMessage
 

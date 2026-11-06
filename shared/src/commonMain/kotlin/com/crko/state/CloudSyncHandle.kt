@@ -1,5 +1,8 @@
 package com.crko.state
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.crko.domain.AppJson
 import com.crko.domain.PersistedSettings
 import com.crko.state.settings.SettingsController
@@ -73,14 +76,24 @@ internal class CloudSyncHandle(
         sync = { sync.syncNow(notify = true) },
     )
 
+    /**
+     * The signed-in cloud account as observable state: the settings page only recomposes when this
+     * changes, and a plain store read would leave the switch and the signed-in rows stale.
+     */
+    private var accountState by mutableStateOf(store.load())
+    private fun refreshAccount() {
+        accountState = store.load()
+        sync.reloadLastSyncMs()
+    }
+
     /** The signed-in cloud account, or null when this device has none. */
-    val account: CloudAccountConfig? get() = store.load()
+    val account: CloudAccountConfig? get() = accountState
 
     /** Whether a cloud push+pull pass is currently running. */
     val isSyncing: Boolean get() = sync.isSyncing
 
     /** Epoch millis of the last completed cloud pass; 0 when this device never synced. */
-    val lastSyncMs: Long get() = store.loadLastSyncMs()
+    val lastSyncMs: Long get() = sync.lastSyncMs
 
     /** The foreground poll's quiet pass: pushes due rows, pulls at most every five minutes. */
     fun syncDue() = sync.syncNow()
@@ -89,16 +102,23 @@ internal class CloudSyncHandle(
     fun syncNow() = sync.syncNow(notify = true)
 
     suspend fun signup(server: String, invite: String, name: String, password: String): CloudAccountResult =
-        accounts.signup(server, invite, name, password)
+        accounts.signup(server, invite, name, password).also { refreshAccount() }
 
     suspend fun login(server: String, name: String, password: String): CloudAccountResult =
-        accounts.login(server, name, password)
+        accounts.login(server, name, password).also { refreshAccount() }
 
     /** Signs out; the local calendars and records stay on the device. */
-    suspend fun signOut() = accounts.signOut()
+    suspend fun signOut() {
+        accounts.signOut()
+        refreshAccount()
+    }
 
-    fun setEnabled(enabled: Boolean) = accounts.setEnabled(enabled)
+    fun setEnabled(enabled: Boolean) {
+        accounts.setEnabled(enabled)
+        refreshAccount()
+    }
 
     /** Removes the account and every encrypted blob on the server after verifying [password]. */
-    suspend fun deleteAccount(password: String): CloudAccountResult = accounts.deleteAccount(password)
+    suspend fun deleteAccount(password: String): CloudAccountResult =
+        accounts.deleteAccount(password).also { refreshAccount() }
 }

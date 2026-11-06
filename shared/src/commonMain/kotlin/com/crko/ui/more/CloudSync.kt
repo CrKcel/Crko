@@ -143,16 +143,18 @@ private fun CloudSignedInRows(
             Switch(checked = enabled, onCheckedChange = { state.setCloudSyncEnabled(it) })
         }
     }
-    CardRowDivider()
-    BasicComponent(
-        onClick = { state.syncCloudNow() },
-        insideMargin = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-    ) {
-        Text(
-            text = if (state.isCloudSyncing) strings.cloudSyncing else strings.cloudSyncNow,
-            style = MiuixTheme.textStyles.body1,
-            color = MiuixTheme.colorScheme.primary,
-        )
+    if (enabled) {
+        CardRowDivider()
+        BasicComponent(
+            onClick = { state.syncCloudNow() },
+            insideMargin = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            Text(
+                text = if (state.isCloudSyncing) strings.cloudSyncing else strings.cloudSyncNow,
+                style = MiuixTheme.textStyles.body1,
+                color = MiuixTheme.colorScheme.primary,
+            )
+        }
     }
     CardRowDivider()
     Text(

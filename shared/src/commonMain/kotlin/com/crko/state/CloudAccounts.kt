@@ -90,6 +90,7 @@ internal class CloudAccountService(
         accountStore.saveBootstrapped(false)
         accountStore.savePushedSettings(null)
         accountStore.saveAppliedSettings(null)
+        accountStore.saveAppliedVersions(emptyMap())
         accountStore.saveLastSyncMs(0)
         outbox.deleteForBackend(OutboxBackend.Cloud)
     }
@@ -139,6 +140,7 @@ internal class CloudAccountService(
         accountStore.saveBootstrapped(false)
         accountStore.savePushedSettings(null)
         accountStore.saveAppliedSettings(null)
+        accountStore.saveAppliedVersions(emptyMap())
         accountStore.saveLastSyncMs(0)
         outbox.deleteForBackend(OutboxBackend.Cloud)
         sync()

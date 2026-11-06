@@ -1,6 +1,8 @@
 package com.crko.storage
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import com.crko.domain.AppJson
 
 /**
@@ -38,6 +40,14 @@ interface CloudAccountStore {
     fun loadAppliedSettings(): String?
     fun saveAppliedSettings(json: String?)
 
+    /**
+     * Newest `seq:ts` tuple this device applied or pushed, per cloud key. Settings and calendar
+     * configs carry no revision of their own, so the pull compares against this book to ignore the
+     * stale change-log entries the server appends for rejected pushes.
+     */
+    fun loadAppliedVersions(): Map<String, String>
+    fun saveAppliedVersions(versions: Map<String, String>)
+
     /** Epoch millis of the last completed push+pull pass, for the settings page. */
     fun loadLastSyncMs(): Long
     fun saveLastSyncMs(ms: Long)
@@ -48,10 +58,12 @@ private const val CURSOR_KEY = "cloud.cursor.v1"
 private const val BOOTSTRAP_KEY = "cloud.bootstrapped.v1"
 private const val PUSHED_SETTINGS_KEY = "cloud.settings.pushed.v1"
 private const val APPLIED_SETTINGS_KEY = "cloud.settings.applied.v1"
+private const val APPLIED_VERSIONS_KEY = "cloud.versions.applied.v1"
 private const val LAST_SYNC_KEY = "cloud.last-sync.v1"
 private const val CLEARED = ""
 
 private val accountSerializer = CloudAccountConfig.serializer()
+private val versionsSerializer = MapSerializer(String.serializer(), String.serializer())
 
 /** [CloudAccountStore] over the platform preferences; the app uses this. */
 class KeyValueCloudAccountStore(private val kv: KeyValueStore) : CloudAccountStore {
@@ -89,6 +101,15 @@ class KeyValueCloudAccountStore(private val kv: KeyValueStore) : CloudAccountSto
         kv.putString(APPLIED_SETTINGS_KEY, json ?: CLEARED)
     }
 
+    override fun loadAppliedVersions(): Map<String, String> {
+        val raw = kv.getString(APPLIED_VERSIONS_KEY)?.takeIf { it.isNotEmpty() } ?: return emptyMap()
+        return runCatching { AppJson.decodeFromString(versionsSerializer, raw) }.getOrDefault(emptyMap())
+    }
+
+    override fun saveAppliedVersions(versions: Map<String, String>) {
+        kv.putString(APPLIED_VERSIONS_KEY, AppJson.encodeToString(versionsSerializer, versions))
+    }
+
     override fun loadLastSyncMs(): Long = kv.getString(LAST_SYNC_KEY)?.toLongOrNull() ?: 0L
 
     override fun saveLastSyncMs(ms: Long) {
@@ -103,6 +124,7 @@ class MemoryCloudAccountStore : CloudAccountStore {
     private var bootstrapped = false
     private var pushedSettings: String? = null
     private var appliedSettings: String? = null
+    private var appliedVersions: Map<String, String> = emptyMap()
     private var lastSyncMs = 0L
 
     override fun load(): CloudAccountConfig? = config
@@ -133,6 +155,12 @@ class MemoryCloudAccountStore : CloudAccountStore {
 
     override fun saveAppliedSettings(json: String?) {
         appliedSettings = json
+    }
+
+    override fun loadAppliedVersions(): Map<String, String> = appliedVersions
+
+    override fun saveAppliedVersions(versions: Map<String, String>) {
+        appliedVersions = versions
     }
 
     override fun loadLastSyncMs(): Long = lastSyncMs

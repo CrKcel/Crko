@@ -64,6 +64,17 @@ internal class CloudSyncService(
     var isSyncing by mutableStateOf(false)
         private set
 
+    /** Epoch millis of the last completed pass, exposed as state so the settings page refreshes. */
+    var lastSyncMs by mutableStateOf(accountStore.loadLastSyncMs())
+        private set
+
+    /** Re-reads the persisted pass timestamp after sign-in/out reset the bookkeeping. */
+    fun reloadLastSyncMs() {
+        lastSyncMs = accountStore.loadLastSyncMs()
+    }
+
+    private val versions = CloudVersionBook(accountStore)
+
     private var job: Job? = null
 
     /** Epoch millis of the last pull, so the foreground poll does not hammer the server. */
@@ -77,6 +88,7 @@ internal class CloudSyncService(
     fun syncNow(notify: Boolean = false) {
         if (job?.isActive == true) return
         if (http == null || crypto == null) return
+        if (accountStore.load()?.enabled != true) return
         job = scope.launch {
             isSyncing = true
             try {
@@ -88,6 +100,7 @@ internal class CloudSyncService(
                 }
             } finally {
                 isSyncing = false
+                reloadLastSyncMs()
             }
         }
     }
@@ -105,13 +118,13 @@ internal class CloudSyncService(
         }
         accountStore.saveLastSyncMs(clock.now().toEpochMilliseconds())
         if (notify) {
-            access.notify(
-                if (stats.isEmpty) {
-                    AppMessage.CloudUnchanged
-                } else {
-                    AppMessage.CloudSynced(stats.events, stats.todos, stats.journals, stats.removed)
-                },
-            )
+            when {
+                // The pull already reported the expired token; do not stack a generic failure on it.
+                stats.authExpired -> Unit
+                stats.failed -> access.notify(AppMessage.CloudFailed)
+                stats.isEmpty -> access.notify(AppMessage.CloudUnchanged)
+                else -> access.notify(AppMessage.CloudSynced(stats.events, stats.todos, stats.journals, stats.removed))
+            }
         }
     }
 
@@ -157,12 +170,15 @@ internal class CloudSyncService(
         val prepared = record.withAssignedUid(id)
         val uid = prepared.icsUid ?: return record
         val key = recurrenceKeyText(prepared.recurrenceId)
-        if (outbox.entry(OutboxBackend.Cloud, calendarId, kind, uid, key) == null) {
-            enqueueRow(calendarId, kind, uid, key, OutboxEntry.Operation.Create, prepared.sequence.toLong())
-        }
+        enqueueRow(calendarId, kind, uid, key, OutboxEntry.Operation.Create, prepared.sequence.toLong())
         return prepared
     }
 
+    /**
+     * Queues one bootstrap row unless the same entity already waits in the outbox. The pending row
+     * wins: it carries the edit made between enabling and the first pass, and inserting a duplicate
+     * also violates the outbox's unique key.
+     */
     private fun enqueueRow(
         calendarId: String,
         entity: String,
@@ -171,6 +187,7 @@ internal class CloudSyncService(
         operation: String,
         sequence: Long,
     ) {
+        if (outbox.entry(OutboxBackend.Cloud, calendarId, entity, uid, recurrenceKey) != null) return
         val now = clock.now().toEpochMilliseconds()
         outbox.upsert(
             OutboxEntry(
@@ -192,6 +209,8 @@ internal class CloudSyncService(
         var todos = 0
         var journals = 0
         var removed = 0
+        var failed = false
+        var authExpired = false
 
         val isEmpty: Boolean get() = events == 0 && todos == 0 && journals == 0 && removed == 0
 
@@ -208,8 +227,11 @@ internal class CloudSyncService(
      * calendar receives its records in the same page.
      */
     private suspend fun pull(server: String): PullStats {
-        val ready = pullContext(server) ?: return PullStats()
         val stats = PullStats()
+        val ready = pullContext(server) ?: run {
+            stats.failed = true
+            return stats
+        }
         var cursor = accountStore.loadCursor()
         while (true) {
             when (val outcome = cloudPull(ready.server, ready.token, cursor, CloudPullPage, http!!)) {
@@ -219,17 +241,25 @@ internal class CloudSyncService(
                     stats.todos += applied.todos
                     stats.journals += applied.journals
                     stats.removed += applied.removed
-                    cursor = outcome.value.cursor
-                    accountStore.saveCursor(cursor)
-                    if (outcome.value.changes.size < CloudPullPage) break
+                    val next = outcome.value.cursor
+                    accountStore.saveCursor(next)
+                    // A page that brings no cursor progress would make the loop spin forever.
+                    val exhausted = outcome.value.changes.size < CloudPullPage || next <= cursor
+                    cursor = next
+                    if (exhausted) break
                 }
                 is CloudOutcome.Failure -> {
+                    stats.failed = true
                     if (outcome.status == 401 || outcome.status == 403) {
+                        stats.authExpired = true
                         access.notify(AppMessage.CloudAuthExpired)
                     }
                     break
                 }
-                CloudOutcome.Unreachable -> break
+                CloudOutcome.Unreachable -> {
+                    stats.failed = true
+                    break
+                }
             }
         }
         return stats
@@ -257,6 +287,11 @@ internal class CloudSyncService(
         changes.forEach { change ->
             if (change.kind != CloudKind.Calendar) return@forEach
             val calendarId = change.key
+            val versionKey = cloudCalendarVersionKey(calendarId)
+            // Same rule as records: a pending local row carries the newest local intent, so a
+            // fetched config must not overwrite the edit the push is about to send.
+            if (outbox.entry(OutboxBackend.Cloud, calendarId, CloudKind.Calendar, calendarId, "") != null) return@forEach
+            if (!versions.isNewer(versionKey, change.seq, change.ts)) return@forEach
             if (change.deleted) {
                 val before = calendars.size
                 calendars = calendars.filterNot { it.id == calendarId && it.isLocal }
@@ -264,28 +299,36 @@ internal class CloudSyncService(
                     calendarsChanged = true
                     stats.removed += 1
                 }
+                versions.record(versionKey, change.seq, change.ts)
                 return@forEach
             }
             val config = decryptConfig(change, ready) ?: return@forEach
             val existing = calendars.firstOrNull { it.id == calendarId }
-            calendars = when {
-                existing == null -> calendars + Calendar(
-                    id = config.id,
-                    name = config.name,
-                    colorArgb = config.colorArgb,
-                    visible = config.visible,
-                    timeZones = config.timeZones,
-                )
-                existing.isLocal -> calendars.map {
-                    if (it.id == calendarId) {
-                        it.copy(name = config.name, colorArgb = config.colorArgb, visible = config.visible, timeZones = config.timeZones)
-                    } else {
-                        it
-                    }
+            when {
+                existing == null -> {
+                    calendars = calendars + Calendar(
+                        id = config.id,
+                        name = config.name,
+                        colorArgb = config.colorArgb,
+                        visible = config.visible,
+                        timeZones = config.timeZones,
+                    )
+                    calendarsChanged = true
                 }
-                else -> calendars // a CalDAV calendar is owned by its server; the cloud row loses
+                existing.isLocal -> {
+                    calendars = calendars.map {
+                        if (it.id == calendarId) {
+                            it.copy(name = config.name, colorArgb = config.colorArgb, visible = config.visible, timeZones = config.timeZones)
+                        } else {
+                            it
+                        }
+                    }
+                    calendarsChanged = true
+                }
+                // A CalDAV calendar is owned by its server; the cloud row loses, but the tuple is
+                // still consumed so older log entries cannot churn the pull.
             }
-            calendarsChanged = true
+            versions.record(versionKey, change.seq, change.ts)
         }
         changes.forEach { change ->
             val kind = change.kind
@@ -332,14 +375,20 @@ internal class CloudSyncService(
 
     private fun applySettingsChange(change: CloudChange, ready: PullContext) {
         if (change.deleted) return
+        // Settings carry no SEQUENCE; the change log still holds ops the server rejected as stale.
+        if (!versions.isNewer(CloudSettingsKey, change.seq, change.ts)) return
         val payload = change.payload ?: return
         val json = ready.crypto.openText(ready.encKey, payload, cloudPayloadAad(CloudKind.Settings, CloudSettingsKey)) ?: return
-        if (json == accountStore.loadAppliedSettings()) return
+        if (json == accountStore.loadAppliedSettings()) {
+            versions.record(CloudSettingsKey, change.seq, change.ts)
+            return
+        }
         val settings = runCatching { AppJson.decodeFromString(PersistedSettings.serializer(), json) }.getOrNull() ?: return
         applySettings(settings)
         // The remote version now IS the local one; both fingerprints advance so neither side re-pushes.
         accountStore.saveAppliedSettings(json)
         accountStore.savePushedSettings(json)
+        versions.record(CloudSettingsKey, change.seq, change.ts)
     }
 
     private fun decryptConfig(change: CloudChange, ready: PullContext): CloudCalendarConfig? {

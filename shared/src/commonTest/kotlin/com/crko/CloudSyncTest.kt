@@ -9,6 +9,7 @@ import com.crko.domain.PersistedSettings
 import com.crko.state.AppMessage
 import com.crko.state.ChangeOrigin
 import com.crko.state.StateAccess
+import com.crko.state.sync.CloudCalendarConfig
 import com.crko.state.sync.CloudPushService
 import com.crko.state.sync.CloudSyncService
 import com.crko.storage.CloudAccountConfig
@@ -42,12 +43,16 @@ class CloudSyncTest {
         val requests = mutableListOf<HttpRequest>()
         private val responders = ArrayDeque<HttpResponse>()
 
+        /** Runs while a request is on the wire, to simulate a local edit during the push. */
+        var onSend: (() -> Unit)? = null
+
         fun enqueue(status: Int, body: String) {
             responders += HttpResponse(status, emptyMap(), body.encodeToByteArray())
         }
 
         override suspend fun send(request: HttpRequest): HttpResponse {
             requests += request
+            onSend?.invoke()
             return responders.removeFirstOrNull() ?: HttpResponse(500, emptyMap(), ByteArray(0))
         }
     }
@@ -478,5 +483,133 @@ class CloudSyncTest {
         assertTrue(pushBody.contains("\"kind\":\"event\""))
         assertTrue(pushBody.contains("\"kind\":\"todo\""))
         assertTrue(pushBody.contains("\"kind\":\"settings\""))
+    }
+
+    @Test
+    fun bootstrapKeepsAPendingCalendarRowInsteadOfDuplicatingIt() = runTest {
+        val outbox = MemoryOutboxStore()
+        val accounts = MemoryCloudAccountStore()
+        val secrets = FakeSecrets()
+        val http = FakeHttp()
+        val clock = FakeClock()
+        signedIn(accounts, secrets)
+        // A rename queued before the first pass is the newest local intent and must survive.
+        outbox.upsert(cloudRow("local", "calendar", "local", OutboxEntry.Operation.Update, sequence = 0))
+        val access = FakeAccess(AppState(calendars = listOf(Calendar.local(name = "Renamed"))))
+        http.enqueue(500, """{"error":"boom"}""")
+        http.enqueue(200, """{"cursor":0,"changes":[]}""")
+
+        syncService(access, outbox, accounts, secrets, http, clock, pushService(access, outbox, accounts, secrets, http, clock), mutableListOf()).syncNow()
+
+        // A second insert would also violate the outbox's unique (backend, calendar, entity, uid) key.
+        assertEquals(1, outbox.entries().count { it.entity == "calendar" })
+    }
+
+    @Test
+    fun pullIgnoresStaleSettingsButAppliesTheNewerOne() = runTest {
+        val outbox = MemoryOutboxStore()
+        val accounts = MemoryCloudAccountStore()
+        val secrets = FakeSecrets()
+        val http = FakeHttp()
+        val clock = FakeClock()
+        signedIn(accounts, secrets)
+        accounts.saveBootstrapped(true)
+        accounts.saveAppliedVersions(mapOf("settings" to "0:500"))
+        val stale = PersistedSettings(darkMode = "Dark")
+        val fresh = PersistedSettings(darkMode = "Light")
+        val stalePayload = crypto.sealText(
+            encKey,
+            AppJson.encodeToString(PersistedSettings.serializer(), stale),
+            "crko/v1|settings|settings",
+        )
+        val freshPayload = crypto.sealText(
+            encKey,
+            AppJson.encodeToString(PersistedSettings.serializer(), fresh),
+            "crko/v1|settings|settings",
+        )
+        http.enqueue(
+            200,
+            """{"cursor":2,"changes":[
+                {"kind":"settings","key":"settings","seq":0,"ts":100,"deleted":false,"payload":"$stalePayload"},
+                {"kind":"settings","key":"settings","seq":0,"ts":600,"deleted":false,"payload":"$freshPayload"}
+            ]}""",
+        )
+        val access = FakeAccess(AppState())
+        val appliedSettings = mutableListOf<PersistedSettings>()
+
+        syncService(access, outbox, accounts, secrets, http, clock, pushService(access, outbox, accounts, secrets, http, clock), appliedSettings).syncNow()
+
+        // The stale log entry the server appended for an earlier rejected push is skipped.
+        assertEquals(listOf(fresh), appliedSettings)
+    }
+
+    @Test
+    fun pullIgnoresAnOlderCalendarConfig() = runTest {
+        val outbox = MemoryOutboxStore()
+        val accounts = MemoryCloudAccountStore()
+        val secrets = FakeSecrets()
+        val http = FakeHttp()
+        val clock = FakeClock()
+        signedIn(accounts, secrets)
+        accounts.saveBootstrapped(true)
+        accounts.saveAppliedVersions(mapOf("calendar:local" to "0:500"))
+        val config = CloudCalendarConfig(id = "local", name = "Stale name")
+        val payload = crypto.sealText(
+            encKey,
+            AppJson.encodeToString(CloudCalendarConfig.serializer(), config),
+            "crko/v1|calendar|local",
+        )
+        http.enqueue(
+            200,
+            """{"cursor":1,"changes":[{"kind":"calendar","key":"local","seq":0,"ts":100,"deleted":false,"payload":"$payload"}]}""",
+        )
+        val access = FakeAccess(AppState(calendars = listOf(Calendar.local(name = "Local name"))))
+
+        syncService(access, outbox, accounts, secrets, http, clock, pushService(access, outbox, accounts, secrets, http, clock), mutableListOf()).syncNow()
+
+        assertEquals("Local name", access.state.calendars.first().name)
+        assertTrue(access.persists.isEmpty())
+    }
+
+    @Test
+    fun aPushInFlightKeepsANewerEditQueued() = runTest {
+        val outbox = MemoryOutboxStore()
+        val accounts = MemoryCloudAccountStore()
+        val secrets = FakeSecrets()
+        val http = FakeHttp()
+        val clock = FakeClock()
+        signedIn(accounts, secrets)
+        accounts.saveBootstrapped(true)
+        val stored = event("e1", "First draft", uid = "e1@crko", sequence = 1)
+        val access = FakeAccess(AppState(calendars = listOf(Calendar.local().copy(events = listOf(stored)))))
+        outbox.upsert(cloudRow("local", "event", "e1@crko", OutboxEntry.Operation.Update, sequence = 1))
+        http.onSend = {
+            // The user edits while the batch is on the wire; the recorder re-queues the same row.
+            val pending = outbox.entries().single()
+            outbox.upsert(pending.copy(sequence = 2, updatedMs = 2))
+        }
+        http.enqueue(200, """{"applied":1,"stale":0,"cursor":1}""")
+
+        pushService(access, outbox, accounts, secrets, http, clock).drain()
+
+        // Dropping the drained snapshot would silently lose the edit until the next local persist.
+        assertEquals(2, outbox.entries().single().sequence)
+    }
+
+    @Test
+    fun aManualPassReportsConnectionFailure() = runTest {
+        val outbox = MemoryOutboxStore()
+        val accounts = MemoryCloudAccountStore()
+        val secrets = FakeSecrets()
+        val http = FakeHttp()
+        val clock = FakeClock()
+        signedIn(accounts, secrets)
+        accounts.saveBootstrapped(true)
+        val access = FakeAccess(AppState(calendars = listOf(Calendar.local())))
+
+        syncService(access, outbox, accounts, secrets, http, clock, pushService(access, outbox, accounts, secrets, http, clock), mutableListOf())
+            .syncNow(notify = true)
+
+        assertEquals(listOf<AppMessage>(AppMessage.CloudFailed), access.messages)
     }
 }

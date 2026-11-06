@@ -44,6 +44,9 @@ internal class CloudPushService(
 ) {
     private val state get() = access.state
 
+    /** The applied-version book shared with the pull engine through [accountStore]. */
+    private val versions = CloudVersionBook(accountStore)
+
     /** Whether a push pass has work: due rows, or preferences that changed since the last push. */
     fun hasDuePush(now: Instant = clock.now()): Boolean {
         if (http == null || crypto == null) return false
@@ -61,7 +64,7 @@ internal class CloudPushService(
         val ready = context() ?: return false
         val now = clock.now().toEpochMilliseconds()
         val work = mutableListOf<Work>()
-        outbox.entriesForBackend(OutboxBackend.Cloud).filter { it.isDue(clock.now()) }.forEach { row ->
+        outbox.entriesForBackend(OutboxBackend.Cloud).filter { it.isDue(now) }.forEach { row ->
             when (val op = buildOp(ready, row, now)) {
                 null -> outbox.delete(row.id) // the record vanished locally; nothing left to send
                 else -> work += Work(row, op)
@@ -87,8 +90,20 @@ internal class CloudPushService(
         work.chunked(CloudPushBatch).forEach { batch ->
             when (val result = cloudPush(ready.server, ready.token, batch.map { it.op }, http!!)) {
                 is CloudOutcome.Success -> {
-                    batch.forEach { work -> work.row?.let { row -> outbox.delete(row.id) } }
-                    batch.firstNotNullOfOrNull { it.settingsJson }?.let { accountStore.savePushedSettings(it) }
+                    batch.forEach { work ->
+                        val row = work.row
+                        if (row == null) {
+                            work.settingsJson?.let { accountStore.savePushedSettings(it) }
+                        } else {
+                            settle(row)
+                        }
+                        // The push advanced the server-side tuple (or lost to a newer one, which the
+                        // next pull delivers), so remember it as applied to ignore older log entries.
+                        when (work.op.kind) {
+                            CloudKind.Settings -> versions.record(CloudSettingsKey, work.op.seq, work.op.ts)
+                            CloudKind.Calendar -> versions.record(cloudCalendarVersionKey(work.op.key), work.op.seq, work.op.ts)
+                        }
+                    }
                     pushed = true
                 }
                 is CloudOutcome.Failure -> {
@@ -146,10 +161,19 @@ internal class CloudPushService(
             kind = kind,
             key = key,
             seq = row.sequence,
-            ts = clock.now().toEpochMilliseconds(),
+            ts = now,
             deleted = false,
             payload = ready.crypto.sealText(ready.encKey, payload, cloudPayloadAad(kind, key)),
         )
+    }
+
+    /**
+     * Drops a drained row only when it still holds the pushed snapshot. An edit made while the
+     * batch was in flight re-queues the same row; deleting it then would silently lose the edit.
+     */
+    private fun settle(row: OutboxEntry) {
+        val current = outbox.entry(row.backend, row.calendarId, row.entity, row.uid, row.recurrenceKey)
+        if (current != null && current.id == row.id && current == row) outbox.delete(row.id)
     }
 
     private fun recordFailure(batch: List<Work>, message: String) {
@@ -184,8 +208,9 @@ internal class CloudPushService(
 
     private class PushContext(val server: String, val token: String, val crypto: CloudCrypto, val encKey: ByteArray)
 
-    private fun OutboxEntry.isDue(now: Instant): Boolean =
-        nextAttemptMs == null || nextAttemptMs <= now.toEpochMilliseconds()
+    private fun OutboxEntry.isDue(now: Instant): Boolean = isDue(now.toEpochMilliseconds())
+
+    private fun OutboxEntry.isDue(nowMs: Long): Boolean = nextAttemptMs == null || nextAttemptMs <= nowMs
 
     private companion object {
         const val CloudPushBatch = 200
