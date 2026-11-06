@@ -33,6 +33,7 @@ import com.crko.i18n.Strings
 import com.crko.state.todo.TodoDraft
 import com.crko.ui.components.CalendarChips
 import com.crko.ui.schedule.DatePickerDialog
+import com.crko.ui.schedule.MoreOptionsToggle
 import com.crko.ui.schedule.priorityColor
 import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.basic.Button
@@ -84,6 +85,18 @@ internal fun TodoEditorDialog(
     }
     var calendarId by remember(initial, parent, show) { mutableStateOf(defaultCalendarId) }
     var picking by remember(initial, parent, show) { mutableStateOf<TodoDateField?>(null) }
+    // Collapsed unless an edited todo already carries non-default values in the folded fields, so
+    // reopening it never hides the data the user entered before.
+    var moreOptions by remember(initial, parent, show) {
+        mutableStateOf(
+            initial != null && (
+                initial.priorityLevel != TodoPriority.Normal ||
+                    initial.percentComplete != 0 ||
+                    initial.location.isNotBlank() ||
+                    initial.categories.isNotEmpty()
+                ),
+        )
+    }
 
     val dialogTitle = when {
         initial != null -> strings.todoEdit
@@ -115,13 +128,6 @@ internal fun TodoEditorDialog(
                 )
             }
             Spacer(Modifier.height(16.dp))
-            SectionCaption(strings.priority)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PriorityChip(strings.priorityHigh, TodoPriority.High, priority) { priority = it }
-                PriorityChip(strings.priorityNormal, TodoPriority.Normal, priority) { priority = it }
-                PriorityChip(strings.priorityLow, TodoPriority.Low, priority) { priority = it }
-            }
-            Spacer(Modifier.height(16.dp))
             SectionCaption(strings.startDate)
             DateRow(
                 strings = strings,
@@ -140,13 +146,6 @@ internal fun TodoEditorDialog(
                 onCustom = { picking = TodoDateField.Due },
             )
             Spacer(Modifier.height(16.dp))
-            SectionCaption(strings.progress)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PercentSteps.forEach { step ->
-                    PercentChip(step, percent, { percent = it }, Modifier.weight(1f))
-                }
-            }
-            Spacer(Modifier.height(16.dp))
             TextField(
                 value = note,
                 onValueChange = { note = it },
@@ -155,24 +154,46 @@ internal fun TodoEditorDialog(
                 minLines = 3,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(12.dp))
-            TextField(
-                value = location,
-                onValueChange = { location = it },
-                label = strings.locationField,
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+            Spacer(Modifier.height(6.dp))
+            MoreOptionsToggle(
+                text = strings.moreOptions,
+                expanded = moreOptions,
+                onClick = { moreOptions = !moreOptions },
             )
-            Spacer(Modifier.height(12.dp))
-            TextField(
-                value = categoriesText,
-                onValueChange = { categoriesText = it },
-                label = strings.categoriesField,
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (moreOptions) {
+                Spacer(Modifier.height(8.dp))
+                SectionCaption(strings.priority)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PriorityChip(strings.priorityHigh, TodoPriority.High, priority) { priority = it }
+                    PriorityChip(strings.priorityNormal, TodoPriority.Normal, priority) { priority = it }
+                    PriorityChip(strings.priorityLow, TodoPriority.Low, priority) { priority = it }
+                }
+                Spacer(Modifier.height(16.dp))
+                SectionCaption(strings.progress)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PercentSteps.forEach { step ->
+                        PercentChip(step, percent, { percent = it }, Modifier.weight(1f))
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                TextField(
+                    value = location,
+                    onValueChange = { location = it },
+                    label = strings.locationField,
+                    useLabelAsPlaceholder = true,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                TextField(
+                    value = categoriesText,
+                    onValueChange = { categoriesText = it },
+                    label = strings.categoriesField,
+                    useLabelAsPlaceholder = true,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = {
