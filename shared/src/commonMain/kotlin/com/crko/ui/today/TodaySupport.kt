@@ -48,3 +48,15 @@ internal fun completeTodo(state: AppStateHolder, todo: Todo, shownDue: LocalDate
         state.setTodoDone(todo.id, true)
     }
 }
+
+/**
+ * The check circle toggles in both directions: a finished row reopens instead of completing
+ * itself again, so the today page keeps the old todo page's ability to restore a task.
+ */
+internal fun toggleTodo(state: AppStateHolder, todo: Todo, shownDue: LocalDate?, today: LocalDate) {
+    if (todo.done) {
+        state.setTodoDone(todo.id, false)
+    } else {
+        completeTodo(state, todo, shownDue, today)
+    }
+}

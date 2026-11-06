@@ -91,15 +91,19 @@ object AndroidReminders {
         return true
     }
 
-    /** "稍后 10 分钟": rebuilds one alarm for [reminder] without touching the rest of the plan. */
+    /**
+     * "稍后 10 分钟": one independent alarm under a derived key. The fired reminder has already
+     * left the plan (its trigger is in the past), so tracking the snooze under the original key
+     * would let the next diff pass or a full replacement cancel it before it fires.
+     */
     fun snooze(context: Context, reminder: ScheduledReminder, snoozeCount: Int) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val at = Clock.System.now().toEpochMilliseconds() + SnoozeMillis
-        registerAlarm(context, alarmManager, reminder, at, snoozeCount)
-        val prefs = context.getSharedPreferences(REMINDER_PREFS, Context.MODE_PRIVATE)
-        val tracked = prefs.getStringSet(KEY_SCHEDULED, emptySet()).orEmpty().toMutableSet()
-        tracked += reminder.key
-        prefs.edit { putStringSet(KEY_SCHEDULED, tracked) }
+        val snoozed = reminder.copy(
+            key = "${reminder.key}:snooze:$snoozeCount",
+            triggerAtMillis = at,
+        )
+        registerAlarm(context, alarmManager, snoozed, at, snoozeCount)
     }
 
     /**
@@ -263,6 +267,9 @@ class ReminderActionReceiver : BroadcastReceiver() {
         val key = intent.getStringExtra(EXTRA_REMINDER_KEY) ?: return
         val snoozeCount = intent.getIntExtra(EXTRA_SNOOZE_COUNT, 0)
         if (snoozeCount > 2) return
+        // The action leaves the delivered notification in the shade otherwise; the snoozed alarm
+        // posts a fresh one under its derived key ten minutes later.
+        NotificationManagerCompat.from(context).cancel(key, key.hashCode())
         val reminder = ScheduledReminder(
             key = key,
             triggerAtMillis = 0,

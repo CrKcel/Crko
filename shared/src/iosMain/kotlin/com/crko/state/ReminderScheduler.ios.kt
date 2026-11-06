@@ -49,6 +49,9 @@ private const val UserInfoRecordId = "recordId"
 private const val UserInfoSnoozeCount = "snoozeCount"
 private const val SnoozeSeconds = 600.0
 
+/** Snoozed requests carry this marker in their identifier; the plan owns only the others. */
+private const val SnoozeIdentifierMarker = "#snooze"
+
 /**
  * UNUserNotificationCenter backed scheduler. Every reminder becomes one non-repeating time-interval
  * request identified by its reminder key, so a differential pass cancels and re-adds only the
@@ -138,7 +141,11 @@ internal object IosReminderScheduler : ReminderScheduler {
 
     override suspend fun replaceAll(plan: List<ScheduledReminder>): Boolean {
         val center = authorizedCenter() ?: return false
-        center.removeAllPendingNotificationRequests()
+        // A snoozed request has left the plan (its trigger is already in the past) but must still
+        // fire, so a full replacement drops only the requests the plan owns.
+        val owned = pendingRequestIdentifiers(center)
+            .filterNot { it.contains(SnoozeIdentifierMarker) }
+        if (owned.isNotEmpty()) center.removePendingNotificationRequestsWithIdentifiers(owned)
         addAll(center, plan)
         return true
     }
@@ -232,17 +239,24 @@ private class NotificationRouter : NSObject(), UNUserNotificationCenterDelegateP
         val userInfo = request.content.userInfo
         val count = (userInfo[UserInfoSnoozeCount] as? NSNumber)?.intValue?.toInt() ?: 0
         if (count >= 2) return
+        val next = max(count + 1, 1)
         val content = request.content.mutableCopy() as? UNMutableNotificationContent ?: return
         content.setUserInfo(
             mapOf(
                 UserInfoDeepLink to (userInfo[UserInfoDeepLink] as? String).orEmpty(),
                 UserInfoRecordId to (userInfo[UserInfoRecordId] as? String).orEmpty(),
-                UserInfoSnoozeCount to max(count + 1, 1),
+                UserInfoSnoozeCount to next,
             ),
         )
         val trigger = UNTimeIntervalNotificationTrigger.triggerWithTimeInterval(SnoozeSeconds, repeats = false)
+        // A derived identifier keeps the snoozed request outside the plan: cancelling the fired
+        // reminder's key, or a full replacement, must not drop this one before it fires.
         center.addNotificationRequest(
-            UNNotificationRequest.requestWithIdentifier(request.identifier, content, trigger),
+            UNNotificationRequest.requestWithIdentifier(
+                "${request.identifier}$SnoozeIdentifierMarker$next",
+                content,
+                trigger,
+            ),
         ) { /* a failed snooze simply leaves the delivered notification in place */ }
     }
 }
@@ -257,6 +271,16 @@ private fun notificationStrings(): Strings {
 private suspend fun awaitSettings(center: UNUserNotificationCenter): UNNotificationSettings? =
     suspendCancellableCoroutine { continuation ->
         center.getNotificationSettingsWithCompletionHandler { settings -> continuation.resume(settings) }
+    }
+
+private suspend fun pendingRequestIdentifiers(center: UNUserNotificationCenter): List<String> =
+    suspendCancellableCoroutine { continuation ->
+        center.getPendingNotificationRequestsWithCompletionHandler { requests ->
+            // The platform declaration erases the element type; the identifiers are strings.
+            continuation.resume(
+                requests?.mapNotNull { (it as? UNNotificationRequest)?.identifier }.orEmpty(),
+            )
+        }
     }
 
 actual fun reminderScheduler(): ReminderScheduler? = IosReminderScheduler

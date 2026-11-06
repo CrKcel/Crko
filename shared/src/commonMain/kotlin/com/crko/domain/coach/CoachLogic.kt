@@ -46,15 +46,13 @@ fun orderForEnergy(todos: List<Todo>, taskIds: List<String>, energy: EnergyLevel
     val byId = todos.associateBy { it.id }
     val selected = taskIds.mapNotNull { byId[it] }
     if (energy != EnergyLevel.Low) return selected
+    // Only the estimate grouping decides the order; the stable sort keeps every other task in the
+    // plan's own order instead of re-sorting it by due date or priority.
     return selected.sortedWith(
-        compareBy<Todo>(
-            { todo ->
-                val estimate = todo.coaching?.estimateMinutes
-                estimate == null || estimate > 10
-            },
-            { it.dueDay?.toEpochDays() ?: Long.MAX_VALUE },
-            { todoPriorityRank(it.priority) },
-        ),
+        compareBy<Todo> { todo ->
+            val estimate = todo.coaching?.estimateMinutes
+            estimate == null || estimate > 10
+        },
     )
 }
 

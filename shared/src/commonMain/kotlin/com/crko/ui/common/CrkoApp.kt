@@ -119,7 +119,8 @@ internal fun CrkoApp(
         }
         focusEnd = ended
         focusExpanded = false
-        tab = 0
+        // The focus screen belongs to the today page; ending it returns there, not to the schedule.
+        tab = 1
     }
 
     // Entries from deep links and notification actions wait in the inbox until the restored state

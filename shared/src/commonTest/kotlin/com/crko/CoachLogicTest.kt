@@ -73,6 +73,19 @@ class CoachLogicTest {
     }
 
     @Test
+    fun lowEnergyKeepsThePlanOrderForTasksAboveTheShortEstimate() {
+        val todos = listOf(
+            todo("later", due = "2026-11-08", estimate = 40),
+            todo("sooner", due = "2026-11-06", estimate = 30),
+        )
+        // Both are long tasks; low energy must not re-sort them by due date behind the user's back.
+        assertEquals(
+            listOf("later", "sooner"),
+            orderForEnergy(todos, listOf("later", "sooner"), EnergyLevel.Low).map { it.id },
+        )
+    }
+
+    @Test
     fun theNextStepSkipsCompletedTasks() {
         val todos = listOf(todo("first", done = true), todo("second"), todo("third"))
         assertEquals("second", nextOpenTask(todos, listOf("first", "second", "third"), EnergyLevel.High)?.id)

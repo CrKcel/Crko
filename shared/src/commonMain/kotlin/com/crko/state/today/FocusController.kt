@@ -35,7 +35,7 @@ internal class FocusController(
         private set
 
     /** Wall-clock instant of the pause in progress; null while running or between sessions. */
-    var pausedAtMs: Long? by mutableStateOf(null)
+    var pausedAtMs: Long? by mutableStateOf(session?.pausedAtMs)
         private set
 
     val isPaused: Boolean get() = pausedAtMs != null
@@ -68,8 +68,14 @@ internal class FocusController(
     }
 
     fun pause() {
-        if (session == null || pausedAtMs != null) return
-        pausedAtMs = clock.now().toEpochMilliseconds()
+        val current = session ?: return
+        if (pausedAtMs != null) return
+        val now = clock.now().toEpochMilliseconds()
+        pausedAtMs = now
+        // The pause start is part of the stored session: a process killed now comes back paused,
+        // with the remaining time frozen at the instant the user paused.
+        session = current.copy(pausedAtMs = now)
+        persist(session!!)
         onChange()
     }
 
@@ -82,6 +88,7 @@ internal class FocusController(
         session = current.copy(
             pausedTotalMs = current.pausedTotalMs + (now - pausedAt).coerceAtLeast(0L),
             plannedEndMs = now + remaining,
+            pausedAtMs = null,
         )
         persist(session!!)
         onChange()
@@ -101,6 +108,7 @@ internal class FocusController(
         session = current.copy(
             pausedTotalMs = pausedTotal,
             plannedEndMs = now + minutes.coerceAtLeast(1) * 60_000L,
+            pausedAtMs = null,
         )
         persist(session!!)
         onChange()

@@ -46,4 +46,6 @@ data class FocusState(
     val plannedEndMs: Long,
     /** Todo being focused on; null for a session started from an entry without a task. */
     val taskId: String? = null,
+    /** Instant the pause in progress started; null while running. Persisted so a kill keeps it. */
+    val pausedAtMs: Long? = null,
 )

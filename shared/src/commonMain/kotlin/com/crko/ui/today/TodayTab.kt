@@ -129,7 +129,7 @@ internal fun TodayTab(
                             if (isLocalTodo(state, todo)) todo.coaching?.firstStep.orEmpty() else ""
                         }.orEmpty(),
                         stoppedForToday = controller.stoppedForToday,
-                        hasPlan = plan.taskIds.isNotEmpty(),
+                        hasPlan = tasks.isNotEmpty(),
                         strings = strings,
                         onStart = { next?.let { startTask = it } },
                         onCantMove = { showCantMove = true },
@@ -150,7 +150,7 @@ internal fun TodayTab(
                             if (isLocalTodo(state, todo)) todo.coaching?.firstStep.orEmpty() else ""
                         },
                         onToggle = { todo ->
-                            completeTodo(state, todo, state.nextTodoOccurrence(todo), today)
+                            toggleTodo(state, todo, state.nextTodoOccurrence(todo), today)
                         },
                         onEdit = { showPlanEditor = true },
                     )
@@ -194,7 +194,7 @@ internal fun TodayTab(
                     collapsed[todo.id] = !(collapsed[todo.id] ?: false)
                 },
                 onToggleDone = { todo ->
-                    completeTodo(state, todo, state.nextTodoOccurrence(todo), today)
+                    toggleTodo(state, todo, state.nextTodoOccurrence(todo), today)
                 },
                 onSubtask = { subtaskParent = it },
                 onDetail = { viewing = it },

@@ -159,6 +159,25 @@ class TodayFocusTest {
     }
 
     @Test
+    fun aPauseSurvivesARestart() {
+        val store = MemorySupportStore()
+        val clock = MutableClock(1_000_000)
+        val controller = FocusController(clock, SupportRepository(store), { EnStrings }, { "Task" }, {})
+        controller.start("t1", 5)
+        clock.millis += 60_000
+        controller.pause()
+        val frozen = controller.remainingMillis()
+
+        // The pause instant is part of the stored session: the restarted process stays paused
+        // instead of resuming the countdown and scheduling a spurious end reminder.
+        clock.millis += 600_000
+        val restarted = FocusController(clock, SupportRepository(store), { EnStrings }, { "Task" }, {})
+        assertTrue(restarted.isPaused)
+        assertEquals(frozen, restarted.remainingMillis())
+        assertNull(restarted.sessionReminder())
+    }
+
+    @Test
     fun aRunningSessionSchedulesOneQuietSessionReminder() {
         val store = MemorySupportStore()
         val clock = MutableClock(1_000_000)
