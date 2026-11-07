@@ -41,7 +41,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
 import com.crko.domain.monthGrid
+import com.crko.domain.plusDays
 import com.crko.domain.plusMonths
 import com.crko.domain.startOfMonth
 import com.crko.domain.weekDates
@@ -137,6 +140,7 @@ internal fun WeekRow(
     showSelection: Boolean,
     onSelect: (LocalDate) -> Unit,
     selectionPosition: (() -> Float)? = null,
+    range: Pair<LocalDate, LocalDate>? = null,
 ) {
     // The dates and their event dots only depend on the week and the event list, so a selection or
     // a day rollover inside the same week does not rescan every event for all seven cells.
@@ -155,11 +159,14 @@ internal fun WeekRow(
                     date = date,
                     inMonth = date.month == month.month && date.year == month.year,
                     // In the week overview the whole week is on screen, so a single selected day
-                    // means nothing there; the row keeps only the today marker.
-                    selected = showSelection && date == selected,
+                    // means nothing there; the row keeps only the today marker. Both ends of a
+                    // picked range take the selection outline.
+                    selected = showSelection && (date == selected || isRangeEnd(date, range)),
                     drawSelectedBorder = !floating,
                     isToday = date == today,
                     hasEvents = daysWithEvents[date] == true,
+                    inRange = isWithinRange(date, range),
+                    rangeShape = rangeShapeFor(date, range),
                     onSelect = onSelect,
                     modifier = Modifier
                         .weight(1f)
@@ -169,6 +176,37 @@ internal fun WeekRow(
         }
         if (floating && showSelection) SelectionFrame(selectionPosition)
     }
+}
+
+/** Whether [date] is one of the two ends of the picked [range]. */
+private fun isRangeEnd(date: LocalDate, range: Pair<LocalDate, LocalDate>?): Boolean =
+    range != null && (date == range.first || date == range.second)
+
+/** Whether [date] sits strictly between the ends of [range], so it takes the range tint. */
+private fun isWithinRange(date: LocalDate, range: Pair<LocalDate, LocalDate>?): Boolean {
+    if (range == null) return false
+    val lo = minOf(range.first, range.second)
+    val hi = maxOf(range.first, range.second)
+    return date > lo && date < hi
+}
+
+/**
+ * Corner rounding of the range band on [date]'s cell: the band rounds off where it begins or ends —
+ * next to an endpoint — and at the row edges, so a range crossing weeks breaks into rounded
+ * segments instead of running square off the grid.
+ */
+private fun rangeShapeFor(date: LocalDate, range: Pair<LocalDate, LocalDate>?): Shape {
+    if (range == null) return RectangleShape
+    val lo = minOf(range.first, range.second)
+    val hi = maxOf(range.first, range.second)
+    val roundLeft = date.dayOfWeek.ordinal == 0 || date == lo.plusDays(1)
+    val roundRight = date.dayOfWeek.ordinal == 6 || date.plusDays(1) == hi
+    return RoundedCornerShape(
+        topStart = if (roundLeft) 12.dp else 0.dp,
+        bottomStart = if (roundLeft) 12.dp else 0.dp,
+        topEnd = if (roundRight) 12.dp else 0.dp,
+        bottomEnd = if (roundRight) 12.dp else 0.dp,
+    )
 }
 
 /**
@@ -335,10 +373,11 @@ internal fun WeekdayHeader(strings: Strings) {
 internal fun MonthPage(
     month: LocalDate,
     days: List<LocalDate>,
-    selected: LocalDate,
+    selected: LocalDate?,
     today: LocalDate,
     hasEvents: (LocalDate) -> Boolean,
     onSelect: (LocalDate) -> Unit,
+    range: Pair<LocalDate, LocalDate>? = null,
 ) {
     // Event dots are resolved once per month instead of once per cell per recomposition.
     val weeks = remember(days) { days.chunked(7) }
@@ -356,9 +395,11 @@ internal fun MonthPage(
                     MonthCell(
                         date = date,
                         inMonth = date.month == month.month && date.year == month.year,
-                        selected = date == selected,
+                        selected = date == selected || isRangeEnd(date, range),
                         isToday = date == today,
                         hasEvents = daysWithEvents[date] == true,
+                        inRange = isWithinRange(date, range),
+                        rangeShape = rangeShapeFor(date, range),
                         onSelect = onSelect,
                         modifier = Modifier
                             .weight(1f)
@@ -384,11 +425,19 @@ private fun MonthCell(
     onSelect: (LocalDate) -> Unit,
     modifier: Modifier = Modifier,
     drawSelectedBorder: Boolean = true,
+    inRange: Boolean = false,
+    rangeShape: Shape = RectangleShape,
 ) {
     val scheme = MiuixTheme.colorScheme
     val shape = RoundedCornerShape(12.dp)
     Column(
-        modifier = modifier,
+        // The range tint spans the whole cell, so adjacent in-range days read as one band whose
+        // ends round off per [rangeShape].
+        modifier = if (inRange) {
+            modifier.background(scheme.primary.copy(alpha = 0.12f), rangeShape)
+        } else {
+            modifier
+        },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {

@@ -146,6 +146,7 @@ interface Strings {
     val priorityNormal: String
     val priorityLow: String
     val dueDate: String
+    val dateRange: String
     val clear: String
     val customDate: String
     val selectDate: String

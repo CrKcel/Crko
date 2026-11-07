@@ -11,9 +11,6 @@ import com.crko.domain.TodoPriority
 import com.crko.state.todo.TodoDraft
 import kotlinx.datetime.LocalDate
 
-/** Which date the shared month picker is editing when the dialog is open. */
-internal enum class TodoDateField { Start, Due }
-
 /**
  * Form state for [TodoEditorDialog], shared by the dialog and the advanced-settings page so both
  * edit the same draft and either one can save it. Holds every field the editor edits.
@@ -24,8 +21,17 @@ internal class TodoEditorState(
     private val parentTarget: Todo?,
     defaultCalendarId: String?,
 ) {
-    var title by mutableStateOf(editingTarget?.title ?: "")
-    var note by mutableStateOf(editingTarget?.note ?: "")
+    /**
+     * The merged title/note field: the first line is the title, everything after the first line
+     * break is the note. One string so the single field edits both directly.
+     */
+    var bodyText: String by mutableStateOf(
+        when {
+            editingTarget == null -> ""
+            editingTarget.note.isBlank() -> editingTarget.title
+            else -> editingTarget.title + "\n" + editingTarget.note
+        },
+    )
     var location by mutableStateOf(editingTarget?.location ?: "")
     var priority by mutableStateOf(editingTarget?.priorityLevel ?: TodoPriority.Normal)
     var start by mutableStateOf(editingTarget?.startDay)
@@ -33,7 +39,12 @@ internal class TodoEditorState(
     var percent by mutableStateOf(editingTarget?.percentComplete ?: 0)
     var categoriesText by mutableStateOf(editingTarget?.categories?.joinToString(", ").orEmpty())
     var calendarId by mutableStateOf(defaultCalendarId)
-    var picking by mutableStateOf<TodoDateField?>(null)
+
+    /** The todo title: the first line of [bodyText]. */
+    val title: String get() = bodyText.lineSequence().first().trim()
+
+    /** The note: everything after the first line of [bodyText], edge whitespace trimmed. */
+    val note: String get() = bodyText.substringAfter('\n', "").trim()
 
     /** Whether the save button is enabled: a todo needs a title. */
     val canSave: Boolean get() = title.isNotBlank()

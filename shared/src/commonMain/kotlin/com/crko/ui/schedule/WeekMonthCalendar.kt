@@ -67,6 +67,10 @@ internal fun WeekMonthCalendar(
     onSelect: (LocalDate) -> Unit,
     onMonthChange: (LocalDate) -> Unit,
     driveStrip: WeekStrip?,
+    /** Picked date range: both ends take the selection outline, the between-days the range tint. */
+    range: Pair<LocalDate, LocalDate>? = null,
+    /** Whether the month grid shows a selection at all; the strip keeps its own [showWeekSelection]. */
+    showSelection: Boolean = true,
 ) {
     val density = LocalDensity.current
     val rowHeightPx = with(density) { MonthRowHeight.toPx() }
@@ -139,6 +143,8 @@ internal fun WeekMonthCalendar(
     val onSelectDate: (LocalDate) -> Unit = remember { { currentOnSelect(it) } }
     val currentShowWeekSelection by rememberUpdatedState(showWeekSelection)
     val currentSelectionPosition by rememberUpdatedState(drive.selectionPosition)
+    val currentRange by rememberUpdatedState(range)
+    val currentShowSelection by rememberUpdatedState(showSelection)
 
     val monthPage: @Composable PagerScope.(Int) -> Unit = remember(pager) {
         { page ->
@@ -146,9 +152,10 @@ internal fun WeekMonthCalendar(
             MonthPage(
                 month = month,
                 days = remember(month) { month.monthGrid() },
-                selected = currentSelected,
+                selected = if (currentShowSelection) currentSelected else null,
                 today = currentToday,
                 hasEvents = currentHasEvents,
+                range = currentRange,
                 onSelect = onSelectDate,
             )
         }
@@ -170,6 +177,7 @@ internal fun WeekMonthCalendar(
                 showSelection = currentShowWeekSelection,
                 onSelect = onSelectDate,
                 selectionPosition = currentSelectionPosition,
+                range = currentRange,
             )
         }
     }

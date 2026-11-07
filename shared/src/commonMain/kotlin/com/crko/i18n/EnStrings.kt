@@ -134,6 +134,7 @@ object EnStrings : Strings {
     override val priorityNormal = "Medium"
     override val priorityLow = "Low"
     override val dueDate = "Due date"
+    override val dateRange = "Dates"
     override val clear = "Clear"
     override val customDate = "Custom"
     override val selectDate = "Select date"

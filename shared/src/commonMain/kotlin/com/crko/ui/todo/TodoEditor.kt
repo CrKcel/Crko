@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -31,23 +32,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.crko.domain.Calendar
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
-import com.crko.domain.plusDays
+import com.crko.domain.startOfMonth
 import com.crko.i18n.Strings
 import com.crko.state.todo.TodoDraft
 import com.crko.ui.components.CalendarChips
 import com.crko.ui.components.GlassNavigationBarDefaults
 import com.crko.ui.icons.AppIcons
-import com.crko.ui.schedule.DatePickerDialog
+import com.crko.ui.schedule.WeekMonthCalendar
 import com.crko.ui.schedule.priorityColor
+import com.crko.ui.schedule.rememberCalendarFold
 import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -64,7 +66,8 @@ private val PercentSteps = listOf(0, 25, 50, 75, 100)
 /**
  * One dialog for both creating and editing a todo. In edit mode [initial] prefills every field; a
  * subtask reuses the same layout with [parent] naming its parent. The advanced-settings page
- * opened from the entry row carries the complete form — the same fields plus the advanced ones and
+ * opened from the dialog's action row carries the complete form — the same fields plus the advanced
+ * ones and
  * its own save — so a todo can be added without going back. Both surfaces share [TodoEditorState].
  * [onSave] receives the draft and the calendar picked for a new top-level todo.
  */
@@ -127,19 +130,21 @@ internal fun TodoEditorDialog(
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             TodoFormCore(strings = strings, today = today, state = state, calendars = calendars)
-            Spacer(Modifier.height(6.dp))
-            AdvancedEntry(
-                text = strings.advancedSettings,
-                onClick = { advanced = true },
-            )
-            Spacer(Modifier.height(16.dp))
-            Button(
-                onClick = { if (saveDraft()) onDismiss() },
-                enabled = state.canSave,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColorsPrimary(),
+            Spacer(Modifier.height(12.dp))
+            // The advanced entry shares the save button's row so the dialog stays short.
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(strings.save)
+                AdvancedEntry(text = strings.advancedSettings, onClick = { advanced = true })
+                Button(
+                    onClick = { if (saveDraft()) onDismiss() },
+                    enabled = state.canSave,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColorsPrimary(),
+                ) {
+                    Text(strings.save)
+                }
             }
         }
     }
@@ -174,20 +179,6 @@ internal fun TodoEditorDialog(
             resetPending = false
             session += 1
         }
-    }
-
-    state.picking?.let { field ->
-        val current = if (field == TodoDateField.Start) state.start else state.due
-        DatePickerDialog(
-            initial = current ?: today,
-            today = today,
-            strings = strings,
-            onDismiss = { state.picking = null },
-            onConfirm = { picked ->
-                if (field == TodoDateField.Start) state.start = picked else state.due = picked
-                state.picking = null
-            },
-        )
     }
 }
 
@@ -237,31 +228,28 @@ private fun TodoAdvancedPage(
                 .padding(horizontal = 16.dp)
                 .padding(bottom = GlassNavigationBarDefaults.bottomMargin() + 12.dp),
         ) {
-            TodoFormCore(strings = strings, today = today, state = state, calendars = calendars)
-            Spacer(Modifier.height(16.dp))
-            SectionCaption(strings.startDate)
-            DateRow(
+            TodoFormCore(
                 strings = strings,
                 today = today,
-                selected = state.start,
-                onSelect = { state.start = it },
-                onCustom = { state.picking = TodoDateField.Start },
+                state = state,
+                calendars = calendars,
+                showStartDate = true,
             )
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
             SectionCaption(strings.priority)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PriorityChip(strings.priorityHigh, TodoPriority.High, state.priority) { state.priority = it }
-                PriorityChip(strings.priorityNormal, TodoPriority.Normal, state.priority) { state.priority = it }
-                PriorityChip(strings.priorityLow, TodoPriority.Low, state.priority) { state.priority = it }
+                PriorityChip(strings.priorityHigh, TodoPriority.High, state.priority, { state.priority = it }, Modifier.weight(1f))
+                PriorityChip(strings.priorityNormal, TodoPriority.Normal, state.priority, { state.priority = it }, Modifier.weight(1f))
+                PriorityChip(strings.priorityLow, TodoPriority.Low, state.priority, { state.priority = it }, Modifier.weight(1f))
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
             SectionCaption(strings.progress)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PercentSteps.forEach { step ->
                     PercentChip(step, state.percent, { state.percent = it }, Modifier.weight(1f))
                 }
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
             TextField(
                 value = state.location,
                 onValueChange = { state.location = it },
@@ -293,9 +281,10 @@ private fun TodoAdvancedPage(
 }
 
 /**
- * The form fields both editor surfaces share: title, calendar picker, due date and note, in the
- * same order and spacing. Everything binds straight to the shared [state]; each surface adds its
- * own fields and actions around this.
+ * The form fields both editor surfaces share: the merged title/note field, calendar picker and the
+ * date fields, in the same order and spacing. The field's first line is the title, the rest is the
+ * note. With [showStartDate] the start date sits under the due date. Everything binds straight to
+ * the shared [state]; each surface adds its own fields and actions around this.
  */
 @Composable
 private fun TodoFormCore(
@@ -303,13 +292,14 @@ private fun TodoFormCore(
     today: LocalDate,
     state: TodoEditorState,
     calendars: List<Calendar>,
+    showStartDate: Boolean = false,
 ) {
     TextField(
-        value = state.title,
-        onValueChange = { state.title = it },
+        value = state.bodyText,
+        onValueChange = { state.bodyText = it },
         label = strings.todoTitleField,
         useLabelAsPlaceholder = true,
-        singleLine = true,
+        minLines = 2,
         modifier = Modifier.fillMaxWidth(),
     )
     if (state.picksCalendar && calendars.size > 1) {
@@ -321,35 +311,223 @@ private fun TodoFormCore(
             onSelect = { state.calendarId = it },
         )
     }
-    Spacer(Modifier.height(16.dp))
-    SectionCaption(strings.dueDate)
-    DateRow(
+    Spacer(Modifier.height(12.dp))
+    if (showStartDate) {
+        DateRangeCalendar(
+            strings = strings,
+            today = today,
+            start = state.start,
+            due = state.due,
+            onStart = { state.start = it },
+            onDue = { state.due = it },
+        )
+    } else {
+        WeekCalendar(
+            label = strings.dueDate,
+            strings = strings,
+            today = today,
+            selected = state.due,
+            onSelect = { state.due = it },
+        )
+    }
+}
+
+/**
+ * The advanced page's date section: one calendar holding both ends of the todo's date range. The
+ * first pick sets the due date, a second pick completes the range — the earlier day becomes the
+ * start, swap included — and picking with both ends set restarts from that day as the new due. The
+ * days between the ends take the range tint and the start end carries the small dot; picking both
+ * ends folds the month back into the week strip. The caption's clear button empties both.
+ */
+@Composable
+private fun DateRangeCalendar(
+    strings: Strings,
+    today: LocalDate,
+    start: LocalDate?,
+    due: LocalDate?,
+    onStart: (LocalDate?) -> Unit,
+    onDue: (LocalDate?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var monthAnchor by remember { mutableStateOf((due ?: start ?: today).startOfMonth()) }
+    val fold = rememberCalendarFold()
+    val hasDates = start != null || due != null
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text = strings.dateRange,
+            style = MiuixTheme.textStyles.footnote2,
+            fontSize = 11.sp,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Spacer(Modifier.weight(1f))
+        if (hasDates) {
+            Text(
+                text = strings.clear,
+                style = MiuixTheme.textStyles.footnote2,
+                fontSize = 11.sp,
+                color = MiuixTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable {
+                        onStart(null)
+                        onDue(null)
+                    }
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(
+            text = strings.monthName(monthAnchor.month),
+            style = MiuixTheme.textStyles.footnote2,
+            fontSize = 11.sp,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Spacer(Modifier.width(4.dp))
+        Icon(
+            imageVector = AppIcons.Expand,
+            contentDescription = null,
+            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier
+                .size(14.dp)
+                .rotate(if (expanded) 180f else 0f),
+        )
+    }
+    WeekMonthCalendar(
         strings = strings,
+        selected = due ?: start ?: today,
         today = today,
-        selected = state.due,
-        onSelect = { state.due = it },
-        onCustom = { state.picking = TodoDateField.Due },
-    )
-    Spacer(Modifier.height(16.dp))
-    TextField(
-        value = state.note,
-        onValueChange = { state.note = it },
-        label = strings.noteField,
-        useLabelAsPlaceholder = true,
-        minLines = 3,
-        modifier = Modifier.fillMaxWidth(),
+        monthAnchor = monthAnchor,
+        // The start end carries the small dot, so the two ends read differently.
+        hasEvents = { it == start },
+        fold = fold,
+        expanded = expanded,
+        showWeekSelection = hasDates,
+        showSelection = hasDates,
+        onSelect = { day ->
+            val currentStart = start
+            val currentDue = due
+            val restarting = currentStart != null && currentDue != null
+            val newStart: LocalDate?
+            val newDue: LocalDate?
+            when {
+                currentStart == null && currentDue == null -> {
+                    newStart = null
+                    newDue = day
+                }
+                currentStart == null && currentDue != null -> if (day < currentDue) {
+                    newStart = day
+                    newDue = currentDue
+                } else {
+                    newStart = currentDue
+                    newDue = day
+                }
+                currentStart != null && currentDue == null -> if (day < currentStart) {
+                    newStart = day
+                    newDue = currentStart
+                } else {
+                    newStart = currentStart
+                    newDue = day
+                }
+                else -> {
+                    newStart = null
+                    newDue = day
+                }
+            }
+            onStart(newStart)
+            onDue(newDue)
+            // A completed range folds the month back into the week strip; a restart stays open.
+            if (!restarting && newStart != null && newDue != null) expanded = false
+        },
+        onMonthChange = { monthAnchor = it },
+        driveStrip = null,
+        range = if (start != null && due != null) start to due else null,
     )
 }
 
-/** Row in the main dialog opening the advanced-settings page, styled like the other editor rows. */
+/**
+ * The editor's date section: a pinned weekday header over a horizontally paged week strip that
+ * picks nearby days with one tap, and a caption row that folds the full month calendar open for
+ * far ones — the same unfold the schedule's calendar uses. Tapping the selected day again clears
+ * it, and picking from the month folds the week row back.
+ */
+@Composable
+private fun WeekCalendar(
+    label: String,
+    strings: Strings,
+    today: LocalDate,
+    selected: LocalDate?,
+    onSelect: (LocalDate?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var monthAnchor by remember { mutableStateOf((selected ?: today).startOfMonth()) }
+    val fold = rememberCalendarFold()
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text = label,
+            style = MiuixTheme.textStyles.footnote2,
+            fontSize = 11.sp,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = strings.monthName(monthAnchor.month),
+            style = MiuixTheme.textStyles.footnote2,
+            fontSize = 11.sp,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Spacer(Modifier.width(4.dp))
+        Icon(
+            imageVector = AppIcons.Expand,
+            contentDescription = null,
+            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier
+                .size(14.dp)
+                .rotate(if (expanded) 180f else 0f),
+        )
+    }
+    WeekMonthCalendar(
+        strings = strings,
+        // The calendar wants a day to stand on; with none picked the week strip simply hides its
+        // selection and the month grid outlines nothing extra — today keeps its own fill.
+        selected = selected ?: today,
+        today = today,
+        monthAnchor = monthAnchor,
+        hasEvents = { false },
+        fold = fold,
+        expanded = expanded,
+        showWeekSelection = selected != null,
+        onSelect = { picked ->
+            if (picked == selected) onSelect(null) else onSelect(picked)
+            expanded = false
+        },
+        onMonthChange = { monthAnchor = it },
+        driveStrip = null,
+    )
+}
+
+/** Chip in the dialog's action row opening the advanced-settings page, sized to the save button. */
 @Composable
 private fun AdvancedEntry(text: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
-            .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
+            .background(MiuixTheme.colorScheme.surfaceContainerHigh)
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
@@ -358,20 +536,12 @@ private fun AdvancedEntry(text: String, onClick: () -> Unit) {
             tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             modifier = Modifier.size(16.dp),
         )
+        Spacer(Modifier.width(6.dp))
         Text(
             text = text,
             style = MiuixTheme.textStyles.footnote2,
             fontSize = 11.sp,
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            modifier = Modifier
-                .weight(1f)
-                .padding(start = 8.dp),
-        )
-        Icon(
-            imageVector = AppIcons.Forward,
-            contentDescription = null,
-            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            modifier = Modifier.size(16.dp),
         )
     }
 }
@@ -388,60 +558,23 @@ private fun SectionCaption(text: String) {
 }
 
 @Composable
-private fun DateRow(
-    strings: Strings,
-    today: LocalDate,
-    selected: LocalDate?,
-    onSelect: (LocalDate?) -> Unit,
-    onCustom: () -> Unit,
-) {
-    val tomorrow = today.plusDays(1)
-    // A date that is neither shortcut is shown on the custom chip itself.
-    val custom = selected?.takeIf { it != today && it != tomorrow }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        DateChip(
-            text = strings.today,
-            selected = selected == today,
-            onClick = { onSelect(if (selected == today) null else today) },
-            modifier = Modifier.weight(1f),
-        )
-        DateChip(
-            text = strings.tomorrow,
-            selected = selected == tomorrow,
-            onClick = { onSelect(if (selected == tomorrow) null else tomorrow) },
-            modifier = Modifier.weight(1f),
-        )
-        DateChip(
-            text = custom?.let(strings::dayMonth) ?: strings.customDate,
-            selected = custom != null,
-            onClick = onCustom,
-            modifier = Modifier.weight(1f),
-        )
-        DateChip(
-            text = strings.clear,
-            selected = selected == null,
-            onClick = { onSelect(null) },
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-@Composable
 private fun PriorityChip(
     text: String,
     value: TodoPriority,
     current: TodoPriority,
     onSelect: (TodoPriority) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val selected = value == current
     val accent = priorityColor(value)
     Row(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(10.dp))
             .background(if (selected) accent.copy(alpha = 0.16f) else MiuixTheme.colorScheme.surfaceContainerHigh)
             .clickable { onSelect(value) }
             .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
     ) {
         Text(
             text = text,
@@ -454,29 +587,14 @@ private fun PriorityChip(
 
 @Composable
 private fun PercentChip(value: Int, current: Int, onSelect: (Int) -> Unit, modifier: Modifier) {
-    DateChip(
-        text = "$value%",
-        selected = value == current,
-        onClick = { onSelect(value) },
-        modifier = modifier,
-    )
-}
-
-@Composable
-private fun DateChip(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
+    val selected = value == current
     Text(
-        text = text,
+        text = "$value%",
         style = MiuixTheme.textStyles.body2,
         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
         color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
         textAlign = TextAlign.Center,
         maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
             .background(
@@ -486,7 +604,7 @@ private fun DateChip(
                     MiuixTheme.colorScheme.surfaceContainerHigh
                 },
             )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = 10.dp),
+            .clickable { onSelect(value) }
+            .padding(vertical = 8.dp),
     )
 }

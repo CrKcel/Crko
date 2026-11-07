@@ -129,6 +129,7 @@ object ZhStrings : Strings {
     override val priorityNormal = "中"
     override val priorityLow = "低"
     override val dueDate = "截止日期"
+    override val dateRange = "起止日期"
     override val clear = "清除"
     override val customDate = "自定义"
     override val selectDate = "选择日期"
