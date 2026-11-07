@@ -2,6 +2,7 @@ package com.crko
 
 import com.crko.domain.IcsImport
 import com.crko.domain.IcsTimeValue
+import com.crko.domain.RecurrenceDate
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
@@ -17,6 +18,7 @@ import kotlinx.datetime.LocalTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -90,6 +92,42 @@ class TodoCompletionTest {
         assertEquals(1, instances.size)
         assertEquals(first.id, instances.single().id)
         assertEquals(first.sequence + 1, instances.single().sequence)
+    }
+
+    @Test
+    fun anRdateOnlySeriesCompletesOccurrencesInsteadOfItself() {
+        // RDATE without a rule is a series: completing an added date must store an instance and
+        // keep the master open, not close the whole record like a one-off.
+        val f = Fixture()
+        val added = f.holder.today.plusDays(7)
+        f.holder.importCalendar(
+            IcsImport(
+                todos = listOf(
+                    Todo(
+                        id = "",
+                        title = "Added",
+                        due = IcsTimeValue.Date(f.holder.today),
+                        rDates = listOf(RecurrenceDate(IcsTimeValue.Date(added))),
+                    ),
+                ),
+            ),
+        )
+        val master = f.holder.appState.todos.single()
+
+        assertEquals(WriteResult.Success, f.holder.completeTodoOccurrence(master.id, added))
+
+        val stored = f.holder.appState.todos
+        assertEquals(2, stored.size)
+        assertEquals(master, stored.single { it.id == master.id })
+        assertFalse(stored.single { it.id == master.id }.done)
+        val instance = stored.single { it.isOccurrence }
+        assertEquals(IcsTimeValue.Date(added), instance.recurrenceId)
+        assertTrue(instance.done)
+
+        // The series stays active under its next projection, with the completed slot recorded.
+        val active = f.holder.activeTodos().single()
+        assertEquals(master.id, active.id)
+        assertEquals(1, f.holder.completedTodos().size)
     }
 
     @Test

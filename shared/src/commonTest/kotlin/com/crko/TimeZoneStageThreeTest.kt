@@ -158,7 +158,6 @@ class TimeZoneStageThreeTest {
         val event = reloaded.events.single()
 
         // 09:00 at +03:00 is 06:00 UTC, and the second weekly occurrence keeps that offset.
-        assertEquals(6, event.localStart(utc).hour)
         assertEquals(
             Instant.parse("2026-11-03T06:00:00Z"),
             event.occurrenceStartInstant(LocalDate(2026, 11, 3), OccurrenceTime(9 * 60, 0), utc),

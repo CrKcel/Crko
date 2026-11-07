@@ -129,11 +129,9 @@ class SearchTest {
             ),
         )
 
-        assertEquals(1, f.holder.search("meeting").size)
-        assertEquals(1, f.holder.search("MEETING").size)
+        // Mixed-case queries still match both fields.
         assertEquals(1, f.holder.search("MeEtInG").size)
         assertEquals(1, f.holder.search("plan").size)
-        assertEquals(1, f.holder.search("PLAN").size)
         assertEquals(0, f.holder.search("weekly").size)
     }
 

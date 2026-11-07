@@ -245,8 +245,10 @@ internal fun isNewer(
     existingLastModified: String?,
 ): Boolean {
     if (sequence != existingSequence) return sequence > existingSequence
-    val incoming = parseInstantOrNull(dtStamp ?: lastModified) ?: return false
-    val existing = parseInstantOrNull(existingDtStamp ?: existingLastModified)
+    // An unparseable value must not hide the other property, on either side: a malformed DTSTAMP
+    // falls through to LAST-MODIFIED just like an absent one.
+    val incoming = parseInstantOrNull(dtStamp) ?: parseInstantOrNull(lastModified) ?: return false
+    val existing = parseInstantOrNull(existingDtStamp) ?: parseInstantOrNull(existingLastModified)
     return existing == null || incoming > existing
 }
 

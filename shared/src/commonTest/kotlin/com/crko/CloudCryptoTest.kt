@@ -153,7 +153,8 @@ class CloudCryptoTest {
         val keys = deriveCloudKeys(crypto, "correct horse battery staple", ByteArray(CloudNonceBytes) { 5 }, rounds = 2_000)
         assertEquals(CloudKeyBytes, keys.authKey.size)
         assertEquals(CloudKeyBytes, keys.encKey.size)
-        assertNotEquals(keys.authKey, keys.encKey)
+        // Content comparison: assertNotEquals on ByteArrays would compare references on the JVM.
+        assertNotEquals(keys.authKey.toList(), keys.encKey.toList())
         // The same password and salt derive the same keys; a different salt does not.
         val again = deriveCloudKeys(crypto, "correct horse battery staple", ByteArray(CloudNonceBytes) { 5 }, rounds = 2_000)
         assertContentEquals(keys.authKey, again.authKey)

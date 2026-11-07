@@ -244,7 +244,9 @@ internal fun monthCandidates(
                 }
                 .map { LocalDate(year, month, it) }
         }
-        else -> listOfNotNull(LocalDate(year, month, anchor.day).takeIf { anchor.day <= days })
+        // The day must be a real date in this month (a Feb 29 anchor has no candidate in
+        // common years) — guard before constructing, LocalDate rejects the clamped value.
+        else -> if (anchor.day <= days) listOf(LocalDate(year, month, anchor.day)) else emptyList()
     }
     val sorted = dates.distinct().sorted()
     return if (withSetPos && rule.bySetPos.isNotEmpty()) applySetPos(sorted, rule.bySetPos) else sorted

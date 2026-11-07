@@ -32,8 +32,7 @@ class CalDavClientTest {
 
     @Test
     fun basicAuthHeaderEncodesUserAndPassword() {
-        val expected = "Basic " + Base64.encode("user:secret".encodeToByteArray())
-        assertEquals(expected, basicAuthHeader("user", "secret"))
+        assertEquals("Basic dXNlcjpzZWNyZXQ=", basicAuthHeader("user", "secret"))
         assertNull(basicAuthHeader(null, "secret"))
         assertNull(basicAuthHeader("user", null))
         assertNull(basicAuthHeader("user", ""))

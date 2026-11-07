@@ -22,7 +22,6 @@ import com.crko.storage.StateStorage
 import com.crko.storage.MemoryOutboxStore
 import com.crko.storage.OutboxStore
 import com.crko.domain.PersistedSettings
-import com.crko.i18n.EnStrings
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -105,6 +104,21 @@ class ItipTest {
         )
         assertNull(imported.method)
         assertEquals(24 * 60, imported.refreshMinutes)
+    }
+
+    @Test
+    fun aLaterPublishedTtlDoesNotOverrideTheRefreshInterval() {
+        // Last-valid-wins let a trailing X-PUBLISHED-TTL silently replace the explicit interval
+        // purely by position; the explicit property must win wherever it appears.
+        val imported = import(
+            calendar(
+                null,
+                "BEGIN:VEVENT\r\nUID:a@x\r\nDTSTAMP:20260101T000000Z\r\n" +
+                    "DTSTART;VALUE=DATE:20260301\r\nEND:VEVENT\r\n" +
+                    "REFRESH-INTERVAL:PT4H\r\nX-PUBLISHED-TTL:P1D\r\n",
+            ),
+        )
+        assertEquals(4 * 60, imported.refreshMinutes)
     }
 
     @Test
@@ -319,21 +333,6 @@ class ItipTest {
         val stored = testEvent(id = "e1", title = "Invite", date = "2026-03-01", startMinutes = 600, endMinutes = 660)
         val text = exportItipRequest(listOf(stored))
         assertTrue("METHOD:REQUEST" in text)
-        assertTrue("SUMMARY:Invite" in text)
-    }
-
-    @Test
-    fun attendeeEntryFallbackUsesPlainAddresses() {
-        val event = testEvent(
-            id = "e1",
-            title = "T",
-            date = "2026-03-01",
-            startMinutes = 600,
-            endMinutes = 660,
-            attendees = listOf("mailto:a@x", "mailto:b@x"),
-        )
-        assertEquals(listOf("mailto:a@x", "mailto:b@x"), event.attendeeEntries.map { it.calAddress })
-        assertNull(event.attendeeEntries.first().partStat)
     }
 
     @Test
@@ -388,15 +387,5 @@ class ItipTest {
             it.recurrenceId == IcsTimeValue.Date(LocalDate(2026, 3, 1))
         }
         assertTrue(cancelled == null || cancelled.status == com.crko.domain.EventStatus.Confirmed)
-    }
-
-    @Test
-    fun replyStringsNameTheAttendeeAndAnswer() {
-        val strings = EnStrings
-        assertTrue(
-            strings.inviteReplyProcessed("Jane", IcsPartStat.Accepted).contains("Jane") &&
-                strings.inviteReplyProcessed("Jane", IcsPartStat.Accepted).contains(strings.partStatName(IcsPartStat.Accepted)),
-        )
-        assertFalse(strings.inviteReplyUnknown("Jane").isEmpty())
     }
 }

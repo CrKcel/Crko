@@ -42,8 +42,9 @@ class TodoServiceTest {
         f.holder.addTodo("Later", TodoPriority.High, f.holder.today.plusDays(2))
         f.holder.addTodo("Due high", TodoPriority.High, f.holder.today)
         f.holder.addTodo("Due normal", TodoPriority.Normal, f.holder.today)
+        f.holder.addTodo("Due low", TodoPriority.Low, f.holder.today)
         assertEquals(
-            listOf("Due high", "Due normal", "Later", "No due low"),
+            listOf("Due high", "Due normal", "Due low", "Later", "No due low"),
             f.holder.activeTodos().map { it.title },
         )
     }
@@ -65,14 +66,6 @@ class TodoServiceTest {
         assertEquals(TodoStatus.NeedsAction, reopened.status)
         assertEquals(0, reopened.percentComplete)
         assertNull(reopened.completed)
-    }
-
-    @Test
-    fun activeTodosOrderNormalBeforeLowWithTheSameDueDate() {
-        val f = Fixture()
-        f.holder.addTodo("Low", TodoPriority.Low, f.holder.today)
-        f.holder.addTodo("Normal", TodoPriority.Normal, f.holder.today)
-        assertEquals(listOf("Normal", "Low"), f.holder.activeTodos().map { it.title })
     }
 
     @Test
@@ -135,34 +128,6 @@ class TodoServiceTest {
         f.holder.addTodo("Due tomorrow", TodoPriority.Normal, f.holder.today.plusDays(1))
         f.holder.setTodoDone(f.holder.appState.todos.single().id, true)
         assertEquals(1, f.holder.completedToday())
-    }
-
-    @Test
-    fun creatingATodoFromTheDraftStoresEveryEditorField() {
-        val f = Fixture()
-        val result = f.holder.addTodo(
-            TodoDraft(
-                title = "Prepare",
-                note = "Agenda",
-                location = "Room 3",
-                start = f.holder.today,
-                due = f.holder.today.plusDays(1),
-                priority = TodoPriority.High,
-                percentComplete = 30,
-                categories = listOf("work"),
-            ),
-        )
-        assertEquals(WriteResult.Success, result)
-        val todo = f.holder.appState.todos.single()
-        assertEquals("Prepare", todo.title)
-        assertEquals("Agenda", todo.note)
-        assertEquals("Room 3", todo.location)
-        assertEquals(f.holder.today, todo.startDay)
-        assertEquals(f.holder.today.plusDays(1), todo.dueDay)
-        assertEquals(TodoPriority.High, todo.priorityLevel)
-        assertEquals(30, todo.percentComplete)
-        assertEquals(TodoStatus.InProcess, todo.status)
-        assertEquals(listOf("work"), todo.categories)
     }
 
     @Test

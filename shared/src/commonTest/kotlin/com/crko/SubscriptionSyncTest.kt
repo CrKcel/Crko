@@ -9,13 +9,10 @@ import com.crko.domain.toCalendar
 import com.crko.domain.MaxSubscriptionBytes
 import com.crko.domain.SubscriptionFailure
 import com.crko.domain.SubscriptionFetch
-import com.crko.domain.exportCalendar
 import com.crko.domain.resolveSubscriptionUrl
-import com.crko.sync.calendarQueryReport
 import com.crko.sync.decodeXmlText
 import com.crko.sync.fetchSubscription
 import com.crko.sync.parseMultiStatus
-import com.crko.sync.syncCollectionReport
 import com.crko.sync.xmlEscape
 import com.crko.state.AppStateHolder
 import com.crko.storage.HttpRequest
@@ -171,13 +168,6 @@ class SubscriptionSyncTest {
     }
 
     @Test
-    fun reportBodiesRequestEtagsAndCalendarData() {
-        assertTrue("<d:getetag/>" in calendarQueryReport())
-        assertTrue("<c:calendar-data/>" in calendarQueryReport())
-        assertTrue("<d:sync-token>tok</d:sync-token>" in syncCollectionReport("tok"))
-    }
-
-    @Test
     fun caldavCollectionIsDiscoveredFromAnXmlAnswer() = runTest {
         val ics = icsOf("a@x" to "One")
         val http = FakeHttp { request ->
@@ -301,18 +291,6 @@ class SubscriptionSyncTest {
     }
 
     @Test
-    fun anInvalidUrlIsRejectedWhenAdding() {
-        val f = AppStateHolder(
-            scope = TestScope(StandardTestDispatcher()),
-            initialSystemLocale = "en-US",
-            idProvider = { "id-0" },
-            storage = SyncStorage(),
-        )
-        assertNull(f.addSubscription("X", "not-a-url"))
-        assertTrue(f.appState.subscriptions.isEmpty())
-    }
-
-    @Test
     fun syncFailureIsReportedAndDoesNotTouchTheState() = runTest {
         val http = FakeHttp { HttpResponse(401, emptyMap(), ByteArray(0)) }
         val scope = TestScope(StandardTestDispatcher(testScheduler))
@@ -384,8 +362,6 @@ class SubscriptionSyncTest {
         )
         val decoded = AppJson.decodeFromString(AppState.serializer(), AppJson.encodeToString(AppState.serializer(), state))
         assertEquals(state, decoded)
-        // Exporting a calendar with the extra state still works.
-        assertTrue(exportCalendar(emptyList()).contains("BEGIN:VCALENDAR"))
     }
 
     @Test

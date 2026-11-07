@@ -28,6 +28,15 @@ private fun Todo.recurrenceSet(): Recurrence? {
     )
 }
 
+/**
+ * Whether the todo carries a recurrence set (a rule, added dates or exclusions) and projects
+ * occurrences instead of living on its stored date alone. This is the gate that matches
+ * [occursOn]; testing `repeat` alone misses an RDATE-only series, which the importer produces
+ * whenever a file adds dates without a rule.
+ */
+val Todo.isSeries: Boolean
+    get() = repeat != null || rDates.isNotEmpty() || excludedDates.isNotEmpty()
+
 /** Time of day the series' anchor (`DTSTART`, falling back to `DUE`) names; null for date-only. */
 private fun Todo.seriesStartTime(): OccurrenceTime? {
     val value = start ?: due ?: return null
@@ -77,7 +86,8 @@ fun Todo.occursOn(date: LocalDate, instances: List<Todo> = emptyList()): Boolean
  * for one-off todos, which are anchored on their stored date alone.
  */
 fun Todo.occurrenceStartsBetween(from: LocalDate, to: LocalDate): List<LocalDate> {
-    val rule = repeat ?: return emptyList()
+    val recurrence = recurrenceSet() ?: return emptyList()
+    val rule = repeat
     val anchor = seriesAnchor ?: return emptyList()
     val offset = displayOffset(anchor)
     // Occurrences are shown under their display date, so the window sits offset days earlier here.
@@ -89,10 +99,10 @@ fun Todo.occurrenceStartsBetween(from: LocalDate, to: LocalDate): List<LocalDate
         if (isRuleOccurrence(
                 anchor,
                 rule,
-                recurrenceSet(),
+                recurrence,
                 candidate,
                 startTime = seriesStartTime(),
-                count = rule.count,
+                count = rule?.count,
                 anchorValue = start ?: due,
             )
         ) {
@@ -111,7 +121,8 @@ fun Todo.occurrenceStartsBetween(from: LocalDate, to: LocalDate): List<LocalDate
  */
 fun Todo.nextOccurrenceDate(today: LocalDate, instances: List<Todo> = emptyList()): LocalDate? {
     val anchor = seriesAnchor ?: return null
-    val rule = repeat ?: return occurrenceDate(anchor)
+    val recurrence = recurrenceSet() ?: return occurrenceDate(anchor)
+    val rule = repeat
     val offset = displayOffset(anchor)
     val covered = instanceDates(instances)
     // An occurrence is shown under its display date, so the first candidate starts that many days
@@ -122,10 +133,10 @@ fun Todo.nextOccurrenceDate(today: LocalDate, instances: List<Todo> = emptyList(
         if (isRuleOccurrence(
                 anchor,
                 rule,
-                recurrenceSet(),
+                recurrence,
                 candidate,
                 startTime = seriesStartTime(),
-                count = rule.count,
+                count = rule?.count,
                 anchorValue = start ?: due,
             )
         ) {

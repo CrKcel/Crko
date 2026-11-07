@@ -218,20 +218,14 @@ class IcsCorpusTest {
         val all = samples.joinToString("\n") { (_, body) -> body }
         val imported = importCalendar(calendar(all), utc, "Untitled")
         val exported = exportCalendar(imported.events, imported.todos, now = NOW, journals = imported.journals)
+        // Only markers the semantic signature above does NOT already pin:
+        // rule parts, alarm relatedness and participant parameters.
         listOf(
-            "DTSTART;TZID=America/New_York:20260301T090000",
-            "DTSTART;TZID=Europe/Berlin:20261027T090000",
-            "DTSTART;TZID=Custom/Plus3:20261027T090000",
-            "RDATE;TZID=Europe/Berlin:20261105T140000",
-            "RDATE;VALUE=PERIOD:20261105T140000Z/PT1H",
-            "EXDATE:20261103T090000",
             "RRULE:FREQ=YEARLY;BYDAY=MO;BYWEEKNO=1",
             "RRULE:FREQ=DAILY;BYHOUR=9,17;BYMINUTE=0",
             "TRIGGER;RELATED=END:+PT5M",
             "ORGANIZER;CN=Host:mailto:host@example.com",
             "ATTENDEE;CN=Guest;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED",
-            "BEGIN:VTODO",
-            "BEGIN:VJOURNAL",
         ).forEach { marker -> assertTrue(exported.contains(marker), "missing $marker\n$exported") }
     }
 

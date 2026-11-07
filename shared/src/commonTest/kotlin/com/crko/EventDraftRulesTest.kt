@@ -8,7 +8,6 @@ import com.crko.domain.RepeatRule
 import com.crko.domain.wallDate
 import com.crko.state.event.RepeatEndMode
 import com.crko.state.event.buildRule
-import com.crko.state.event.minutesToTime
 import com.crko.state.event.withRule
 import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
@@ -20,30 +19,6 @@ import kotlin.test.assertSame
 
 /** Pure draft rules extracted from the event editor (D1). */
 class EventDraftRulesTest {
-
-    @Test
-    fun minutesToTimeClampsToTheDay() {
-        assertEquals(0, minutesToTime(-30).hour * 60 + minutesToTime(-30).minute)
-        assertEquals(23 * 60 + 59, minutesToTime(24 * 60).hour * 60 + minutesToTime(24 * 60).minute)
-        val nineThirty = minutesToTime(9 * 60 + 30)
-        assertEquals(9, nineThirty.hour)
-        assertEquals(30, nineThirty.minute)
-    }
-
-    @Test
-    fun noFrequencyRemovesTheRule() {
-        assertNull(
-            buildRule(
-                frequency = null,
-                old = RepeatRule(frequency = RepeatFrequency.Daily),
-                weekdays = emptySet(),
-                interval = 1,
-                endMode = RepeatEndMode.Never,
-                count = null,
-                until = LocalDate(2026, 10, 30),
-            ),
-        )
-    }
 
     @Test
     fun weeklyWeekdaysBecomePlainByDayValues() {

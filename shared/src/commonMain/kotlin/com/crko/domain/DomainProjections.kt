@@ -14,7 +14,8 @@ fun Event.occursOn(
     if (status == EventStatus.Cancelled) return false
     val recurrence = recurrence
     if (recurrence == null || (recurrence.rule == null && recurrence.rdates.isEmpty())) {
-        return date >= day && date <= lastOccupiedDay
+        val first = start.displayDate(zone)
+        return date >= first && date <= displayLastOccupiedDay(zone)
     }
     return occurrenceStartOn(date, zone) != null
 }
@@ -25,12 +26,12 @@ fun Event.occurrenceStartOn(
     zone: TimeZone = TimeZone.currentSystemDefault(),
 ): LocalDate? {
     if (status == EventStatus.Cancelled) return null
-    val anchor = day
+    val anchor = start.displayDate(zone)
     val recurrence = recurrence
     if (recurrence == null || (recurrence.rule == null && recurrence.rdates.isEmpty())) {
-        return if (date >= anchor && date <= lastOccupiedDay) anchor else null
+        return if (date >= anchor && date <= displayLastOccupiedDay(zone)) anchor else null
     }
-    val span = anchor.daysTo(lastOccupiedDay).coerceAtLeast(0)
+    val span = anchor.daysTo(displayLastOccupiedDay(zone)).coerceAtLeast(0)
     // A zone projection can move an occurrence by one day, so the window has one extra day of
     // slack; an RDATE may also name an instance before the anchor.
     for (offset in 0..span + 1) {

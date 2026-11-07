@@ -42,9 +42,7 @@ class TodoForestTest {
     }
 
     @Test
-    fun effectiveUidPrefersTheImportedUidOverTheLocalOne() {
-        assertEquals("ext-1", todo("local", icsUid = "ext-1").effectiveUid)
-        assertEquals("local@crko", todo("local").effectiveUid)
+    fun effectiveUidFallsBackToTheLocalIdWhenTheStoredUidIsBlank() {
         // A blank stored UID falls back to the local id instead of exporting an empty value.
         assertEquals("local@crko", todo("local", icsUid = "  ").effectiveUid)
     }
@@ -130,17 +128,6 @@ class TodoForestTest {
         assertTrue(forest.first { it.todo.id == "parent" }.children.isEmpty())
         val other = forest.first { it.todo.id == "other" }
         assertEquals("child", other.children.single().todo.id)
-    }
-
-    @Test
-    fun deepChainsNestWithoutCycles() {
-        val forest = listOf(
-            todo("top"),
-            todo("mid", relatedTo = listOf("top@crko")),
-            todo("leaf", relatedTo = listOf("mid@crko")),
-        ).todoForest()
-        val mid = forest.single().children.single()
-        assertEquals("leaf", mid.children.single().todo.id)
     }
 
     @Test

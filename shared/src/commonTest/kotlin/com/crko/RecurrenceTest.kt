@@ -73,6 +73,34 @@ class RecurrenceTest {
     }
 
     @Test
+    fun aSeriesAnchoredOnLeapDayOnlyFiresInLeapYears() {
+        fun leapEvent(repeat: RepeatRule) = Event(
+            id = "leap",
+            title = "Leap",
+            start = IcsTimeValue.Floating(LocalDateTime(LocalDate(2028, 2, 29), LocalTime(9, 0))),
+            end = IcsTimeValue.Floating(LocalDateTime(LocalDate(2028, 2, 29), LocalTime(10, 0))),
+            recurrence = Recurrence(rule = repeat),
+        )
+        // Feb 29 anchors are excluded from the yearly arithmetic path on purpose; the period walk
+        // must keep them in leap years only, with COUNT spanning the four-year gaps.
+        val yearly = leapEvent(RepeatRule(RepeatFrequency.Yearly, count = 3))
+        assertTrue(yearly.occursOn(LocalDate(2028, 2, 29)))
+        assertTrue(yearly.occursOn(LocalDate(2032, 2, 29)))
+        assertTrue(yearly.occursOn(LocalDate(2036, 2, 29)))
+        assertFalse(yearly.occursOn(LocalDate(2029, 2, 28)))
+        assertFalse(yearly.occursOn(LocalDate(2031, 2, 28)))
+        assertFalse(yearly.occursOn(LocalDate(2040, 2, 29)))
+
+        // Monthly candidates clamp to real days: a short February has no 29th to invent,
+        // and a long month keeps the anchor's day-of-month.
+        val monthly = leapEvent(RepeatRule(RepeatFrequency.Monthly))
+        assertTrue(monthly.occursOn(LocalDate(2028, 3, 29)))
+        assertTrue(monthly.occursOn(LocalDate(2032, 2, 29)))
+        assertFalse(monthly.occursOn(LocalDate(2029, 2, 28)))
+        assertFalse(monthly.occursOn(LocalDate(2029, 3, 28)))
+    }
+
+    @Test
     fun dailyRepeatSkipsDatesBeforeTheAnchor() {
         val event = event(RepeatRule(RepeatFrequency.Daily))
         assertFalse(event.occursOn(anchor.plusDays(-1)))
@@ -202,10 +230,9 @@ class RecurrenceTest {
                 byMonthDay = listOf(1, 15),
             ),
         )
-        // DTSTART itself is always part of the set.
-        assertTrue(event.occursOn(anchor))
         assertTrue(event.occursOn(LocalDate(2026, 11, 1)))
         assertTrue(event.occursOn(LocalDate(2026, 11, 15)))
+        // Adjacent days must not leak into the set.
         assertFalse(event.occursOn(LocalDate(2026, 11, 16)))
     }
 

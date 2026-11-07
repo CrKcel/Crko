@@ -140,25 +140,27 @@ private data class CalendarMeta(
 
 /**
  * Reads `METHOD`, `X-WR-CALNAME` and the published refresh interval from the calendar components.
- * The first calendar that carries a value wins, so a bundle of calendars still parses sensibly.
+ * The first calendar that carries a value wins, so a bundle of calendars still parses sensibly;
+ * `X-PUBLISHED-TTL` is only the fallback when no `REFRESH-INTERVAL` appears anywhere.
  */
 private fun readCalendarMeta(calendars: List<IcsComponent>): CalendarMeta {
     var method: ItipMethod? = null
     var name: String? = null
     var refreshMinutes: Int? = null
+    var publishedTtlMinutes: Int? = null
     calendars.forEach { calendar ->
         calendar.properties.forEach { line ->
             when (line.name) {
                 "METHOD" -> method = ItipMethod.parse(line.value) ?: method
                 "X-WR-CALNAME" -> name = unescapeText(line.value).trim().takeIf { it.isNotEmpty() } ?: name
-                "REFRESH-INTERVAL", "X-PUBLISHED-TTL" -> {
-                    val minutes = parseDurationMinutes(line.value)?.takeIf { it > 0 }
-                    if (minutes != null) refreshMinutes = minutes
-                }
+                "REFRESH-INTERVAL" -> refreshMinutes =
+                    refreshMinutes ?: parseDurationMinutes(line.value)?.takeIf { it > 0 }
+                "X-PUBLISHED-TTL" -> publishedTtlMinutes =
+                    publishedTtlMinutes ?: parseDurationMinutes(line.value)?.takeIf { it > 0 }
             }
         }
     }
-    return CalendarMeta(method, name, refreshMinutes)
+    return CalendarMeta(method, name, refreshMinutes ?: publishedTtlMinutes)
 }
 
 /** Total number of records a message may point at; beyond that the summary stays honest anyway. */

@@ -112,6 +112,32 @@ class CalendarMergeTest {
     }
 
     @Test
+    fun anUnparseableDtStampFallsThroughToLastModified() {
+        // A malformed DTSTAMP must hide neither side's LAST-MODIFIED: the tie on SEQUENCE is then
+        // broken by the timestamps instead of the incoming copy always losing.
+        val base = event(
+            "Stored", "e-1", sequence = 1,
+            dtStamp = "2026-10-01T00:00:00Z",
+        )
+        val newer = mergeEvents(
+            base = listOf(base),
+            incoming = listOf(
+                event(
+                    "Newer", "e-1", id = null, sequence = 1,
+                    dtStamp = "not-a-date",
+                    lastModified = "2026-10-02T00:00:00Z",
+                ),
+            ),
+            cancelledUids = emptySet(),
+            source = null,
+            removeVanished = false,
+            idProvider = newIds(),
+        )
+        assertEquals(1, newer.changed)
+        assertEquals("Newer", newer.items.single().title)
+    }
+
+    @Test
     fun aRenamedSourceTakesOverProvenanceWithoutReplacingTheRecord() {
         val base = event("Same", "e-1", sequence = 0, importSource = "old.ics")
         val result = mergeEvents(

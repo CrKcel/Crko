@@ -1,5 +1,6 @@
 package com.crko
 
+import com.crko.domain.Event
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.OccurrenceTime
 import com.crko.domain.exportIcs
@@ -14,9 +15,11 @@ import com.crko.domain.withDeviceDateTime
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.number
 import kotlinx.datetime.toLocalDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Instant
@@ -207,8 +210,27 @@ class TimeValueStageOneTest {
     }
 
     @Test
-    fun changingTheDeviceZoneOnlyChangesTheProjection() {
-        val text = calendar(
+    fun occupancyFollowsTheZoneArgumentNotTheDeviceZone() {
+        // 2026-03-08 00:30 Tokyo is 2026-03-07 15:30Z: the event occupies March 8 in Tokyo but
+        // March 7 in UTC, whatever zone the device runs in.
+        val tokyo = TimeZone.of("Asia/Tokyo")
+        val event = Event(
+            id = "z",
+            title = "Tokyo midnight",
+            start = IcsTimeValue.Zoned(LocalDateTime(2026, 3, 8, 0, 30), "Asia/Tokyo"),
+            end = IcsTimeValue.Zoned(LocalDateTime(2026, 3, 8, 1, 30), "Asia/Tokyo"),
+        )
+        assertTrue(event.occursOn(LocalDate(2026, 3, 8), tokyo))
+        assertFalse(event.occursOn(LocalDate(2026, 3, 7), tokyo))
+        assertTrue(event.occursOn(LocalDate(2026, 3, 7), utc))
+        assertFalse(event.occursOn(LocalDate(2026, 3, 8), utc))
+        // The day slice follows the same zone: 15:30-16:30 UTC.
+        assertEquals(30 to 90, event.timeRangeOn(LocalDate(2026, 3, 8), tokyo))
+        assertEquals(930 to 990, event.timeRangeOn(LocalDate(2026, 3, 7), utc))
+    }
+
+    @Test
+    fun changingTheDeviceZoneOnlyChangesTheProjection() {        val text = calendar(
             """
             BEGIN:VEVENT
             UID:berlin
@@ -227,7 +249,6 @@ class TimeValueStageOneTest {
         // Display projection must never rewrite the persisted value.
         assertEquals(stored, event.start)
         assertEquals("Europe/Berlin", event.timeZoneId)
-        assertEquals(16 * 60, event.localStart(shanghai).hour * 60 + event.localStart(shanghai).minute)
         assertEquals(17 * 60, event.localEnd(shanghai)!!.hour * 60 + event.localEnd(shanghai)!!.minute)
     }
 

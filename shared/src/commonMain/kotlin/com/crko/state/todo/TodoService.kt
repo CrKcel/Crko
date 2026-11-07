@@ -11,6 +11,7 @@ import com.crko.domain.TodoStatus
 import com.crko.domain.coach.TaskCoaching
 import com.crko.domain.displayDate
 import com.crko.domain.effectiveUid
+import com.crko.domain.isSeries
 import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.occursOn
 import com.crko.domain.recurrenceSlotOn
@@ -69,7 +70,7 @@ internal class TodoService(
             // their slots, so the lookup is scoped to the calendar that holds the master.
             val instances = calendar.todos.filter { it.isOccurrence }
             calendar.todos.map { todo ->
-                todo.id to if (todo.repeat != null) {
+                todo.id to if (todo.isSeries) {
                     todo.nextOccurrenceDate(today, instances)?.toString()
                 } else {
                     todo.dueDay?.toString()
@@ -80,7 +81,7 @@ internal class TodoService(
 
     /** Display date the todo lists show for [todo]; null for an undated one-off todo. */
     fun nextOccurrence(todo: Todo): LocalDate? =
-        if (todo.repeat != null) todo.nextOccurrenceDate(today(), occurrencesOf(todo)) else todo.dueDay
+        if (todo.isSeries) todo.nextOccurrenceDate(today(), occurrencesOf(todo)) else todo.dueDay
 
     /** Occurrence instances stored next to [master] in the same calendar. */
     private fun occurrencesOf(master: Todo): List<Todo> =
@@ -352,8 +353,9 @@ internal class TodoService(
             ?: return WriteResult.Success
         val calendar = state.calendars[index]
         val master = calendar.todos.first { it.id == id }
-        // Without a rule the record completes itself; only a series needs an occurrence instance.
-        if (master.repeat == null) {
+        // Without a recurrence set (not even added dates) the record completes itself; only a
+        // series needs an occurrence instance.
+        if (!master.isSeries) {
             if (!master.done) setTodoDone(id, true)
             return WriteResult.Success
         }

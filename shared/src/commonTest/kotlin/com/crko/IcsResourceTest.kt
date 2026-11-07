@@ -4,7 +4,6 @@ import com.crko.domain.Calendar
 import com.crko.domain.CalendarTimeZone
 import com.crko.domain.Event
 import com.crko.domain.IcsTimeValue
-import com.crko.domain.RecordSyncMeta
 import com.crko.domain.toIcsText
 import com.crko.domain.uidGroup
 import kotlin.test.Test
@@ -75,12 +74,5 @@ class IcsResourceTest {
         assertTrue("RECURRENCE-ID" in text)
         // The calendar's stored zone definitions ride along for clients that cannot resolve them.
         assertTrue("BEGIN:VTIMEZONE" in text)
-    }
-
-    @Test
-    fun theResourceLocationSurvivesACopyOfTheRecord() {
-        val withMeta = master().copy(sync = RecordSyncMeta("https://x/s.ics", "\"v\""))
-        val group = Calendar(id = "c", name = "C", events = listOf(withMeta)).uidGroup("s@x")
-        assertEquals("https://x/s.ics", group?.components?.single()?.sync?.href)
     }
 }

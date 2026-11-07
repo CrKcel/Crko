@@ -100,7 +100,7 @@ internal class Fixture(
 ) {
     var ids = 0
     private val scope = TestScope(StandardTestDispatcher())
-    // 2026-10-27T09:00:00Z == 17:00 in Singapore.
+    // 2026-10-27T11:40:00Z == 19:40 in Singapore.
     val holder = AppStateHolder(
         scope = scope,
         initialSystemLocale = locale,

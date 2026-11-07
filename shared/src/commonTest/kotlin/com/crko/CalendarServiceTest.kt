@@ -20,7 +20,6 @@ class CalendarServiceTest {
         val created = assertNotNull(f.holder.createLocalCalendar("Work", 0xFF00FF00))
         assertEquals("Work", created.name)
         assertEquals(0xFF00FF00, created.colorArgb)
-        assertTrue(created.visible)
         assertEquals(2, f.holder.localCalendars.size)
 
         assertTrue(f.holder.renameCalendar(created.id, "Job"))

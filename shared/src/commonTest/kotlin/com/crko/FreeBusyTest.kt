@@ -2,6 +2,7 @@ package com.crko
 
 import com.crko.domain.BusyInterval
 import com.crko.domain.BusyType
+import com.crko.domain.EndOfDayMinutes
 import com.crko.domain.Event
 import com.crko.domain.EventStatus
 import com.crko.domain.EventTransparency
@@ -15,11 +16,10 @@ import com.crko.domain.freeGaps
 import com.crko.domain.importCalendar
 import com.crko.domain.mergeAdjacent
 import com.crko.domain.mergeBusyPeriods
-import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
-import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -127,6 +127,30 @@ class FreeBusyTest {
     }
 
     @Test
+    fun busyTimesOnADstChangeDaySitAtTheirWallClockTimes() {
+        val newYork = TimeZone.of("America/New_York")
+        // 2026-03-08 springs forward: midnight is EST (-05:00) but 14:00 wall clock is EDT (-04:00),
+        // so the fixed midnight offset put the period an hour late.
+        val events = listOf(event("A", "2026-03-08", 14 * 60, 15 * 60))
+        val intervals = events.busyIntervals(instant("2026-03-08T00:00:00"), instant("2026-03-09T00:00:00"), newYork)
+        assertEquals(1, intervals.size)
+        assertEquals(Instant.parse("2026-03-08T18:00:00Z"), intervals.single().start)
+        assertEquals(Instant.parse("2026-03-08T19:00:00Z"), intervals.single().end)
+    }
+
+    @Test
+    fun anAllDayEventOnADstChangeDaySpansExactlyThatDay() {
+        val newYork = TimeZone.of("America/New_York")
+        // A 25-hour day: the end must be the next midnight in the zone, not midnight + 24h. The
+        // window reaches into November 2 because the period itself ends at 05:00Z that day.
+        val events = listOf(event("A", "2026-11-01", 0, EndOfDayMinutes, allDay = true))
+        val intervals = events.busyIntervals(instant("2026-11-01T00:00:00"), instant("2026-11-03T00:00:00"), newYork)
+        assertEquals(1, intervals.size)
+        assertEquals(Instant.parse("2026-11-01T04:00:00Z"), intervals.single().start)
+        assertEquals(Instant.parse("2026-11-02T05:00:00Z"), intervals.single().end)
+    }
+
+    @Test
     fun freeGapsLeaveTheSlotsBetweenMeetings() {
         val busy = listOf(
             event("Morning", "2026-03-01", 540, 600),
@@ -205,11 +229,5 @@ class FreeBusyTest {
         val events = listOf(event("A", "2026-04-01", 600, 660))
         assertTrue(events.busyIntervals(from, to, Zone).isEmpty())
         assertTrue(events.busyIntervals(from, from, Zone).isEmpty())
-    }
-
-    @Test
-    fun localDateParsingStaysConsistent() {
-        // Sanity guard for the fixtures above: the UTC day bound maps to itself.
-        assertEquals(LocalDate(2026, 3, 1), instant("2026-03-01T00:00:00").toLocalDateTime(Zone).date)
     }
 }

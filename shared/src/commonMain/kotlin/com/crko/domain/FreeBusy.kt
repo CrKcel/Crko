@@ -61,13 +61,23 @@ data class BusyInterval(
 
 /** Time spent busy on [date] between [startMinutes] and [endMinutes] of [zone]. */
 internal fun busyIntervalOf(type: BusyType, date: LocalDate, startMinutes: Int, endMinutes: Int, zone: TimeZone): BusyInterval {
-    val dayStart = LocalDateTime(date, LocalTime(0, 0)).toInstant(zone).toEpochMilliseconds()
+    val end = endMinutes.coerceAtLeast(startMinutes)
     return BusyInterval(
         type = type,
-        startMs = dayStart + startMinutes * 60_000L,
-        endMs = dayStart + endMinutes.coerceAtLeast(startMinutes) * 60_000L,
+        startMs = minuteOfDayOn(date, startMinutes, zone),
+        endMs = minuteOfDayOn(date, end, zone),
     )
 }
+
+/**
+ * Wall-clock minute-of-day on [date] resolved through [zone] — not a fixed offset from midnight, or
+ * every period after a DST transition would sit an hour off and a 24:00 end would miss midnight.
+ */
+private fun minuteOfDayOn(date: LocalDate, minutes: Int, zone: TimeZone): Long =
+    LocalDateTime(
+        date.plusDays(minutes / EndOfDayMinutes),
+        LocalTime((minutes % EndOfDayMinutes) / 60, minutes % 60),
+    ).toInstant(zone).toEpochMilliseconds()
 
 /**
  * Busy periods of [this] event list within [from] (inclusive) and [to] (exclusive). Cancelled and
@@ -95,8 +105,9 @@ fun List<Event>.busyIntervals(
         }
         // An occurrence can start before the window and still cover part of it; back up by the
         // event's own span so multi-day records are not clipped to the window's first day.
-        val backOffset = event.day.daysTo(event.endDay) + 1
-        val scanStart = maxOf(event.day, firstDay.plusDays(-backOffset))
+        val zoneDay = event.start.displayDate(zone)
+        val backOffset = zoneDay.daysTo(event.displayEndDay(zone)) + 1
+        val scanStart = maxOf(zoneDay, firstDay.plusDays(-backOffset))
         var date = scanStart
         while (date <= lastDay) {
             if (event.occursOn(date, zone)) {

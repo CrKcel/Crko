@@ -358,6 +358,45 @@ class CloudSyncTest {
     }
 
     @Test
+    fun pullFollowsTheCursorAcrossPagesUntilAShortOne() = runTest {
+        val outbox = MemoryOutboxStore()
+        val accounts = MemoryCloudAccountStore()
+        val secrets = FakeSecrets()
+        val http = FakeHttp()
+        val clock = FakeClock()
+        signedIn(accounts, secrets)
+        accounts.saveBootstrapped(true)
+        // A full page (CloudPullPage == 200) must keep the loop going; tombstones need no sealed
+        // payload, so the page can be filler.
+        val fullPage = (0 until 200).joinToString(",") { i ->
+            """{"kind":"event","key":"local/t$i@crko/","seq":1,"ts":100,"deleted":true}"""
+        }
+        val remote = event("remote-paged", "From page two", uid = "paged@crko", sequence = 2)
+        val payload = crypto.sealText(
+            encKey,
+            AppJson.encodeToString(Event.serializer(), remote),
+            "crko/v1|event|local/paged@crko/",
+        )
+        http.enqueue(200, """{"cursor":1,"changes":[$fullPage]}""")
+        http.enqueue(
+            200,
+            """{"cursor":2,"changes":[{"kind":"event","key":"local/paged@crko/","seq":2,"ts":100,"deleted":false,"payload":"$payload"}]}""",
+        )
+        val access = FakeAccess(AppState(calendars = listOf(Calendar.local())))
+        val service = syncService(access, outbox, accounts, secrets, http, clock, pushService(access, outbox, accounts, secrets, http, clock), mutableListOf())
+
+        service.syncNow()
+
+        // The content of the short page is applied and its cursor is the one that persists.
+        assertEquals("From page two", access.state.calendars.first().events.single().title)
+        assertEquals(2, accounts.loadCursor())
+        val pulls = http.requests.filter { it.method == "GET" }
+        assertEquals(2, pulls.size)
+        assertTrue(pulls[0].url.contains("cursor=0&"), pulls[0].url)
+        assertTrue(pulls[1].url.contains("cursor=1&"), pulls[1].url)
+    }
+
+    @Test
     fun pullSkipsRecordsWithPendingCloudRows() = runTest {
         val outbox = MemoryOutboxStore()
         val accounts = MemoryCloudAccountStore()

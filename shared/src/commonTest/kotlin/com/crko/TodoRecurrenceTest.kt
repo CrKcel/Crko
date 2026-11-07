@@ -2,10 +2,12 @@ package com.crko
 
 import com.crko.domain.IcsTimeValue
 import com.crko.domain.OrdinalWeekday
+import com.crko.domain.RecurrenceDate
 import com.crko.domain.RepeatFrequency
 import com.crko.domain.RepeatRule
 import com.crko.domain.Todo
 import com.crko.domain.TodoStatus
+import com.crko.domain.isSeries
 import com.crko.domain.nextOccurrenceDate
 import com.crko.domain.occurrenceDate
 import com.crko.domain.occurrenceStartsBetween
@@ -52,6 +54,30 @@ class TodoRecurrenceTest {
         )
         assertFalse(todo.occursOn(LocalDate(2026, 10, 12)))
         assertEquals(LocalDate(2026, 10, 19), todo.nextOccurrenceDate(LocalDate(2026, 10, 12)))
+    }
+
+    @Test
+    fun anRdateOnlySeriesProjectsBeyondItsStoredDue() {
+        // The importer maps RDATE-without-RRULE onto rDates: such a series must project its added
+        // dates everywhere `occursOn` does, not collapse to the stored due like a one-off.
+        val todo = Todo(
+            id = "t3",
+            title = "Sessions",
+            start = IcsTimeValue.Date(LocalDate(2026, 10, 5)),
+            due = IcsTimeValue.Date(LocalDate(2026, 10, 6)),
+            rDates = listOf(RecurrenceDate(IcsTimeValue.Date(LocalDate(2026, 10, 19)))),
+        )
+        assertTrue(todo.isSeries)
+        assertTrue(todo.occursOn(LocalDate(2026, 10, 6)))
+        assertTrue(todo.occursOn(LocalDate(2026, 10, 20)))
+        assertFalse(todo.occursOn(LocalDate(2026, 10, 19)))
+        assertEquals(LocalDate(2026, 10, 20), todo.nextOccurrenceDate(LocalDate(2026, 10, 9)))
+        assertEquals(LocalDate(2026, 10, 20), todo.nextOccurrenceDate(LocalDate(2026, 10, 20)))
+        // Occurrence starts: the stored anchor plus the added date (both shown one day later).
+        assertEquals(
+            listOf(LocalDate(2026, 10, 5), LocalDate(2026, 10, 19)),
+            todo.occurrenceStartsBetween(LocalDate(2026, 10, 1), LocalDate(2026, 10, 31)),
+        )
     }
 
     @Test

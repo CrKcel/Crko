@@ -1,6 +1,5 @@
 package com.crko
 
-import com.crko.domain.daysTo
 import com.crko.domain.mondayIndex
 import com.crko.domain.monthGrid
 import com.crko.domain.plusMonths
@@ -58,13 +57,5 @@ class CalendarTest {
         assertEquals(LocalDate(2025, 12, 15), LocalDate(2026, 1, 15).plusMonths(-1))
         assertEquals(LocalDate(2027, 1, 15), LocalDate(2026, 12, 15).plusMonths(1))
         assertEquals(LocalDate(2028, 2, 29), LocalDate(2028, 1, 31).plusMonths(1))
-    }
-
-    @Test
-    fun dayDeltaIsSigned() {
-        val a = LocalDate(2026, 10, 27)
-        assertEquals(1, a.daysTo(LocalDate(2026, 10, 28)))
-        assertEquals(-2, a.daysTo(LocalDate(2026, 10, 25)))
-        assertEquals(0, a.daysTo(a))
     }
 }

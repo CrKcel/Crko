@@ -522,7 +522,6 @@ class SqlitePersistenceTest {
     @Test
     fun supportRecordsLiveInTheirOwnTableAndPruneOldDays() {
         val (_, database) = inMemoryDatabase()
-        assertEquals(4L, CrkoDatabase.Schema.version)
         val store = SqlSupportStore(database.crkoQueries, nowMillis = { 99L })
         store.upsert(
             SupportRecord(

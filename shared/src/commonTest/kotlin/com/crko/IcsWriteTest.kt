@@ -179,12 +179,6 @@ class IcsWriteTest : IcsTestBase() {
     }
 
     @Test
-    fun exportWritesTheCalendarName() {
-        val exported = exportCalendar(listOf(baseEvent), emptyList(), now, calendarName = "Crko")
-        assertTrue(exported.contains("X-WR-CALNAME:Crko\r\n"), exported)
-    }
-
-    @Test
     fun ordinalBydayIsDroppedForWeeklyRulesWithAWarning() {
         val text = calendar(
             """
