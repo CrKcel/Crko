@@ -12,8 +12,8 @@ import com.crko.state.todo.TodoDraft
 import kotlinx.datetime.LocalDate
 
 /**
- * Form state for [TodoEditorDialog], shared by the dialog and the advanced-settings page so both
- * edit the same draft and either one can save it. Holds every field the editor edits.
+ * Form state for [TodoEditorDialog]: the core form and every field behind the icon row edit this
+ * one draft, so a save from the dialog submits the whole thing. Holds every field the editor edits.
  */
 @Stable
 internal class TodoEditorState(

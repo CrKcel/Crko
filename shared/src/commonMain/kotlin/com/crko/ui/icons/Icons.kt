@@ -120,6 +120,56 @@ object AppIcons {
         icon("Back", "M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z")
     }
 
+    /** Calendar with one marked day; the todo editor's due-date toggle. */
+    val Calendar: ImageVector by lazy {
+        icon(
+            "Calendar",
+            "M17 12h-5v5h5v-5zM16 1v2h-8V1H6v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-1V1h-2zm3 18H5V8h14v11z",
+            evenOdd = true,
+        )
+    }
+
+    /** Calendar with a row of marked days; the todo editor's start-to-due-range toggle. */
+    val DateRange: ImageVector by lazy {
+        icon(
+            "DateRange",
+            "M7 11h2v2H7zM11 11h2v2h-2zM15 11h2v2h-2z" +
+                "M16 1v2h-8V1H6v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-1V1h-2zm3 18H5V8h14v11z",
+            evenOdd = true,
+        )
+    }
+
+    /** Outlined flag; the todo editor's priority toggle. */
+    val Flag: ImageVector by lazy {
+        icon("Flag", "M14.4 6 14 4H5v17h2v-7h5.6l.4 2h7V6h-5.6z")
+    }
+
+    /** Pie chart; the todo editor's progress toggle. */
+    val Progress: ImageVector by lazy {
+        icon(
+            "Progress",
+            "M11 2v20c-5.07-.5-9-4.79-9-10s3.93-9.5 9-10zm2.03 0v8.99H22c-.47-4.74-4.24-8.52-8.97-8.99zm0 11.01V22c4.74-.47 8.5-4.25 8.97-8.99h-8.97z",
+        )
+    }
+
+    /** Map pin; the todo editor's location toggle. */
+    val Location: ImageVector by lazy {
+        icon(
+            "Location",
+            "M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5z",
+            evenOdd = true,
+        )
+    }
+
+    /** Price tag; the todo editor's categories toggle. */
+    val Tag: ImageVector by lazy {
+        icon(
+            "Tag",
+            "M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58.55 0 1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z",
+            evenOdd = true,
+        )
+    }
+
     val Forward: ImageVector by lazy {
         icon("Forward", "M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8-8-8z")
     }

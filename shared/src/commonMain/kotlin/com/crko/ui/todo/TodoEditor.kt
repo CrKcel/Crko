@@ -1,29 +1,27 @@
 package com.crko.ui.todo
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -45,7 +44,6 @@ import com.crko.domain.startOfMonth
 import com.crko.i18n.Strings
 import com.crko.state.todo.TodoDraft
 import com.crko.ui.components.CalendarChips
-import com.crko.ui.components.GlassNavigationBarDefaults
 import com.crko.ui.icons.AppIcons
 import com.crko.ui.schedule.WeekMonthCalendar
 import com.crko.ui.schedule.priorityColor
@@ -54,7 +52,6 @@ import kotlinx.datetime.LocalDate
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.window.WindowDialog
@@ -63,12 +60,14 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 /** Completion percentages offered as one-tap chips. */
 private val PercentSteps = listOf(0, 25, 50, 75, 100)
 
+/** The optional fields the icon row toggles; one of them is expanded at a time. */
+private enum class TodoField { Due, Range, Priority, Progress, Location, Categories }
+
 /**
  * One dialog for both creating and editing a todo. In edit mode [initial] prefills every field; a
- * subtask reuses the same layout with [parent] naming its parent. The advanced-settings page
- * opened from the dialog's action row carries the complete form — the same fields plus the advanced
- * ones and
- * its own save — so a todo can be added without going back. Both surfaces share [TodoEditorState].
+ * subtask reuses the same layout with [parent] naming its parent. The core form carries the merged
+ * title/note field and the calendar picker; everything else — the date pickers, priority, progress,
+ * location and categories — folds behind a row of small icons, each expanding its editor inline.
  * [onSave] receives the draft and the calendar picked for a new top-level todo.
  */
 @Composable
@@ -99,14 +98,9 @@ internal fun TodoEditorDialog(
     // keeping the last session's input.
     var session by remember { mutableIntStateOf(0) }
     val state = rememberTodoEditorState(editingTarget, parentTarget, session, defaultCalendarId)
-    // Whether the advanced-settings page is open above the dialog; reset per session so a reopened
-    // dialog always lands on the main form.
-    var advanced by remember(editingTarget, parentTarget, session) { mutableStateOf(false) }
-    // Set when the page itself saved: that path never runs the dialog's dismiss animation, so the
-    // session reset waits for the page to finish animating out instead. While it is set, the
-    // dialog's own hide animation may still be finishing (a save tapped right after opening the
-    // page); its dismiss-finished callback must not reset the form the exiting page still shows.
-    var resetPending by remember { mutableStateOf(false) }
+    // Which optional field is expanded under the icon row; keyed like the state so a reopened
+    // dialog starts with every section folded.
+    var expanded by remember(editingTarget, parentTarget, session) { mutableStateOf<TodoField?>(null) }
 
     val dialogTitle = when {
         editingTarget != null -> strings.todoEdit
@@ -114,162 +108,25 @@ internal fun TodoEditorDialog(
         else -> strings.todoNew
     }
 
-    // Both surfaces submit the same draft; only a new top-level todo picks where it lives.
-    val saveDraft: () -> Boolean = {
-        onSave(state.buildDraft(), if (state.picksCalendar) state.calendarId else null)
-    }
-
-    // The advanced-settings page takes over while open: the dialog hides so the page renders above
-    // the shell (a dialog window would otherwise float over it). The session reset is skipped for
-    // that round-trip, keeping everything the user entered.
     WindowDialog(
-        show = show && !advanced,
+        show = show,
         onDismissRequest = onDismiss,
-        onDismissFinished = { if (!advanced && !resetPending) session += 1 },
+        onDismissFinished = { session += 1 },
         title = dialogTitle,
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            TodoFormCore(strings = strings, today = today, state = state, calendars = calendars)
+            TodoFormCore(strings = strings, state = state, calendars = calendars)
             Spacer(Modifier.height(12.dp))
-            // The advanced entry shares the save button's row so the dialog stays short.
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AdvancedEntry(text = strings.advancedSettings, onClick = { advanced = true })
-                Button(
-                    onClick = { if (saveDraft()) onDismiss() },
-                    enabled = state.canSave,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColorsPrimary(),
-                ) {
-                    Text(strings.save)
-                }
-            }
-        }
-    }
-
-    // Page visibility is a transition state so the reset deferred by the page's save can wait for
-    // the exit animation instead of blanking the form mid-flight.
-    val pageVisible = remember { MutableTransitionState(false) }
-    pageVisible.targetState = advanced
-    AnimatedVisibility(
-        visibleState = pageVisible,
-        enter = slideInHorizontally { it } + fadeIn(),
-        exit = slideOutHorizontally { it } + fadeOut(),
-    ) {
-        TodoAdvancedPage(
-            strings = strings,
-            today = today,
-            state = state,
-            calendars = calendars,
-            onSaveFromPage = {
-                if (saveDraft()) {
-                    resetPending = true
-                    onDismiss()
-                    advanced = false
-                }
-            },
-            onBack = { advanced = false },
-        )
-    }
-
-    LaunchedEffect(pageVisible.isIdle) {
-        if (resetPending && pageVisible.isIdle && !pageVisible.currentState) {
-            resetPending = false
-            session += 1
-        }
-    }
-}
-
-/**
- * The advanced-settings page, a full-screen page above the tab shell like the settings page. It
- * carries the complete form — the dialog's fields plus the advanced ones and its own save — so a
- * todo can be added without going back. Everything binds straight to the shared [state]; [onBack]
- * only navigates.
- */
-@Composable
-private fun TodoAdvancedPage(
-    strings: Strings,
-    today: LocalDate,
-    state: TodoEditorState,
-    calendars: List<Calendar>,
-    onSaveFromPage: () -> Unit,
-    onBack: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MiuixTheme.colorScheme.background)
-            .statusBarsPadding(),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(end = 16.dp, bottom = 4.dp),
-        ) {
-            IconButton(onClick = onBack, backgroundColor = Color.Transparent) {
-                Icon(
-                    imageVector = AppIcons.Back,
-                    contentDescription = strings.back,
-                    tint = MiuixTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-            Text(
-                text = strings.advancedSettings,
-                style = MiuixTheme.textStyles.title1,
-                fontWeight = FontWeight.Bold,
-            )
-        }
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
-                .padding(bottom = GlassNavigationBarDefaults.bottomMargin() + 12.dp),
-        ) {
-            TodoFormCore(
+            TodoFieldIconRow(
                 strings = strings,
-                today = today,
                 state = state,
-                calendars = calendars,
-                showStartDate = true,
+                expanded = expanded,
+                onToggle = { field -> expanded = if (expanded == field) null else field },
             )
-            Spacer(Modifier.height(12.dp))
-            SectionCaption(strings.priority)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PriorityChip(strings.priorityHigh, TodoPriority.High, state.priority, { state.priority = it }, Modifier.weight(1f))
-                PriorityChip(strings.priorityNormal, TodoPriority.Normal, state.priority, { state.priority = it }, Modifier.weight(1f))
-                PriorityChip(strings.priorityLow, TodoPriority.Low, state.priority, { state.priority = it }, Modifier.weight(1f))
-            }
-            Spacer(Modifier.height(12.dp))
-            SectionCaption(strings.progress)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PercentSteps.forEach { step ->
-                    PercentChip(step, state.percent, { state.percent = it }, Modifier.weight(1f))
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-            TextField(
-                value = state.location,
-                onValueChange = { state.location = it },
-                label = strings.locationField,
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(12.dp))
-            TextField(
-                value = state.categoriesText,
-                onValueChange = { state.categoriesText = it },
-                label = strings.categoriesField,
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            TodoFieldSection(strings = strings, today = today, state = state, field = expanded)
             Spacer(Modifier.height(16.dp))
             Button(
-                onClick = onSaveFromPage,
+                onClick = { if (state.canSave && onSave(state.buildDraft(), if (state.picksCalendar) state.calendarId else null)) onDismiss() },
                 enabled = state.canSave,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColorsPrimary(),
@@ -281,18 +138,16 @@ private fun TodoAdvancedPage(
 }
 
 /**
- * The form fields both editor surfaces share: the merged title/note field, calendar picker and the
- * date fields, in the same order and spacing. The field's first line is the title, the rest is the
- * note. With [showStartDate] the start date sits under the due date. Everything binds straight to
- * the shared [state]; each surface adds its own fields and actions around this.
+ * The form fields every editor session shares: the merged title/note field — the first line is the
+ * title, everything after the first line break is the note — and the calendar picker for a new
+ * top-level todo. The optional fields live behind the icon row instead of here. Everything binds
+ * straight to the shared [state].
  */
 @Composable
 private fun TodoFormCore(
     strings: Strings,
-    today: LocalDate,
     state: TodoEditorState,
     calendars: List<Calendar>,
-    showStartDate: Boolean = false,
 ) {
     TextField(
         value = state.bodyText,
@@ -311,33 +166,203 @@ private fun TodoFormCore(
             onSelect = { state.calendarId = it },
         )
     }
-    Spacer(Modifier.height(12.dp))
-    if (showStartDate) {
-        DateRangeCalendar(
-            strings = strings,
-            today = today,
-            start = state.start,
-            due = state.due,
-            onStart = { state.start = it },
-            onDue = { state.due = it },
-        )
-    } else {
-        WeekCalendar(
+}
+
+/**
+ * The optional fields as a row of small icons: tapping one expands its editor under the row and
+ * swaps the previously open one out — one section at a time keeps the dialog short. A tap light
+ * marks the fields whose value is non-default, so set fields stay discoverable while folded away.
+ */
+@Composable
+private fun TodoFieldIconRow(
+    strings: Strings,
+    state: TodoEditorState,
+    expanded: TodoField?,
+    onToggle: (TodoField) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FieldToggle(
+            field = TodoField.Due,
+            icon = AppIcons.Calendar,
             label = strings.dueDate,
-            strings = strings,
-            today = today,
-            selected = state.due,
-            onSelect = { state.due = it },
+            expanded = expanded == TodoField.Due,
+            hasValue = state.due != null,
+            onToggle = onToggle,
+        )
+        FieldToggle(
+            field = TodoField.Range,
+            icon = AppIcons.DateRange,
+            label = strings.dateRange,
+            expanded = expanded == TodoField.Range,
+            hasValue = state.start != null,
+            onToggle = onToggle,
+        )
+        FieldToggle(
+            field = TodoField.Priority,
+            icon = AppIcons.Flag,
+            label = strings.priority,
+            expanded = expanded == TodoField.Priority,
+            hasValue = state.priority != TodoPriority.Normal,
+            onToggle = onToggle,
+        )
+        FieldToggle(
+            field = TodoField.Progress,
+            icon = AppIcons.Progress,
+            label = strings.progress,
+            expanded = expanded == TodoField.Progress,
+            hasValue = state.percent != 0,
+            onToggle = onToggle,
+        )
+        FieldToggle(
+            field = TodoField.Location,
+            icon = AppIcons.Location,
+            label = strings.locationField,
+            expanded = expanded == TodoField.Location,
+            hasValue = state.location.isNotBlank(),
+            onToggle = onToggle,
+        )
+        FieldToggle(
+            field = TodoField.Categories,
+            icon = AppIcons.Tag,
+            label = strings.categoriesField,
+            expanded = expanded == TodoField.Categories,
+            hasValue = state.categoriesText.isNotBlank(),
+            onToggle = onToggle,
         )
     }
 }
 
+/** One icon in the row: lit while its section is open, dotted once the field carries a value. */
+@Composable
+private fun FieldToggle(
+    field: TodoField,
+    icon: ImageVector,
+    label: String,
+    expanded: Boolean,
+    hasValue: Boolean,
+    onToggle: (TodoField) -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (expanded) MiuixTheme.colorScheme.primaryContainer else Color.Transparent)
+            .clickable { onToggle(field) },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = when {
+                expanded -> MiuixTheme.colorScheme.primary
+                hasValue -> MiuixTheme.colorScheme.onSurface
+                else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+            },
+            modifier = Modifier.size(20.dp),
+        )
+        if (hasValue) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp)
+                    .size(5.dp)
+                    .clip(CircleShape)
+                    .background(MiuixTheme.colorScheme.primary),
+            )
+        }
+    }
+}
+
 /**
- * The advanced page's date section: one calendar holding both ends of the todo's date range. The
- * first pick sets the due date, a second pick completes the range — the earlier day becomes the
- * start, swap included — and picking with both ends set restarts from that day as the new due. The
- * days between the ends take the range tint and the start end carries the small dot; picking both
- * ends folds the month back into the week strip. The caption's clear button empties both.
+ * The expanded field's editor, animated in and out under the icon row. Every field keeps its own
+ * AnimatedVisibility so a folding section keeps rendering its content through the exit animation —
+ * reading [field] directly would swap to nothing (or straight to the next field) the moment the
+ * row toggles, and the collapse would jump instead of shrinking. Switching fields folds the old
+ * section while the new one unfolds below it. The date pickers carry their own caption rows; the
+ * chip rows and text fields get a caption or a placeholder instead. Everything binds straight to
+ * the shared [state].
+ */
+@Composable
+private fun TodoFieldSection(
+    strings: Strings,
+    today: LocalDate,
+    state: TodoEditorState,
+    field: TodoField?,
+) {
+    Column {
+        TodoField.entries.forEach { entry ->
+            AnimatedVisibility(
+                visible = field == entry,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
+                Column {
+                    Spacer(Modifier.height(12.dp))
+                    when (entry) {
+                        TodoField.Due -> WeekCalendar(
+                            label = strings.dueDate,
+                            strings = strings,
+                            today = today,
+                            selected = state.due,
+                            onSelect = { state.due = it },
+                        )
+                        TodoField.Range -> DateRangeCalendar(
+                            strings = strings,
+                            today = today,
+                            start = state.start,
+                            due = state.due,
+                            onStart = { state.start = it },
+                            onDue = { state.due = it },
+                        )
+                        TodoField.Priority -> {
+                            SectionCaption(strings.priority)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                PriorityChip(strings.priorityHigh, TodoPriority.High, state.priority, { state.priority = it }, Modifier.weight(1f))
+                                PriorityChip(strings.priorityNormal, TodoPriority.Normal, state.priority, { state.priority = it }, Modifier.weight(1f))
+                                PriorityChip(strings.priorityLow, TodoPriority.Low, state.priority, { state.priority = it }, Modifier.weight(1f))
+                            }
+                        }
+                        TodoField.Progress -> {
+                            SectionCaption(strings.progress)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                PercentSteps.forEach { step ->
+                                    PercentChip(step, state.percent, { state.percent = it }, Modifier.weight(1f))
+                                }
+                            }
+                        }
+                        TodoField.Location -> TextField(
+                            value = state.location,
+                            onValueChange = { state.location = it },
+                            label = strings.locationField,
+                            useLabelAsPlaceholder = true,
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        TodoField.Categories -> TextField(
+                            value = state.categoriesText,
+                            onValueChange = { state.categoriesText = it },
+                            label = strings.categoriesField,
+                            useLabelAsPlaceholder = true,
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The range editor: one calendar holding both ends of the todo's date range. The first pick sets
+ * the due date, a second pick completes the range — the earlier day becomes the start, swap
+ * included — and picking with both ends set restarts from that day as the new due. The days
+ * between the ends take the range tint and the start end carries the small dot; picking both ends
+ * folds the month back into the week strip. The caption's clear button empties both.
  */
 @Composable
 private fun DateRangeCalendar(
@@ -452,10 +477,10 @@ private fun DateRangeCalendar(
 }
 
 /**
- * The editor's date section: a pinned weekday header over a horizontally paged week strip that
- * picks nearby days with one tap, and a caption row that folds the full month calendar open for
- * far ones — the same unfold the schedule's calendar uses. Tapping the selected day again clears
- * it, and picking from the month folds the week row back.
+ * The due-date editor: a pinned weekday header over a horizontally paged week strip that picks
+ * nearby days with one tap, and a caption row that folds the full month calendar open for far
+ * ones — the same unfold the schedule's calendar uses. Tapping the selected day again clears it,
+ * and picking from the month folds the week row back.
  */
 @Composable
 private fun WeekCalendar(
@@ -517,33 +542,6 @@ private fun WeekCalendar(
         onMonthChange = { monthAnchor = it },
         driveStrip = null,
     )
-}
-
-/** Chip in the dialog's action row opening the advanced-settings page, sized to the save button. */
-@Composable
-private fun AdvancedEntry(text: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(MiuixTheme.colorScheme.surfaceContainerHigh)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = AppIcons.Tune,
-            contentDescription = null,
-            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            modifier = Modifier.size(16.dp),
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = text,
-            style = MiuixTheme.textStyles.footnote2,
-            fontSize = 11.sp,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-    }
 }
 
 @Composable
