@@ -100,7 +100,9 @@ internal fun TodoEditorDialog(
     // dialog always lands on the main form.
     var advanced by remember(editingTarget, parentTarget, session) { mutableStateOf(false) }
     // Set when the page itself saved: that path never runs the dialog's dismiss animation, so the
-    // session reset waits for the page to finish animating out instead.
+    // session reset waits for the page to finish animating out instead. While it is set, the
+    // dialog's own hide animation may still be finishing (a save tapped right after opening the
+    // page); its dismiss-finished callback must not reset the form the exiting page still shows.
     var resetPending by remember { mutableStateOf(false) }
 
     val dialogTitle = when {
@@ -120,45 +122,11 @@ internal fun TodoEditorDialog(
     WindowDialog(
         show = show && !advanced,
         onDismissRequest = onDismiss,
-        onDismissFinished = { if (!advanced) session += 1 },
+        onDismissFinished = { if (!advanced && !resetPending) session += 1 },
         title = dialogTitle,
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            TextField(
-                value = state.title,
-                onValueChange = { state.title = it },
-                label = strings.todoTitleField,
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (state.picksCalendar && calendars.size > 1) {
-                Spacer(Modifier.height(12.dp))
-                SectionCaption(strings.calendar)
-                CalendarChips(
-                    calendars = calendars,
-                    selectedId = state.calendarId,
-                    onSelect = { state.calendarId = it },
-                )
-            }
-            Spacer(Modifier.height(16.dp))
-            SectionCaption(strings.dueDate)
-            DateRow(
-                strings = strings,
-                today = today,
-                selected = state.due,
-                onSelect = { state.due = it },
-                onCustom = { state.picking = TodoDateField.Due },
-            )
-            Spacer(Modifier.height(16.dp))
-            TextField(
-                value = state.note,
-                onValueChange = { state.note = it },
-                label = strings.noteField,
-                useLabelAsPlaceholder = true,
-                minLines = 3,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            TodoFormCore(strings = strings, today = today, state = state, calendars = calendars)
             Spacer(Modifier.height(6.dp))
             AdvancedEntry(
                 text = strings.advancedSettings,
@@ -269,41 +237,7 @@ private fun TodoAdvancedPage(
                 .padding(horizontal = 16.dp)
                 .padding(bottom = GlassNavigationBarDefaults.bottomMargin() + 12.dp),
         ) {
-            TextField(
-                value = state.title,
-                onValueChange = { state.title = it },
-                label = strings.todoTitleField,
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (state.picksCalendar && calendars.size > 1) {
-                Spacer(Modifier.height(12.dp))
-                SectionCaption(strings.calendar)
-                CalendarChips(
-                    calendars = calendars,
-                    selectedId = state.calendarId,
-                    onSelect = { state.calendarId = it },
-                )
-            }
-            Spacer(Modifier.height(16.dp))
-            SectionCaption(strings.dueDate)
-            DateRow(
-                strings = strings,
-                today = today,
-                selected = state.due,
-                onSelect = { state.due = it },
-                onCustom = { state.picking = TodoDateField.Due },
-            )
-            Spacer(Modifier.height(16.dp))
-            TextField(
-                value = state.note,
-                onValueChange = { state.note = it },
-                label = strings.noteField,
-                useLabelAsPlaceholder = true,
-                minLines = 3,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            TodoFormCore(strings = strings, today = today, state = state, calendars = calendars)
             Spacer(Modifier.height(16.dp))
             SectionCaption(strings.startDate)
             DateRow(
@@ -356,6 +290,55 @@ private fun TodoAdvancedPage(
             }
         }
     }
+}
+
+/**
+ * The form fields both editor surfaces share: title, calendar picker, due date and note, in the
+ * same order and spacing. Everything binds straight to the shared [state]; each surface adds its
+ * own fields and actions around this.
+ */
+@Composable
+private fun TodoFormCore(
+    strings: Strings,
+    today: LocalDate,
+    state: TodoEditorState,
+    calendars: List<Calendar>,
+) {
+    TextField(
+        value = state.title,
+        onValueChange = { state.title = it },
+        label = strings.todoTitleField,
+        useLabelAsPlaceholder = true,
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    if (state.picksCalendar && calendars.size > 1) {
+        Spacer(Modifier.height(12.dp))
+        SectionCaption(strings.calendar)
+        CalendarChips(
+            calendars = calendars,
+            selectedId = state.calendarId,
+            onSelect = { state.calendarId = it },
+        )
+    }
+    Spacer(Modifier.height(16.dp))
+    SectionCaption(strings.dueDate)
+    DateRow(
+        strings = strings,
+        today = today,
+        selected = state.due,
+        onSelect = { state.due = it },
+        onCustom = { state.picking = TodoDateField.Due },
+    )
+    Spacer(Modifier.height(16.dp))
+    TextField(
+        value = state.note,
+        onValueChange = { state.note = it },
+        label = strings.noteField,
+        useLabelAsPlaceholder = true,
+        minLines = 3,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 /** Row in the main dialog opening the advanced-settings page, styled like the other editor rows. */
