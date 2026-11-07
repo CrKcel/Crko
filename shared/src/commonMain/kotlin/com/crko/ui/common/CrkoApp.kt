@@ -21,6 +21,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
+import com.crko.domain.Todo
+import com.crko.domain.effectiveUid
 import com.crko.domain.occurrenceStartOn
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
@@ -77,6 +79,10 @@ internal fun CrkoApp(
     var eventEditor by remember { mutableStateOf<EventEditorTarget?>(null) }
     var eventDetail by remember { mutableStateOf<EventEditorTarget?>(null) }
     var showTodoEditor by remember { mutableStateOf(false) }
+    // Every todo editor (new, edit, subtask) is this shell's dialog: the advanced-settings page it
+    // opens must render above the tab content and the glass bar, so the editing targets live here.
+    var editingTodo by remember { mutableStateOf<Todo?>(null) }
+    var subtaskParent by remember { mutableStateOf<Todo?>(null) }
     var showCalendarSheet by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
@@ -227,6 +233,8 @@ internal fun CrkoApp(
                             },
                             onOpenFocus = { focusExpanded = true },
                             onOpenSearch = { showSearch = true },
+                            onEditTodo = { editingTodo = it },
+                            onAddSubtask = { subtaskParent = it },
                         )
                     }
                 }
@@ -336,15 +344,30 @@ internal fun CrkoApp(
     )
 
     TodoEditorDialog(
-        show = showTodoEditor,
+        show = showTodoEditor || editingTodo != null || subtaskParent != null,
         strings = strings,
         today = state.today,
-        onDismiss = { showTodoEditor = false },
+        onDismiss = {
+            showTodoEditor = false
+            editingTodo = null
+            subtaskParent = null
+        },
         onSave = { draft, calendarId ->
-            val result = state.addTodo(draft, calendarId = calendarId)
-            if (result == WriteResult.Success) state.notify(AppMessage.TodoAdded)
+            val editing = editingTodo
+            val parent = subtaskParent
+            val result = when {
+                editing != null -> state.updateTodo(editing.id, draft)
+                parent != null -> state.addTodo(draft, parentUid = parent.effectiveUid)
+                else -> {
+                    val added = state.addTodo(draft, calendarId = calendarId)
+                    if (added == WriteResult.Success) state.notify(AppMessage.TodoAdded)
+                    added
+                }
+            }
             result == WriteResult.Success
         },
+        initial = editingTodo,
+        parent = subtaskParent,
         calendars = state.editorCalendars,
         defaultCalendarId = state.newRecordCalendarId,
     )
@@ -373,6 +396,7 @@ internal fun CrkoApp(
         strings = strings,
         onDismiss = { showSearch = false },
         onOpenEvent = { event -> eventDetail = EventEditorTarget(event, null) },
+        onEditTodo = { editingTodo = it },
     )
 
     importPreview?.let { preview ->

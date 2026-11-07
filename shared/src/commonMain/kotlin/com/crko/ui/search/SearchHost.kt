@@ -15,13 +15,13 @@ import com.crko.state.search.SearchRecord
 import com.crko.ui.more.JournalEditorDialog
 import com.crko.ui.more.journalWithEdits
 import com.crko.ui.todo.TodoDetailDialog
-import com.crko.ui.todo.TodoEditorDialog
 
 /**
  * Owns the search sheet and the record cards it opens. The sheet closes when a result is tapped: a
- * todo shows its read-only detail card (editing is one tap further) and a journal opens its editor.
- * The tab that launched the search stays where it was. [onOpenEvent] hands a tapped event to the app
- * shell, which shows the detail card with the series-occurrence information it holds.
+ * todo shows its read-only detail card and a journal opens its editor. The tab that launched the
+ * search stays where it was. [onOpenEvent] hands a tapped event to the app shell, which shows the
+ * detail card with the series-occurrence information it holds; [onEditTodo] hands a todo to the
+ * shell's editor, which hosts the advanced-settings page.
  */
 @Composable
 internal fun SearchHost(
@@ -30,9 +30,9 @@ internal fun SearchHost(
     strings: Strings,
     onDismiss: () -> Unit,
     onOpenEvent: (Event) -> Unit,
+    onEditTodo: (Todo) -> Unit,
 ) {
     var viewingTodo by remember { mutableStateOf<Todo?>(null) }
-    var editingTodo by remember { mutableStateOf<Todo?>(null) }
     var editingJournal by remember { mutableStateOf<Journal?>(null) }
 
     SearchSheet(
@@ -70,23 +70,10 @@ internal fun SearchHost(
             onDismiss = { viewingTodo = null },
             onEdit = {
                 viewingTodo = null
-                editingTodo = todo
+                onEditTodo(todo)
             },
         )
     }
-
-    TodoEditorDialog(
-        show = editingTodo != null,
-        strings = strings,
-        today = state.today,
-        onDismiss = { editingTodo = null },
-        onSave = { draft, _ ->
-            editingTodo?.let { state.updateTodo(it.id, draft) } == WriteResult.Success
-        },
-        initial = editingTodo,
-        calendars = state.localCalendars,
-        defaultCalendarId = state.newRecordCalendarId,
-    )
 
     JournalEditorDialog(
         show = editingJournal != null,

@@ -138,6 +138,7 @@ interface Strings {
     val todoDetail: String
     val todoTitleField: String
     val untitledTodo: String
+    val advancedSettings: String
     val startDate: String
     val progress: String
     val priority: String

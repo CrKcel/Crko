@@ -22,23 +22,21 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
 import com.crko.domain.Todo
 import com.crko.domain.TodoPriority
-import com.crko.domain.effectiveUid
 import com.crko.i18n.Strings
 import com.crko.state.AppMessage
 import com.crko.state.AppStateHolder
-import com.crko.state.WriteResult
 import com.crko.state.today.FocusController
 import com.crko.state.today.TodayController
 import com.crko.ui.components.GlassNavigationBarDefaults
 import com.crko.ui.todo.TodoActionsDialog
 import com.crko.ui.todo.TodoDetailDialog
-import com.crko.ui.todo.TodoEditorDialog
 import com.crko.ui.todo.TodoPoolHeader
 import com.crko.ui.todo.todoPoolItems
 
 /**
  * The default page: date and energy, the next step, the three things, quick capture, and then the
- * whole todo pool. The former todo page lives here, so the app keeps three navigation slots.
+ * whole todo pool. The former todo page lives here, so the app keeps three navigation slots. Todo
+ * editing is handed to the app shell, which hosts the editor and its advanced-settings page.
  */
 @Composable
 internal fun TodayTab(
@@ -52,6 +50,8 @@ internal fun TodayTab(
     onStartFocus: (taskId: String?, minutes: Int) -> Unit,
     onOpenFocus: () -> Unit,
     onOpenSearch: () -> Unit,
+    onEditTodo: (Todo) -> Unit,
+    onAddSubtask: (Todo) -> Unit,
 ) {
     val today = state.today
     val plan = controller.plan
@@ -76,8 +76,6 @@ internal fun TodayTab(
     var poolCompletedExpanded by rememberSaveable { mutableStateOf(false) }
     // Expansion is keyed by parent id; a missing entry means expanded, so new subtasks show up.
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
-    var subtaskParent by remember { mutableStateOf<Todo?>(null) }
-    var editing by remember { mutableStateOf<Todo?>(null) }
     var viewing by remember { mutableStateOf<Todo?>(null) }
     var actionsFor by remember { mutableStateOf<Todo?>(null) }
     val captureRequester = remember { FocusRequester() }
@@ -196,7 +194,7 @@ internal fun TodayTab(
                 onToggleDone = { todo ->
                     toggleTodo(state, todo, state.nextTodoOccurrence(todo), today)
                 },
-                onSubtask = { subtaskParent = it },
+                onSubtask = onAddSubtask,
                 onDetail = { viewing = it },
                 onActions = { actionsFor = it },
                 onDelete = { state.deleteTodo(it.id) },
@@ -295,30 +293,6 @@ internal fun TodayTab(
         )
     }
 
-    TodoEditorDialog(
-        show = subtaskParent != null,
-        strings = strings,
-        today = today,
-        onDismiss = { subtaskParent = null },
-        onSave = { draft, _ ->
-            state.addTodo(draft, parentUid = subtaskParent?.effectiveUid) == WriteResult.Success
-        },
-        parent = subtaskParent,
-        calendars = state.localCalendars,
-        defaultCalendarId = state.newRecordCalendarId,
-    )
-
-    TodoEditorDialog(
-        show = editing != null,
-        strings = strings,
-        today = today,
-        onDismiss = { editing = null },
-        onSave = { draft, _ -> editing?.let { state.updateTodo(it.id, draft) } == WriteResult.Success },
-        initial = editing,
-        calendars = state.localCalendars,
-        defaultCalendarId = state.newRecordCalendarId,
-    )
-
     viewing?.let { todo ->
         TodoDetailDialog(
             todo = todo,
@@ -331,7 +305,7 @@ internal fun TodayTab(
             onDismiss = { viewing = null },
             onEdit = {
                 viewing = null
-                editing = todo
+                onEditTodo(todo)
             },
         )
     }

@@ -121,6 +121,7 @@ object ZhStrings : Strings {
     override val todoDetail = "待办详情"
     override val todoTitleField = "要做的事"
     override val untitledTodo = "未命名待办"
+    override val advancedSettings = "高级设置"
     override val startDate = "开始日期"
     override val progress = "完成度"
     override val priority = "优先级"
